@@ -111,4 +111,6 @@ npx expo run:ios   # or run:android — needs an Expo dev client, not Expo Go
 
 ## License
 
-TODO: license (operator to choose)
+Copyright (c) 2026 Lumilabs Technologies Company Limited (Lumilabs TEZ Co., Ltd). **All rights reserved.**
+
+This is proprietary software, published for review and evaluation only. No license is granted to use, copy, modify or distribute it. See [LICENSE](LICENSE).
