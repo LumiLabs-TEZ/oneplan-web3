@@ -1,0 +1,45 @@
+# Failed-upload retry, part A. Preconditions: `pro`, `server-bad-bucket` (presign succeeds, the
+# PUT to the nonexistent bucket fails → UploadError `s3UploadFailed`). Creates the draft, picks a
+# cover from Photos, and asserts the failure alert. The editor must stay mounted afterwards —
+# part B continues in the same screen after `server-restore`.
+appId: dev.lumilabs.oneplan
+---
+- runFlow: common/launch.yaml
+- tapOn:
+    id: "fab"
+- extendedWaitUntil:
+    visible:
+      id: "quick-uploadTrip"
+    timeout: 10000
+- tapOn:
+    id: "quick-uploadTrip"
+- extendedWaitUntil:
+    visible:
+      id: "market-name"
+    timeout: 30000
+- assertNotVisible:
+    id: "free-trial-screen"
+# --- cover photo from the simulator library (PHPicker cells are "Photo, <date>") ---------
+- tapOn:
+    id: "market-cover"
+- extendedWaitUntil:
+    visible: "Photo, .*"
+    timeout: 20000
+- tapOn: "Photo, .*"
+- extendedWaitUntil:
+    visible: "Budget per person"
+    timeout: 20000
+- takeScreenshot: .maestro/artifacts/p7f-upload-01-cover-picked
+- runFlow: common/editor-fill.yaml
+- runFlow:
+    file: common/editor-submit.yaml
+    env:
+      ACTION: "Save as Draft"
+- extendedWaitUntil:
+    visible: "s3UploadFailed"
+    timeout: 60000
+- assertVisible: "Error"
+- takeScreenshot: .maestro/artifacts/p7f-upload-02-failed
+- tapOn: "OK"
+- assertVisible:
+    id: "market-submit-menu"

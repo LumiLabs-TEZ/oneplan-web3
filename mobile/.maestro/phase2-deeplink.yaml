@@ -1,0 +1,55 @@
+# Phase 2 deep link: `oneplan://join/<code>` opens the drag-to-join invite screen.
+# The invite code is passed in, e.g.
+#   JAVA_HOME=$(brew --prefix openjdk@17) maestro test \
+#     -e INVITE_CODE=<trip.invite_code> .maestro/phase2-deeplink.yaml
+# Use a PLANNING trip the signed-in dev user is NOT a member of (see the plan's
+# "Execution notes (2026-09-14, M4.2)"). The flow only asserts the sheet — it never drags,
+# so it leaves the trip untouched and can be re-run.
+# Turn the expo-dev-client "Tools button" (floating gear) OFF first — see phase2-smoke.
+appId: dev.lumilabs.oneplan
+env:
+  INVITE_CODE: "set-me"
+---
+# Warm the dev client first so the app is attached to Metro and already signed in
+# (`+native-intent` routes an authed `tripInvite` straight to `/join/{code}`).
+- openLink: "dev.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+- runFlow:
+    when:
+      visible: "This is the developer menu.*"
+    commands:
+      - tapOn: "^Continue$"
+# A leftover "Open in …?" confirmation from a previous run would block everything below.
+- runFlow:
+    when:
+      visible: "Open in .*"
+    commands:
+      - tapOn: "^Cancel$"
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 60000
+
+- openLink: "oneplan://join/${INVITE_CODE}"
+# iOS asks for confirmation before handing a custom-scheme URL to the app.
+- runFlow:
+    when:
+      visible: "Open in .*"
+    commands:
+      - tapOn: "^Open$"
+- extendedWaitUntil:
+    visible: "Drag to join"
+    timeout: 30000
+- assertVisible:
+    id: "invite-dismiss"
+- takeScreenshot: p2-deeplink-join
+- waitForAnimationToEnd:
+    timeout: 3000
+- tapOn:
+    id: "invite-dismiss"
+# The join screen is a fullScreenModal; give the dismissal room before asserting Home.
+- waitForAnimationToEnd:
+    timeout: 5000
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 30000

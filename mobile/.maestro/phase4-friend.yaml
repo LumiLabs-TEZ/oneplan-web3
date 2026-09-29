@@ -1,0 +1,86 @@
+# Phase 4 friend deep link: `oneplan://friend/{code}` → send-request modal → Add Friend →
+# "Request sent" → dismiss back to Home.
+#
+# Preconditions:
+#   * local server on :3000, Metro on :8081 (both with `APP_VARIANT=dev API_URL=http://localhost:3000`)
+#   * signed in as the dev/spike user on the simulator
+#   * `FRIEND_CODE` is a *different* user's 64-hex `friendCode` (`GET /auth/me` as that user), and
+#     that user is not already a friend / does not already have a pending request from the spike
+#     user — otherwise the modal shows "Already friends" / "Cancel Request" instead of
+#     `friend-add`. Reset with: accept+unfriend, or cancel the pending request, as that user.
+#   * only ONE OnePlan variant installed — `oneplan://` is claimed by every variant
+#     (`app.config.ts` `scheme`), so a second install hijacks the link (Phase 2 lesson).
+# Run:
+#   JAVA_HOME=$(brew --prefix openjdk@17) maestro test \
+#     -e FRIEND_CODE=<64-hex friend code> .maestro/phase4-friend.yaml
+appId: dev.lumilabs.oneplan
+---
+- openLink: "dev.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+- runFlow:
+    when:
+      visible: "This is the developer menu.*"
+    commands:
+      - tapOn: "^Continue$"
+- runFlow:
+    when:
+      visible: "^Go home$"
+    commands:
+      - tapOn:
+          point: "90%,48%"
+- runFlow:
+    when:
+      visible:
+        id: "free-trial-screen"
+    commands:
+      - tapOn:
+          id: "trial-close"
+      - waitForAnimationToEnd:
+          timeout: 2500
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 60000
+- takeScreenshot: .maestro/artifacts/p4f-01-home
+
+# --- friend deep link ---------------------------------------------------------
+- openLink: "oneplan://friend/${FRIEND_CODE}"
+# iOS asks `Open in "…"?` when a scheme is handled by an app other than the current foreground one.
+- runFlow:
+    when:
+      visible: "^Open$"
+    commands:
+      - tapOn: "^Open$"
+- extendedWaitUntil:
+    visible:
+      id: "friend-send-modal"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 2500
+- takeScreenshot: .maestro/artifacts/p4f-02-send-modal
+
+# --- send the request ----------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "friend-add"
+    timeout: 20000
+- tapOn:
+    id: "friend-add"
+- extendedWaitUntil:
+    visible:
+      id: "friend-request-sent"
+    timeout: 20000
+- takeScreenshot: .maestro/artifacts/p4f-03-request-sent
+
+# --- dismiss --------------------------------------------------------------------
+- waitForAnimationToEnd:
+    timeout: 2000
+- retry:
+    maxRetries: 3
+    commands:
+      - tapOn:
+          id: "friend-send-dismiss"
+      - extendedWaitUntil:
+          visible:
+            id: "fab"
+          timeout: 10000
+- takeScreenshot: .maestro/artifacts/p4f-04-home-after

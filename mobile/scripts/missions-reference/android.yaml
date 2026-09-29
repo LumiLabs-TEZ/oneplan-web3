@@ -1,0 +1,29 @@
+appId: com.oneplan.android.dev
+---
+- openLink: 'oneplan://missions-reference'
+- extendedWaitUntil:
+    visible: 'Earned via missions'
+    timeout: 20000
+- takeScreenshot: rn-missions-android
+- tapOn:
+    id: reward-scan_credit_1
+- extendedWaitUntil:
+    visible: 'Increase'
+    timeout: 5000
+- takeScreenshot: rn-redeem-android
+- tapOn: 'Increase'
+- tapOn:
+    id: missions-redeem
+- extendedWaitUntil:
+    visible: 'Claimed 2 Scan credits'
+    timeout: 10000
+- extendedWaitUntil:
+    visible: 'You now have 4 scan credits'
+    timeout: 10000
+- takeScreenshot: rn-success-android
+- waitForAnimationToEnd:
+    timeout: 5000
+- tapOn: 'Redeem more'
+- extendedWaitUntil:
+    visible: 'Earned via missions'
+    timeout: 10000

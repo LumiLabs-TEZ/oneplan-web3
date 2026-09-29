@@ -1,0 +1,37 @@
+# Free user unlocks a listing with Sparks. Preconditions (scripts/e2e/phase7-free.sh):
+# `free`, `unacquire 2`, `sparks 90` (market_unlock costs 80). Asserts the Spark pill on the card,
+# the two-way unlock sheet, Redeem → acquisition success screen.
+appId: dev.lumilabs.oneplan
+---
+- runFlow: common/launch.yaml
+- tapOn:
+    id: "tab-market"
+- extendedWaitUntil:
+    visible:
+      id: "market-listing-2"
+    timeout: 30000
+- takeScreenshot: .maestro/artifacts/p7f-spark-01-feed
+- tapOn:
+    id: "market-listing-2"
+- extendedWaitUntil:
+    visible: "Da Lat Chill Weekend"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: "^Apply$"
+    timeout: 30000
+- tapOn: "^Apply$"
+- extendedWaitUntil:
+    visible: "Apply plan to your trip"
+    timeout: 15000
+- assertVisible: "Redeem ⚡80"
+- assertVisible: "Unlock with Pro"
+- takeScreenshot: .maestro/artifacts/p7f-spark-02-sheet
+- tapOn: "Redeem ⚡80"
+- waitForAnimationToEnd:
+    timeout: 3000
+- extendedWaitUntil:
+    visible: "Create new trip"
+    timeout: 30000
+- assertNotVisible: "Error"
+- assertNotVisible: "Not enough Sparks"
+- takeScreenshot: .maestro/artifacts/p7f-spark-03-unlocked

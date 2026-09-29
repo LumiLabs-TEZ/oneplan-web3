@@ -1,0 +1,42 @@
+appId: dev.lumilabs.oneplan
+---
+- stopApp
+- openLink: 'exp+oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081'
+- waitForAnimationToEnd:
+    timeout: 10000
+- openLink: 'dev.lumilabs.oneplan://missions-reference'
+- extendedWaitUntil:
+    visible: 'Earned via missions'
+    timeout: 20000
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- takeScreenshot: rn-missions-ios
+- tapOn:
+    id: reward-scan_credit_1
+- extendedWaitUntil:
+    visible: 'Increase'
+    timeout: 5000
+- takeScreenshot: rn-redeem-ios
+- tapOn: 'Increase'
+- tapOn:
+    id: missions-redeem
+- extendedWaitUntil:
+    visible: 'Claimed 2 Scan credits'
+    timeout: 10000
+- extendedWaitUntil:
+    visible: 'You now have 4 scan credits'
+    timeout: 10000
+- takeScreenshot: rn-success-ios
+- tapOn: 'Redeem more'
+- assertVisible: 'Earned via missions'
+- swipe:
+    start: '50%,76%'
+    end: '50%,28%'
+- swipe:
+    start: '50%,76%'
+    end: '50%,28%'
+- tapOn: 'Rewards Program Terms'
+- takeScreenshot: rn-terms-ios
+- tapOn: 'Close'

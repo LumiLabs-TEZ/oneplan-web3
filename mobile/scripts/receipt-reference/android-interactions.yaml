@@ -1,0 +1,20 @@
+appId: com.oneplan.android.dev
+---
+- openLink: 'oneplan:///receipt?mode=assignment'
+- assertVisible: Members
+- takeScreenshot: /tmp/phase6-android-initial
+- swipe:
+    start: '24%,89%'
+    end: '19%,20%'
+    duration: 1500
+- takeScreenshot: /tmp/phase6-android-assigned
+- tapOn: Split
+- tapOn: Alice
+- tapOn: Bob
+- swipe:
+    start: '71%,89%'
+    end: '50%,45%'
+    duration: 2000
+- takeScreenshot: /tmp/phase6-android-split-assigned
+- tapOn: Undo
+- takeScreenshot: /tmp/phase6-android-undo

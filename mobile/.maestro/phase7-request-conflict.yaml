@@ -1,0 +1,51 @@
+# Request-a-plan sheet: first submission succeeds, an identical destination is rejected with the
+# server 409 mapped to "Request already open". Preconditions: `pro` (the sheet is Pro-gated),
+# `requests-reset`.
+appId: dev.lumilabs.oneplan
+---
+- runFlow: common/launch.yaml
+- tapOn:
+    id: "tab-market"
+- extendedWaitUntil:
+    visible:
+      id: "header-request-plan"
+    timeout: 30000
+# --- first request ---------------------------------------------------------------
+- tapOn:
+    id: "header-request-plan"
+- extendedWaitUntil:
+    visible: "Where will you go?"
+    timeout: 15000
+- takeScreenshot: .maestro/artifacts/p7f-request-01-form
+- runFlow: common/request-pick-tokyo.yaml
+- assertVisible: ".*Tokyo.*"
+- tapOn:
+    id: "request-plan-submit"
+- extendedWaitUntil:
+    visible: "Request submitted"
+    timeout: 30000
+- takeScreenshot: .maestro/artifacts/p7f-request-02-sent
+- tapOn: "OK"
+- extendedWaitUntil:
+    visible:
+      id: "market-listing-2"
+    timeout: 15000
+# --- identical request → conflict ------------------------------------------------
+- tapOn:
+    id: "header-request-plan"
+- extendedWaitUntil:
+    visible: "Where will you go?"
+    timeout: 15000
+- runFlow: common/request-pick-tokyo.yaml
+- tapOn:
+    id: "request-plan-submit"
+- extendedWaitUntil:
+    visible: "You already have an open request for this destination."
+    timeout: 30000
+- assertVisible: "Request already open"
+- takeScreenshot: .maestro/artifacts/p7f-request-03-conflict
+- tapOn: "OK"
+# Still on the sheet with the chosen city.
+- assertVisible:
+    id: "request-plan-submit"
+- assertVisible: ".*Tokyo.*"

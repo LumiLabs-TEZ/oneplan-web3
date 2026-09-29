@@ -1,0 +1,26 @@
+# Failed-upload retry, part B. Run right after part A with the editor still open and the server
+# restored (`server-restore`). No launchApp on purpose: the in-memory save progress (draft id,
+# confirmed uploads, item ids) must survive. Retrying ✓ → Save as Draft reuses the draft, then ✓ → Upload Plan.
+appId: dev.lumilabs.oneplan
+---
+- assertVisible:
+    id: "market-submit-menu"
+- runFlow:
+    file: common/editor-submit.yaml
+    env:
+      ACTION: "Save as Draft"
+- extendedWaitUntil:
+    visible: "Saved"
+    timeout: 90000
+- assertNotVisible: "Error"
+- takeScreenshot: .maestro/artifacts/p7f-upload-03-retry-saved
+- tapOn: "OK"
+- runFlow:
+    file: common/editor-submit.yaml
+    env:
+      ACTION: "Upload Plan"
+- extendedWaitUntil:
+    visible: "Your plan is being verified"
+    timeout: 60000
+- assertNotVisible: "Error"
+- takeScreenshot: .maestro/artifacts/p7f-upload-04-verification

@@ -1,0 +1,9 @@
+appId: dev.oneplan.missions-reference
+---
+- launchApp:
+    stopApp: true
+- assertVisible: 'Earned via missions'
+- takeScreenshot: swift-missions
+- tapOn:
+    point: '24%,26%'
+- takeScreenshot: swift-redeem

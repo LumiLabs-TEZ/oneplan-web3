@@ -1,0 +1,143 @@
+# Listing links: warm + cold while signed in, an invalid id, a public-id link, then sign out →
+# link while signed out is parked → dev login → the parked listing opens. Precondition: only one
+# OnePlan variant may be installed on the simulator (`oneplan://` is claimed by every variant;
+# `xcrun simctl uninstall booted local.lumilabs.oneplan`). Sign-out clears the parked link, so the
+# signed-out link is fired only after the login screen is visible.
+appId: dev.lumilabs.oneplan
+---
+- runFlow: common/launch.yaml
+# iOS re-delivers the previous run's launch URL (`Linking.getInitialURL`) on relaunch, which can
+# push a Detail during the preamble. Pop back to Home so each case below starts from a known stack.
+- runFlow: common/pop-to-home.yaml
+
+# --- warm, signed in: oneplan://listing/2 → Detail ---------------------------------------
+- openLink: "oneplan://listing/2"
+- runFlow:
+    when:
+      visible: "Open in .*"
+    commands:
+      - tapOn: "^Open$"
+- extendedWaitUntil:
+    visible: "Da Lat Chill Weekend"
+    timeout: 30000
+- assertVisible: "^Apply$"
+- takeScreenshot: .maestro/artifacts/p7f-links-01-warm
+# Back taps are occasionally swallowed by the glass pill right after a push; pop until Home.
+# (Event logging confirmed exactly one Detail push per link; see the evidence README.)
+- waitForAnimationToEnd:
+    timeout: 3000
+- runFlow: common/pop-to-home.yaml
+
+# --- invalid id: stays on Home, no error -------------------------------------------------
+- openLink: "oneplan://listing/0"
+- runFlow:
+    when:
+      visible: "Open in .*"
+    commands:
+      - tapOn: "^Open$"
+- waitForAnimationToEnd:
+    timeout: 3000
+- assertVisible:
+    id: "fab"
+- assertNotVisible: "Unmatched Route"
+- assertNotVisible: "Something went wrong"
+- assertNotVisible: "^Apply$"
+
+# --- public-id link: listing 3 -----------------------------------------------------------
+- openLink: "oneplan://listing/${PUBLIC_ID_3}"
+- runFlow:
+    when:
+      visible: "Open in .*"
+    commands:
+      - tapOn: "^Open$"
+- extendedWaitUntil:
+    visible: "Bangkok Street Food 3 Days"
+    timeout: 30000
+- takeScreenshot: .maestro/artifacts/p7f-links-02-public-id
+# Back taps are occasionally swallowed by the glass pill right after a push; pop until Home.
+# (Event logging confirmed exactly one Detail push per link; see the evidence README.)
+- waitForAnimationToEnd:
+    timeout: 3000
+- runFlow: common/pop-to-home.yaml
+
+# --- cold, signed in: stop → link → Detail -------------------------------------------------
+- launchApp:
+    stopApp: true
+- waitForAnimationToEnd:
+    timeout: 3000
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 30000
+- runFlow: common/pop-to-home.yaml
+- openLink: "oneplan://listing/3"
+- runFlow:
+    when:
+      visible: "Open in .*"
+    commands:
+      - tapOn: "^Open$"
+- extendedWaitUntil:
+    visible: "Bangkok Street Food 3 Days"
+    timeout: 30000
+- takeScreenshot: .maestro/artifacts/p7f-links-03-cold
+# Back taps are occasionally swallowed by the glass pill right after a push; pop until Home.
+# (Event logging confirmed exactly one Detail push per link; see the evidence README.)
+- waitForAnimationToEnd:
+    timeout: 3000
+- runFlow: common/pop-to-home.yaml
+
+# --- sign out → link while signed out is parked → login → Detail ------------------------
+- tapOn:
+    id: "header-avatar"
+- extendedWaitUntil:
+    visible:
+      id: "profile-settings"
+    timeout: 15000
+- tapOn:
+    id: "profile-settings"
+- extendedWaitUntil:
+    visible:
+      id: "settings-screen"
+    timeout: 15000
+- scrollUntilVisible:
+    element:
+      id: "setting-logout"
+    direction: DOWN
+    timeout: 20000
+- tapOn:
+    id: "setting-logout"
+- extendedWaitUntil:
+    visible: "Continue with Google"
+    timeout: 30000
+- openLink: "oneplan://listing/4"
+- runFlow:
+    when:
+      visible: "Open in .*"
+    commands:
+      - tapOn: "^Open$"
+- waitForAnimationToEnd:
+    timeout: 3000
+- assertVisible: "Continue with Google"
+- assertNotVisible: "Tokyo First-Timer Essentials"
+- takeScreenshot: .maestro/artifacts/p7f-links-04-parked-signed-out
+- tapOn:
+    id: "login-dev"
+- runFlow:
+    when:
+      visible: "Ask App Not to Track"
+    commands:
+      - tapOn: "Ask App Not to Track"
+- runFlow:
+    when:
+      visible:
+        id: "free-trial-screen"
+    commands:
+      - tapOn:
+          id: "trial-close"
+      - waitForAnimationToEnd:
+          timeout: 2500
+- extendedWaitUntil:
+    visible: "Tokyo First-Timer Essentials"
+    timeout: 45000
+- assertVisible: "^Apply$"
+- takeScreenshot: .maestro/artifacts/p7f-links-05-post-login

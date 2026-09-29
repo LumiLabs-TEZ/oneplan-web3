@@ -1,0 +1,5 @@
+onlyBuiltDependencies:
+  - "@shopify/react-native-skia"
+
+patchedDependencies:
+  expo-modules-jsi@57.1.1: patches/expo-modules-jsi@57.1.1.patch

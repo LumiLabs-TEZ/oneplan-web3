@@ -1,0 +1,398 @@
+# Phase 4 simulator smoke: header avatar → Profile → Settings (display name, language en↔vi) →
+# Invite (QR) → Passport (year chip) → Friends list → Get Pro → Paywall → back to Home.
+#
+# Preconditions (see the plan's "Execution notes (2026-09-17, M6.2)"):
+#   * local server on :3000, Metro on :8081 (BOTH started with
+#     `APP_VARIANT=dev API_URL=http://localhost:3000` — the dev client reads `Constants.expoConfig`
+#     from Metro's own env, see the Phase 3 notes), dev build installed on the simulator
+#   * signed in as the dev/spike user; its display name is restored to "Spike Tester" at the end
+#     of this flow, so the seed user stays clean across runs
+#   * the expo-dev-client "Tools button" (floating gear, top-right) is OFF — dev menu → Tools
+#     button. It sits on the profile header's settings/QR icons and swallows the tap.
+#   * IAP is NOT verified here: StoreKit returns no products on the simulator without a
+#     `.storekit` configuration, so the paywall renders with an empty product list. The flow only
+#     asserts the screen mounts and closes — purchase is an owner tail on a device.
+# Run: JAVA_HOME=$(brew --prefix openjdk@17) maestro test .maestro/phase4-smoke.yaml
+appId: dev.lumilabs.oneplan
+---
+# Dev client: open via deep link so it keeps the Metro URL (launchApp+clearState would drop it).
+- openLink: "dev.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+- runFlow:
+    when:
+      visible: "This is the developer menu.*"
+    commands:
+      - tapOn: "^Continue$"
+- runFlow:
+    when:
+      visible: "^Go home$"
+    commands:
+      - tapOn:
+          point: "90%,48%"
+
+# Onboarding only shows on a fresh install.
+- runFlow:
+    when:
+      visible: "Welcome to One Plan"
+    commands:
+      - repeat:
+          while:
+            visible: "^Continue$"
+          commands:
+            - tapOn: "^Continue$"
+            - waitForAnimationToEnd:
+                timeout: 1500
+      - tapOn: "^Get Started$"
+# Keychain tokens survive a reinstall on iOS, so login only shows on a truly fresh device.
+- runFlow:
+    when:
+      visible: "Continue with Google"
+    commands:
+      - tapOn:
+          id: "login-dev"
+
+# The free-trial offer screen (`/free-trial`) auto-presents on launch inside its eligibility
+# window — close it if it's up, otherwise it covers Home for the whole flow.
+- runFlow:
+    when:
+      visible:
+        id: "free-trial-screen"
+    commands:
+      - tapOn:
+          id: "trial-close"
+      - waitForAnimationToEnd:
+          timeout: 2500
+
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 60000
+- takeScreenshot: .maestro/artifacts/p4-01-home
+
+# --- profile -------------------------------------------------------------------
+# Header icons are retried throughout this flow: a tap that lands while the push/present
+# animation is still settling is silently dropped (Phase 2/3 lesson), and the top-right header
+# icons specifically can swallow a genuine tap (Phase 3 bug 1).
+- retry:
+    maxRetries: 4
+    commands:
+      - tapOn:
+          id: "header-avatar"
+      - extendedWaitUntil:
+          visible:
+            id: "profile-screen"
+          timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 2000
+- assertVisible:
+    id: "profile-info-card"
+- takeScreenshot: .maestro/artifacts/p4-02-profile
+
+# --- settings ------------------------------------------------------------------
+- retry:
+    maxRetries: 4
+    commands:
+      - tapOn:
+          id: "profile-settings"
+      - extendedWaitUntil:
+          visible:
+            id: "settings-screen"
+          timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 2000
+- assertVisible:
+    id: "setting-display-name"
+- takeScreenshot: .maestro/artifacts/p4-03-settings
+
+# --- display name: set to "Maestro" --------------------------------------------
+- tapOn:
+    id: "setting-display-name"
+- extendedWaitUntil:
+    visible:
+      id: "display-name-input"
+    timeout: 10000
+# Clearing `display-name-input` (a `BottomSheetTextInput` pre-filled with the current name) needs
+# care, and both halves of this pattern were found the hard way:
+#   * a plain `tapOn: {id: …}` puts the caret wherever the tap landed — the text is centered, so
+#     that is the MIDDLE of the value, and `eraseText` (which only deletes *before* the caret)
+#     leaves the suffix behind: "Spike Tester" + "Maestro" produced "MaestroTester".
+#     `point: "97%,50%"` taps past the end of the centered text, so the caret lands at the end.
+#   * a single `eraseText: 30` does not always delete the whole value (the controlled RN input
+#     drops some of the rapid backspaces), so it runs in a `repeat … while` loop keyed on the
+#     input still reporting a non-empty value. The loop is monotonic, so it converges.
+- repeat:
+    times: 6
+    while:
+      visible:
+        id: "display-name-input"
+        text: ".+"
+    commands:
+      - tapOn:
+          id: "display-name-input"
+          point: "97%,50%"
+      - eraseText: 30
+- inputText: "Maestro"
+- assertVisible:
+    id: "display-name-input"
+    text: "^Maestro$"
+# Commit via the keyboard's return key (the sheet has no Done button, like SwiftUI), so no
+# `hideKeyboard` is needed (it fails on a gorhom sheet input, see `note-save` in phase3-smoke).
+- takeScreenshot: .maestro/artifacts/p4-04-display-name
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 3000
+# The row's trailing text has no testID of its own, so the committed value is asserted on the
+# row container (`setting-display-name` wraps icon + title + trailing value).
+- extendedWaitUntil:
+    visible:
+      id: "setting-display-name"
+      text: ".*Maestro.*"
+    timeout: 15000
+- takeScreenshot: .maestro/artifacts/p4-05-display-name-saved
+
+# --- language: en → vi ----------------------------------------------------------
+- tapOn:
+    id: "setting-language"
+- extendedWaitUntil:
+    visible:
+      id: "language-row-vi"
+    timeout: 10000
+- tapOn:
+    id: "language-row-vi"
+- takeScreenshot: .maestro/artifacts/p4-06-language-sheet
+- tapOn:
+    id: "language-confirm"
+- waitForAnimationToEnd:
+    timeout: 3000
+# Id-anchored text assertion (Phase 3 lesson: never a bare text selector) — the row title element
+# itself must now read the Vietnamese string.
+- extendedWaitUntil:
+    visible:
+      id: "setting-display-name-title"
+      text: "Tên hiển thị"
+    timeout: 15000
+- takeScreenshot: .maestro/artifacts/p4-07-settings-vi
+
+# --- language: vi → en ----------------------------------------------------------
+- tapOn:
+    id: "setting-language"
+- extendedWaitUntil:
+    visible:
+      id: "language-row-en"
+    timeout: 10000
+- tapOn:
+    id: "language-row-en"
+- tapOn:
+    id: "language-confirm"
+- waitForAnimationToEnd:
+    timeout: 3000
+- extendedWaitUntil:
+    visible:
+      id: "setting-display-name-title"
+      text: "Display name"
+    timeout: 15000
+- takeScreenshot: .maestro/artifacts/p4-08-settings-en
+
+# --- back to Profile ------------------------------------------------------------
+# The settings header back chevron has an accessibilityLabel ("Back") but no testID.
+- retry:
+    maxRetries: 3
+    commands:
+      - tapOn: "^Back$"
+      - extendedWaitUntil:
+          visible:
+            id: "profile-screen"
+          timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# --- invite (friend QR) ----------------------------------------------------------
+- retry:
+    maxRetries: 4
+    commands:
+      - tapOn:
+          id: "profile-invite"
+      - extendedWaitUntil:
+          visible:
+            id: "invite-screen"
+          timeout: 8000
+- extendedWaitUntil:
+    visible:
+      id: "friend-qr"
+    timeout: 15000
+- assertVisible:
+    id: "invite-url"
+- assertVisible:
+    id: "invite-share"
+- takeScreenshot: .maestro/artifacts/p4-09-invite
+# `invite-back` was added during this task: the screen had no back affordance at all and the
+# pull-to-reveal pan gesture swallows the iOS interactive-pop edge swipe, so `- back` never
+# popped it (see the report's "Runtime bugs found and fixed").
+- retry:
+    maxRetries: 3
+    commands:
+      - tapOn:
+          id: "invite-back"
+      - extendedWaitUntil:
+          visible:
+            id: "profile-screen"
+          timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# --- passport ---------------------------------------------------------------------
+- tapOn:
+    id: "profile-passport"
+- extendedWaitUntil:
+    visible:
+      id: "passport-screen"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 2000
+- assertVisible:
+    id: "passport-screen-card-years"
+- takeScreenshot: .maestro/artifacts/p4-10-passport
+# Year chips are "All time" + one chip per year from the account's `memberSince` to now. The
+# dev/spike account was created in 2026, so 2026 is always present; "All time" is the default
+# selection, so tapping it would be a no-op (`PassportYearChips.select` ignores a re-tap).
+- tapOn:
+    id: "passport-screen-card-years-2026"
+- waitForAnimationToEnd:
+    timeout: 2500
+- assertVisible:
+    id: "passport-dist-cities"
+- assertVisible:
+    id: "passport-dist-countries"
+- takeScreenshot: .maestro/artifacts/p4-11-passport-year
+- retry:
+    maxRetries: 3
+    commands:
+      - tapOn: "^Back$"
+      - extendedWaitUntil:
+          visible:
+            id: "profile-screen"
+          timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# --- friends list ------------------------------------------------------------------
+- scrollUntilVisible:
+    element:
+      id: "profile-friends"
+    direction: DOWN
+    timeout: 15000
+- tapOn:
+    id: "profile-friends"
+- extendedWaitUntil:
+    visible:
+      id: "friends-screen"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 2000
+- takeScreenshot: .maestro/artifacts/p4-12-friends
+- retry:
+    maxRetries: 3
+    commands:
+      - tapOn: "^Back$"
+      - extendedWaitUntil:
+          visible:
+            id: "profile-screen"
+          timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# --- paywall ("Get Pro") -------------------------------------------------------------
+# `profile-get-pro` lives inside `profile-info-card`, near the top of the scroll view.
+- scrollUntilVisible:
+    element:
+      id: "profile-get-pro"
+    direction: UP
+    timeout: 15000
+- tapOn:
+    id: "profile-get-pro"
+# `/paywall` is a `fullScreenModal`. StoreKit returns no products on the simulator, so only the
+# screen chrome is asserted here (no `paywall-product-*` / `paywall-primary` enabled check).
+- extendedWaitUntil:
+    visible:
+      id: "paywall-screen"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 2000
+- assertVisible:
+    id: "paywall-restore"
+- takeScreenshot: .maestro/artifacts/p4-13-paywall
+- retry:
+    maxRetries: 3
+    commands:
+      - tapOn:
+          id: "paywall-close"
+      - extendedWaitUntil:
+          visible:
+            id: "profile-screen"
+          timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# --- restore the display name --------------------------------------------------------
+# Leave the seed user exactly as found ("Spike Tester") so the flow is re-runnable.
+- retry:
+    maxRetries: 4
+    commands:
+      - tapOn:
+          id: "profile-settings"
+      - extendedWaitUntil:
+          visible:
+            id: "settings-screen"
+          timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "setting-display-name"
+- extendedWaitUntil:
+    visible:
+      id: "display-name-input"
+    timeout: 10000
+- repeat:
+    times: 6
+    while:
+      visible:
+        id: "display-name-input"
+        text: ".+"
+    commands:
+      - tapOn:
+          id: "display-name-input"
+          point: "97%,50%"
+      - eraseText: 30
+- inputText: "Spike Tester"
+- assertVisible:
+    id: "display-name-input"
+    text: "^Spike Tester$"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 3000
+- extendedWaitUntil:
+    visible:
+      id: "setting-display-name"
+      text: ".*Spike Tester.*"
+    timeout: 15000
+- takeScreenshot: .maestro/artifacts/p4-14-display-name-restored
+
+# --- back to Home -----------------------------------------------------------------
+- retry:
+    maxRetries: 3
+    commands:
+      - tapOn: "^Back$"
+      - extendedWaitUntil:
+          visible:
+            id: "profile-screen"
+          timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 2000
+- retry:
+    maxRetries: 3
+    commands:
+      - tapOn: "^Back$"
+      - extendedWaitUntil:
+          visible:
+            id: "fab"
+          timeout: 10000
+- takeScreenshot: .maestro/artifacts/p4-15-home-after

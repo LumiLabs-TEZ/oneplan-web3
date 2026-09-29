@@ -1,0 +1,45 @@
+# Fill the empty Upload Trip editor with a publishable plan: name, Tokyo, budget, one activity
+# added through "New Plan". Expects the editor to be open.
+appId: dev.lumilabs.oneplan
+---
+- extendedWaitUntil:
+    visible:
+      id: "market-name"
+    timeout: 30000
+- tapOn:
+    id: "market-name"
+- inputText: "Tokyo Weekend"
+- runFlow: pick-tokyo.yaml
+- extendedWaitUntil:
+    visible:
+      id: "market-budget"
+    timeout: 30000
+- tapOn:
+    id: "market-budget"
+- eraseText
+- inputText: "2500000"
+# The number pad has no Done key; the form dismisses the keyboard on drag.
+- swipe:
+    start: "50%,30%"
+    end: "50%,45%"
+    duration: 400
+- scrollUntilVisible:
+    element:
+      id: "market-new-plan"
+    direction: DOWN
+    timeout: 30000
+- tapOn:
+    id: "market-new-plan"
+- extendedWaitUntil:
+    visible:
+      id: "market-activity-title"
+    timeout: 15000
+- tapOn:
+    id: "market-activity-title"
+- inputText: "Shibuya Crossing"
+- pressKey: Enter
+- tapOn:
+    id: "market-activity-save"
+- extendedWaitUntil:
+    visible: "Shibuya Crossing.*"
+    timeout: 15000

@@ -1,0 +1,22 @@
+appId: dev.lumilabs.oneplan
+---
+- launchApp:
+    stopApp: true
+- tapOn:
+    text: Retake
+    optional: true
+- openLink: 'dev.lumilabs.oneplan:///receipt?mode=capture'
+- assertNotVisible: Error
+- takeScreenshot: /tmp/phase6-rn-capture
+- openLink: 'dev.lumilabs.oneplan:///receipt?mode=parsing'
+- assertVisible: 'Scanning receipt...'
+- assertNotVisible: Error
+- takeScreenshot: /tmp/phase6-rn-parsing
+- openLink: 'dev.lumilabs.oneplan:///receipt?mode=saving'
+- assertVisible: 'Creating expense...'
+- assertNotVisible: Error
+- takeScreenshot: /tmp/phase6-rn-saving
+- openLink: 'dev.lumilabs.oneplan:///receipt?mode=error'
+- assertVisible: 'No items detected in the receipt.'
+- takeScreenshot: /tmp/phase6-rn-error
+- tapOn: Retake

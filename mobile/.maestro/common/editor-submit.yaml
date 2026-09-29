@@ -1,0 +1,9 @@
+# Open the Upload Trip editor's ✓ menu and pick ${ACTION} ("Save as Draft" | "Upload Plan").
+appId: dev.lumilabs.oneplan
+---
+- tapOn:
+    id: "market-submit-menu"
+- extendedWaitUntil:
+    visible: ${ACTION}
+    timeout: 10000
+- tapOn: ${ACTION}

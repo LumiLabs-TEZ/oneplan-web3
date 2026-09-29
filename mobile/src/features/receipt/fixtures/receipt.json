@@ -1,0 +1,22 @@
+{
+  "language": "en",
+  "width": 402,
+  "height": 874,
+  "homeCurrency": "USD",
+  "localCurrency": "THB",
+  "members": [
+    { "id": "00000000-0000-4000-8000-000000000003", "userId": 1, "name": "Alice", "imageURL": "" },
+    { "id": "00000000-0000-4000-8000-000000000001", "userId": 2, "name": "Bob", "imageURL": "" },
+    { "id": "00000000-0000-4000-8000-000000000002", "userId": 3, "name": "Charlie", "imageURL": "" }
+  ],
+  "receipt": {
+    "restaurantName": "Mi Cay Sasin",
+    "currency": "USD",
+    "items": [
+      { "name": "Chicken rice", "quantity": 2, "unitPrice": 50, "totalPrice": 100 },
+      { "name": "Americano", "quantity": 1, "unitPrice": 45.01, "totalPrice": 45.01 },
+      { "name": "Ramen Noodles", "quantity": 1, "unitPrice": 65, "totalPrice": 65 },
+      { "name": "Tea", "quantity": 1, "unitPrice": 8, "totalPrice": 8 }
+    ]
+  }
+}

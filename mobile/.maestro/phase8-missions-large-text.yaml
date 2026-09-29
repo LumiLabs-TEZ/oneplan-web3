@@ -1,0 +1,77 @@
+# Regression for Phase 8 layout failures. See layout-fixes-2026-09-18 evidence README.
+appId: dev.lumilabs.oneplan
+env:
+  METRO_URL: "http%3A%2F%2Flocalhost%3A8081"
+---
+- stopApp
+- openLink: 'dev.lumilabs.oneplan://expo-development-client/?url=${METRO_URL}'
+- extendedWaitUntil:
+    visible:
+      id: fab
+    timeout: 40000
+- openLink: 'dev.lumilabs.oneplan://missions-reference?language=en'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- takeScreenshot: .maestro/artifacts/p8-layout-missions-large-reward
+- tapOn:
+    id: reward-scan_credit_1
+- extendedWaitUntil:
+    visible: 'Increase'
+    timeout: 10000
+- takeScreenshot: .maestro/artifacts/p8-layout-missions-large-stepper
+- tapOn: 'Increase'
+- scrollUntilVisible:
+    element:
+      id: missions-redeem
+    direction: DOWN
+    speed: 20
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: missions-redeem
+- extendedWaitUntil:
+    visible: 'Claimed 2 Scan credits'
+    timeout: 15000
+- assertVisible: 'You now have 4 scan credits'
+- scrollUntilVisible:
+    element: 'Redeem more'
+    direction: DOWN
+    speed: 20
+    centerElement: true
+    timeout: 15000
+- takeScreenshot: .maestro/artifacts/p8-layout-missions-large-success
+- tapOn: 'Redeem more'
+- assertNotVisible:
+    id: missions-redeem
+- scrollUntilVisible:
+    element: 'Get Unlimited Access'
+    direction: DOWN
+    speed: 20
+    centerElement: true
+    timeout: 90000
+- tapOn: 'Get Unlimited Access'
+- extendedWaitUntil:
+    visible:
+      id: paywall-screen
+    timeout: 30000
+- assertVisible:
+    id: paywall-restore
+- assertVisible:
+    id: paywall-close
+- takeScreenshot: .maestro/artifacts/p8-layout-paywall-large-header
+- scrollUntilVisible:
+    element:
+      id: paywall-eula
+    direction: DOWN
+    speed: 20
+    centerElement: true
+    timeout: 90000
+- takeScreenshot: .maestro/artifacts/p8-layout-paywall-large-legal
+- tapOn:
+    id: paywall-close
+- extendedWaitUntil:
+    visible:
+      id: fab
+    timeout: 20000

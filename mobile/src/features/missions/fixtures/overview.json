@@ -1,0 +1,127 @@
+{
+  "balance": 120,
+  "totalEarned": 200,
+  "missions": [
+    {
+      "missionId": "first_trip",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": true,
+      "completedAt": "2026-08-12T00:00:00Z"
+    },
+    {
+      "missionId": "first_board",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "first_scan",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "first_expense",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "apply_plan",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "invite_2",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "friend_joined",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "trip_settled",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "share_plan",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "rate_plan",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "upload_plan",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "appstore_review",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "missionId": "plan_ahead",
+      "group": "getting_started",
+      "rewardAmount": 30,
+      "completed": false,
+      "completedAt": null
+    }
+  ],
+  "shopItems": [
+    {
+      "itemId": "scan_credit_1",
+      "price": 30,
+      "rewardType": "scan_credit",
+      "redeemedCount": 0,
+      "available": true
+    },
+    {
+      "itemId": "market_unlock",
+      "price": 80,
+      "rewardType": "market_unlock",
+      "redeemedCount": 0,
+      "available": true
+    },
+    {
+      "itemId": "pro_7d",
+      "price": 150,
+      "rewardType": "pro_days",
+      "redeemedCount": 0,
+      "available": true
+    },
+    {
+      "itemId": "pro_30d",
+      "price": 300,
+      "rewardType": "pro_days",
+      "redeemedCount": 0,
+      "available": false
+    }
+  ]
+}

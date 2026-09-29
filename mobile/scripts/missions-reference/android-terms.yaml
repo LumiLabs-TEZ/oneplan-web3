@@ -1,0 +1,14 @@
+appId: com.oneplan.android.dev
+---
+- assertVisible: 'Earned via missions'
+- swipe:
+    start: '50%,76%'
+    end: '50%,28%'
+- swipe:
+    start: '50%,76%'
+    end: '50%,28%'
+- tapOn: 'Rewards Program Terms'
+- waitForAnimationToEnd:
+    timeout: 5000
+- takeScreenshot: rn-terms-android
+- tapOn: 'Close'

@@ -1,0 +1,129 @@
+# Phase 1 simulator smoke: onboarding → dev sign-in → Home ongoing trip → trip History →
+# add expense → detail → delete. Needs a dev build connected to Metro and the local server
+# (spike user with an ONGOING trip). Run: maestro test .maestro/phase1-smoke.yaml
+appId: dev.lumilabs.oneplan
+---
+# Dev client: open via deep link so it keeps the Metro URL (launchApp+clearState would drop it).
+- openLink: "dev.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+# First launch of a dev build shows the expo-dev-client "developer menu" intro sheet.
+- runFlow:
+    when:
+      visible: "This is the developer menu.*"
+    commands:
+      - tapOn: "^Continue$"
+- runFlow:
+    when:
+      visible: "^Go home$"
+    commands:
+      - tapOn:
+          point: "90%,48%"
+- extendedWaitUntil:
+    visible: "Welcome to One Plan"
+    timeout: 60000
+- takeScreenshot: 01-onboarding
+- repeat:
+    while:
+      visible: "^Continue$"
+    commands:
+      - tapOn: "^Continue$"
+      - waitForAnimationToEnd:
+          timeout: 1500
+- tapOn: "^Get Started$"
+# Keychain tokens survive a reinstall on iOS, so login only shows on a truly fresh device.
+- runFlow:
+    when:
+      visible: "Continue with Google"
+    commands:
+      - takeScreenshot: 02-login
+      - tapOn:
+          id: "login-dev"
+- extendedWaitUntil:
+    visible:
+      id: "ongoing-card"
+    timeout: 30000
+- assertVisible: "Da Lat Adventure"
+- takeScreenshot: 03-home
+- tapOn:
+    id: "ongoing-card"
+# Phase 2: the first open of a trip auto-presents the invite/QR sheet (MMKV flag per trip),
+# which swallows taps on the card below — close it via the backdrop when it shows.
+- runFlow:
+    when:
+      visible:
+        id: "trip-invite-card"
+    commands:
+      - tapOn:
+          point: "50%,8%"
+      - waitForAnimationToEnd:
+          timeout: 2000
+- extendedWaitUntil:
+    visible:
+      id: "home-card-new-expense"
+    timeout: 15000
+- assertVisible: "History"
+- takeScreenshot: 04-trip-detail
+- tapOn:
+    id: "home-card-new-expense"
+- extendedWaitUntil:
+    visible:
+      id: "amount-keypad"
+    timeout: 15000
+- tapOn:
+    id: "key-1"
+- tapOn:
+    id: "key-2"
+- tapOn:
+    id: "key-0"
+- tapOn:
+    id: "key-0"
+- tapOn:
+    id: "key-0"
+- tapOn:
+    id: "key-0"
+- assertVisible:
+    id: "amount-entry-display"
+- takeScreenshot: 05-keypad
+- tapOn:
+    id: "amount-entry-next"
+- extendedWaitUntil:
+    visible:
+      id: "category-row"
+    timeout: 10000
+# The name TextInput is not exposed in the XCUITest tree; it sits right of the category row.
+- tapOn:
+    point: "60%,52%"
+- inputText: "Smoke lunch"
+- takeScreenshot: 06a-details-keyboard
+- pressKey: Enter
+- takeScreenshot: 06-details-sheet
+- tapOn:
+    id: "details-done"
+# History rows are single grouped a11y elements ("Smoke lunch, Group, All, -120,000đ, 21:13").
+- extendedWaitUntil:
+    visible:
+      id: "history-row-expense-.*"
+    timeout: 20000
+- takeScreenshot: 07-history-with-expense
+- tapOn:
+    id: "history-row-expense-.*"
+- extendedWaitUntil:
+    visible:
+      id: "expense-delete"
+    timeout: 15000
+- takeScreenshot: 08-expense-detail
+- tapOn:
+    id: "expense-delete"
+- extendedWaitUntil:
+    visible: "Delete expense?"
+    timeout: 5000
+# "Delete" nodes: header trash (0), action circle (1), alert button (2).
+- tapOn:
+    text: "Delete"
+    index: 2
+- extendedWaitUntil:
+    visible:
+      id: "home-card-new-expense"
+    timeout: 20000
+- assertNotVisible:
+    id: "history-row-expense-.*"
+- takeScreenshot: 09-after-delete

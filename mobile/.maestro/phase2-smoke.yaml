@@ -1,0 +1,255 @@
+# Phase 2 simulator smoke: dev sign-in → FAB "New trip" → name + location ("Da Nang") +
+# duration → Create → trip detail → Add budget → Done → budget history row → ellipsis menu →
+# Start Trip Now → ellipsis → End trip → Breakdown tab → back to Home.
+#
+# Preconditions (see the plan's "Execution notes (2026-09-14, M4.2)"):
+#   * local server on :3000, Metro on :8081, dev build installed on the simulator
+#   * the dev/spike user has NO ONGOING trip (Start Trip Now 400s with MEMBER_CONFLICT
+#     otherwise) and fewer than 3 PLANNING trips (free-tier cap)
+#   * the expo-dev-client "Tools button" (floating gear, top-right) is OFF — dev menu →
+#     Tools button. It sits exactly on the trip-detail ellipsis and swallows the tap.
+# Run: JAVA_HOME=$(brew --prefix openjdk@17) maestro test .maestro/phase2-smoke.yaml
+appId: dev.lumilabs.oneplan
+---
+# Dev client: open via deep link so it keeps the Metro URL (launchApp+clearState would drop it).
+- openLink: "dev.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+- runFlow:
+    when:
+      visible: "This is the developer menu.*"
+    commands:
+      - tapOn: "^Continue$"
+- runFlow:
+    when:
+      visible: "^Go home$"
+    commands:
+      - tapOn:
+          point: "90%,48%"
+
+# Onboarding only shows on a fresh install.
+- runFlow:
+    when:
+      visible: "Welcome to One Plan"
+    commands:
+      - repeat:
+          while:
+            visible: "^Continue$"
+          commands:
+            - tapOn: "^Continue$"
+            - waitForAnimationToEnd:
+                timeout: 1500
+      - tapOn: "^Get Started$"
+# Keychain tokens survive a reinstall on iOS, so login only shows on a truly fresh device.
+- runFlow:
+    when:
+      visible: "Continue with Google"
+    commands:
+      - tapOn:
+          id: "login-dev"
+
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 60000
+- takeScreenshot: p2-01-home
+
+# --- create trip -------------------------------------------------------------
+- tapOn:
+    id: "fab"
+- extendedWaitUntil:
+    visible:
+      id: "quick-newTrip"
+    timeout: 10000
+- tapOn:
+    id: "quick-newTrip"
+- extendedWaitUntil:
+    visible:
+      id: "trip-name-input"
+    timeout: 15000
+- tapOn:
+    id: "trip-name-input"
+- inputText: "Phase2 Smoke Trip"
+- pressKey: Enter
+- takeScreenshot: p2-02-new-trip
+
+- tapOn:
+    id: "location-row"
+- extendedWaitUntil:
+    visible:
+      id: "location-search-input"
+    timeout: 15000
+- tapOn:
+    id: "location-search-input"
+- inputText: "Da Nang"
+# Result rows are matched by testID, not text: RN flattens the row out of the a11y tree
+# without one, and the plain "Da Nang" title would also match the text in the search field
+# (tapping that pops iOS's Select / Select All / AutoFill callout instead).
+- extendedWaitUntil:
+    visible:
+      id: "location-result-0"
+    timeout: 20000
+- takeScreenshot: p2-03-location-search
+- tapOn:
+    id: "location-result-0"
+
+# Duration: today is always the calendar's first selectable day (minDate === today).
+- extendedWaitUntil:
+    visible:
+      id: "duration-row"
+    timeout: 15000
+- tapOn:
+    id: "duration-row"
+- extendedWaitUntil:
+    visible:
+      id: "duration-sheet"
+    timeout: 10000
+- evalScript: ${output.today = (function(){var d=new Date();var p=function(n){return (n<10?'0':'')+n};return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())})()}
+- tapOn:
+    id: "calendar-day-${output.today}"
+- takeScreenshot: p2-04-duration
+- tapOn:
+    id: "duration-confirm"
+
+- extendedWaitUntil:
+    visible:
+      id: "create-trip-submit"
+    timeout: 10000
+- tapOn:
+    id: "create-trip-submit"
+
+# --- trip detail -------------------------------------------------------------
+# Creator's first open of a trip auto-presents the invite/QR sheet — close it via the backdrop.
+- extendedWaitUntil:
+    visible:
+      id: "trip-menu-button"
+    timeout: 30000
+- runFlow:
+    when:
+      visible:
+        id: "trip-invite-card"
+    commands:
+      - tapOn:
+          point: "50%,8%"
+      - waitForAnimationToEnd:
+          timeout: 2000
+- assertVisible: "Phase2 Smoke Trip"
+- assertVisible:
+    id: "trip-invite-button"
+- takeScreenshot: p2-05-trip-detail
+
+# --- add budget --------------------------------------------------------------
+- tapOn:
+    id: "home-card-add-budget"
+- extendedWaitUntil:
+    visible:
+      id: "amount-keypad"
+    timeout: 15000
+- tapOn:
+    id: "key-2"
+- tapOn:
+    id: "key-0"
+- tapOn:
+    id: "key-0"
+- takeScreenshot: p2-06-budget-keypad
+- tapOn:
+    id: "amount-entry-next"
+- extendedWaitUntil:
+    visible:
+      id: "add-budget-details-sheet"
+    timeout: 10000
+# A budget name is required (`canSubmitBudget`); "Who's contributing" defaults to All.
+- tapOn:
+    id: "budget-name-input"
+- inputText: "Phase2 Budget"
+- pressKey: Enter
+- takeScreenshot: p2-07-budget-details
+- tapOn:
+    id: "budget-details-done"
+
+# --- budget history row ------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "history-row-budget-.*"
+    timeout: 25000
+- takeScreenshot: p2-08-history-with-budget
+- tapOn:
+    id: "history-row-budget-.*"
+- waitForAnimationToEnd:
+    timeout: 3000
+- extendedWaitUntil:
+    visible: "Who Deposit"
+    timeout: 15000
+- assertVisible:
+    id: "deposit-progress-bar"
+- takeScreenshot: p2-09-budget-list
+# `- back` (the iOS edge-swipe) is a no-op on this screen; use its own header button. The
+# wait matters: a tap that lands while the push animation is still running is swallowed.
+- waitForAnimationToEnd:
+    timeout: 3000
+- tapOn:
+    id: "budget-list-back"
+
+# --- start trip --------------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "trip-menu-button"
+    timeout: 15000
+- tapOn:
+    id: "trip-menu-button"
+- extendedWaitUntil:
+    visible:
+      text: "Start Trip Now"
+    timeout: 10000
+- takeScreenshot: p2-10-menu-planning
+- tapOn:
+    text: "Start Trip Now"
+
+# --- end trip ----------------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "trip-menu-button"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 3000
+- tapOn:
+    id: "trip-menu-button"
+- extendedWaitUntil:
+    visible:
+      text: "End trip"
+    timeout: 15000
+- takeScreenshot: p2-11-menu-ongoing
+- tapOn:
+    text: "End trip"
+- extendedWaitUntil:
+    visible: "End trip\\?"
+    timeout: 10000
+# The menu sheet dismisses itself before the alert opens, so the alert's destructive button
+# is the only exact "End trip" node ("End trip?" is the title and does not match `^…$`).
+- tapOn: "^End trip$"
+- extendedWaitUntil:
+    visible:
+      id: "trip-end-tabs"
+    timeout: 30000
+- takeScreenshot: p2-12-trip-end
+- tapOn:
+    id: "tab-breakdown"
+- waitForAnimationToEnd:
+    timeout: 2000
+- assertVisible:
+    id: "tab-breakdown"
+- takeScreenshot: p2-13-breakdown
+
+# --- back to Home ------------------------------------------------------------
+# Retried: the first tap on a just-pushed screen is occasionally swallowed while the push
+# animation is still settling, and `dismissTo` then never runs.
+- waitForAnimationToEnd:
+    timeout: 3000
+- retry:
+    maxRetries: 2
+    commands:
+      - tapOn:
+          id: "trip-end-back"
+      - extendedWaitUntil:
+          visible:
+            id: "fab"
+          timeout: 15000
+- takeScreenshot: p2-14-home-after

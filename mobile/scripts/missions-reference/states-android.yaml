@@ -1,0 +1,68 @@
+appId: com.oneplan.android.dev
+---
+- openLink: 'oneplan://missions-reference?scenario=retry'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 5000
+- extendedWaitUntil:
+    visible: 'Failed to load missions'
+    timeout: 15000
+- tapOn:
+    id: missions-retry
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible:
+      id: mission-first_board
+    timeout: 10000
+- openLink: 'oneplan://missions-reference?scenario=empty'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 5000
+- assertVisible: 'No missions available'
+- takeScreenshot: rn-empty-android
+- openLink: 'oneplan://missions-reference?scenario=insufficient'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 5000
+- tapOn:
+    id: reward-scan_credit_1
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: 'You need 30 more'
+    timeout: 10000
+- takeScreenshot: rn-insufficient-android
+- openLink: 'oneplan://missions-reference?scenario=partial'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 5000
+- tapOn:
+    id: reward-scan_credit_1
+    retryTapIfNoChange: true
+- tapOn: 'Increase'
+- tapOn:
+    id: missions-redeem
+- assertVisible: 'Could not redeem this reward'
+- tapOn: 'OK'
+- assertVisible: 'Claimed 1 Scan credit'
+- takeScreenshot: rn-partial-android
+- openLink: 'oneplan://missions-reference?language=vi'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 5000
+- assertVisible: 'Nhiệm vụ'
+- takeScreenshot: rn-missions-vi-android

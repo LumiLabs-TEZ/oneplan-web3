@@ -1,0 +1,49 @@
+# Clipboard must hold the video URL (simctl pbcopy); pass TRIP_ID of an existing PLANNING trip to
+# receive the pins. Pins are saved with dayNumber only (no planDate, same as iOS ProcessPinView), so on
+# an ONGOING/dated trip the Plan tab filters them out and the final scroll assertion fails.
+# Start anywhere inside the signed-in app; local API and Metro running.
+appId: dev.lumilabs.oneplan
+env:
+  TRIP_ID: "41"
+---
+# Relaunch into Home so the flow is independent of where the previous flow ended.
+- openLink: "dev.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 60000
+- tapOn:
+    id: tab-board
+- swipe:
+    direction: DOWN
+    duration: 400
+- tapOn:
+    id: board-paste
+- runFlow:
+    when:
+      visible: "Allow Paste"
+    commands:
+      - tapOn: "Allow Paste"
+- extendedWaitUntil:
+    visible:
+      id: extraction-pin-0
+    timeout: 240000
+- tapOn: "Add to Trips"
+- takeScreenshot: .maestro/artifacts/p5-08-trip-picker
+- scrollUntilVisible:
+    element:
+      id: "pins-trip-${TRIP_ID}"
+    direction: DOWN
+    timeout: 20000
+- tapOn:
+    id: "pins-trip-${TRIP_ID}"
+- extendedWaitUntil:
+    visible:
+      id: trip-menu-button
+    timeout: 120000
+# Pins are appended after the trip's existing items, so scroll the Plan tab to the first one.
+- scrollUntilVisible:
+    element: ".*Buôn Kơ Lang.*"
+    direction: DOWN
+    timeout: 30000
+- takeScreenshot: .maestro/artifacts/p5-09-pins-saved-to-trip

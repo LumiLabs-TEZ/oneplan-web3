@@ -1,0 +1,54 @@
+# Free user with too few Sparks. Preconditions: `free`, `unacquire 3`, `sparks 10`.
+# Redeem is blocked client-side ("Not enough Sparks"); "Unlock with Pro" routes to the paywall.
+# The server-side 402 for the same request is asserted by `phase7-free.sh redeem-402 3`.
+appId: dev.lumilabs.oneplan
+---
+- runFlow: common/launch.yaml
+- tapOn:
+    id: "tab-market"
+- extendedWaitUntil:
+    visible:
+      id: "market-listing-3"
+    timeout: 30000
+- tapOn:
+    id: "market-listing-3"
+- extendedWaitUntil:
+    visible: "Bangkok Street Food 3 Days"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: "^Apply$"
+    timeout: 30000
+- tapOn: "^Apply$"
+- extendedWaitUntil:
+    visible: "Redeem ⚡80"
+    timeout: 15000
+- tapOn: "Redeem ⚡80"
+- extendedWaitUntil:
+    visible: "Not enough Sparks"
+    timeout: 15000
+- assertVisible: "Error"
+- takeScreenshot: .maestro/artifacts/p7f-insufficient-01-alert
+- tapOn: "OK"
+- assertNotVisible: "Create new trip"
+- tapOn: "^Apply$"
+- extendedWaitUntil:
+    visible: "Unlock with Pro"
+    timeout: 15000
+- tapOn: "Unlock with Pro"
+- extendedWaitUntil:
+    visible:
+      id: "paywall-screen"
+    timeout: 20000
+- takeScreenshot: .maestro/artifacts/p7f-insufficient-02-paywall
+- waitForAnimationToEnd:
+    timeout: 2000
+# Same as phase4-smoke: the close tap is swallowed while the fullScreenModal is still settling.
+- retry:
+    maxRetries: 3
+    commands:
+      - tapOn:
+          id: "paywall-close"
+      - extendedWaitUntil:
+          visible: "^Apply$"
+          timeout: 8000
+- assertVisible: "Bangkok Street Food 3 Days"

@@ -1,0 +1,5 @@
+# Firebase google-services.json is a secret EAS file env var: present on EAS workers
+# (../../eas-environment-secrets/<hash>) but unreadable in CI, so hashing it makes the
+# CI and EAS fingerprints diverge. Its contents carry no native code.
+**/eas-environment-secrets/**
+**/google-services/*.json

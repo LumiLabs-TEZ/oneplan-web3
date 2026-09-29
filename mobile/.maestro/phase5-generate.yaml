@@ -1,0 +1,36 @@
+# Start on a board detail with pins (e.g. after phase5-extraction.yaml); local API and Metro running.
+appId: dev.lumilabs.oneplan
+---
+- tapOn:
+    id: board-generate
+- extendedWaitUntil:
+    visible:
+      id: generate-trip-name
+    timeout: 10000
+- tapOn:
+    id: generate-trip-pin-0
+- tapOn:
+    id: generate-trip-pin-1
+- tapOn:
+    id: generate-trip-pin-2
+- takeScreenshot: .maestro/artifacts/p5-06-generate-sheet
+- tapOn:
+    id: generate-trip-submit
+- extendedWaitUntil:
+    visible:
+      id: trip-menu-button
+    timeout: 120000
+# The creator's first open shows the one-shot invite QR sheet; dismiss it to see the Plan tab.
+- runFlow:
+    when:
+      visible: "Join the group and plan together.*"
+    commands:
+      - swipe:
+          start: "50%,45%"
+          end: "50%,95%"
+      - waitForAnimationToEnd:
+          timeout: 2000
+- extendedWaitUntil:
+    visible: ".*Buôn Kơ Lang.*"
+    timeout: 30000
+- takeScreenshot: .maestro/artifacts/p5-07-generated-trip

@@ -1,0 +1,266 @@
+# Phase 3 simulator smoke: Plan tab create → edit → delete, Note tab create → checkbox toggle,
+# back to Home. Port of the plan/note flows added in Phase 3 (TripPlanSection, TripNoteSection).
+#
+# Preconditions (see the plan's "Execution notes"):
+#   * local server on :3000, Metro on :8081, dev build installed on the simulator
+#   * the signed-in dev/spike user has an ONGOING trip (Plan/Note tabs are keyed by planDate on
+#     an ongoing trip; a PLANNING trip works too but items are keyed by dayNumber instead)
+#   * the expo-dev-client "Tools button" (floating gear, top-right) is OFF — see phase2-smoke.
+# Run: JAVA_HOME=$(brew --prefix openjdk@17) maestro test .maestro/phase3-smoke.yaml
+appId: dev.lumilabs.oneplan
+---
+# Dev client: open via deep link so it keeps the Metro URL (launchApp+clearState would drop it).
+- openLink: "dev.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+- runFlow:
+    when:
+      visible: "This is the developer menu.*"
+    commands:
+      - tapOn: "^Continue$"
+- runFlow:
+    when:
+      visible: "^Go home$"
+    commands:
+      - tapOn:
+          point: "90%,48%"
+
+# Onboarding only shows on a fresh install.
+- runFlow:
+    when:
+      visible: "Welcome to One Plan"
+    commands:
+      - repeat:
+          while:
+            visible: "^Continue$"
+          commands:
+            - tapOn: "^Continue$"
+            - waitForAnimationToEnd:
+                timeout: 1500
+      - tapOn: "^Get Started$"
+# Keychain tokens survive a reinstall on iOS, so login only shows on a truly fresh device.
+- runFlow:
+    when:
+      visible: "Continue with Google"
+    commands:
+      - tapOn:
+          id: "login-dev"
+
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 60000
+- takeScreenshot: p3-01-home
+
+# --- open the ongoing trip ----------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "ongoing-card"
+    timeout: 15000
+- tapOn:
+    id: "ongoing-card"
+# Creator's first open of a trip auto-presents the invite/QR sheet — close it via the backdrop.
+- runFlow:
+    when:
+      visible:
+        id: "trip-invite-card"
+    commands:
+      - tapOn:
+          point: "50%,8%"
+      - waitForAnimationToEnd:
+          timeout: 2000
+- extendedWaitUntil:
+    visible:
+      id: "trip-tab-bar"
+    timeout: 20000
+- takeScreenshot: p3-02-trip-detail
+
+# --- Plan tab: create -----------------------------------------------------------
+- tapOn:
+    id: "trip-tab-plan"
+- waitForAnimationToEnd:
+    timeout: 1500
+- takeScreenshot: p3-03-plan-tab
+# The seed trip's timeline already has items for every day, so "New Plan" sits below the fold —
+# scroll the trip-detail ScrollView down until it's visible.
+- scrollUntilVisible:
+    element:
+      id: "plan-new-button"
+    direction: DOWN
+    timeout: 15000
+- tapOn:
+    id: "plan-new-button"
+- extendedWaitUntil:
+    visible:
+      id: "plan-name"
+    timeout: 15000
+- tapOn:
+    id: "plan-name"
+- inputText: "Lunch"
+# `plan-name` is multiline, so Enter inserts a newline instead of dismissing the keyboard —
+# hide it explicitly, then scroll (the Save button is below the fold once the keyboard closes).
+- hideKeyboard
+- takeScreenshot: p3-04-plan-new
+- scrollUntilVisible:
+    element:
+      id: "plan-save"
+    direction: DOWN
+    timeout: 15000
+- tapOn:
+    id: "plan-save"
+
+# --- Plan tab: card appears -------------------------------------------------
+# The seed trip's day already has several items — scroll to (and tap) the new "Lunch" card by
+# its title text rather than the generic `plan-item-.*` id pattern, which would also match an
+# existing item.
+- extendedWaitUntil:
+    visible:
+      id: "trip-tab-plan"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 2000
+- scrollUntilVisible:
+    element:
+      text: "^Lunch$"
+    direction: DOWN
+    timeout: 15000
+- takeScreenshot: p3-05-plan-list
+- tapOn: "^Lunch$"
+
+# --- Plan detail: edit -------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "plan-detail-edit"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: p3-06-plan-detail
+# `plan-detail-edit`/`plan-detail-delete` are flaky to tap on this screen specifically (confirmed
+# via `onPressIn`/`onTouchStart` instrumentation during triage: most taps in this exact spot never
+# reach the Pressable's touch responder at all). Root cause not identified (accessibility tree is
+# clean, `gestureEnabled: false`, a clean Metro cache, and long-press were all ruled out) — see the
+# plan's Execution notes. A single tap with a long wait is NOT reliable either (a miss is a true
+# miss, not just delivery delay) — retry is required.
+- retry:
+    maxRetries: 6
+    commands:
+      - tapOn:
+          id: "plan-detail-edit"
+      - extendedWaitUntil:
+          visible:
+            id: "plan-name"
+          timeout: 4000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "plan-name"
+- inputText: " 2"
+# `plan-update` lives in the fixed header (not the scrollable form), so it's reachable without
+# scrolling — but the keyboard is still up over most of the screen, so dismiss it first.
+- hideKeyboard
+- takeScreenshot: p3-07-plan-edit
+- assertVisible: "Lunch 2"
+# Same flaky top-right-header-icon issue as `plan-detail-edit` above.
+- retry:
+    maxRetries: 6
+    commands:
+      - tapOn:
+          id: "plan-update"
+      - extendedWaitUntil:
+          visible:
+            id: "plan-detail-delete"
+          timeout: 4000
+
+# --- Plan detail: delete -----------------------------------------------------
+- waitForAnimationToEnd:
+    timeout: 1500
+- assertVisible: "Lunch 2"
+- takeScreenshot: p3-08-plan-detail-updated
+- retry:
+    maxRetries: 6
+    commands:
+      - tapOn:
+          id: "plan-detail-delete"
+      - extendedWaitUntil:
+          visible: "Delete plan\\?"
+          timeout: 4000
+# The header trash icon behind the alert also has accessibilityLabel "Delete" (index 0); the
+# alert's destructive button is index 1 (same gotcha as phase1-smoke's expense delete, which has
+# an extra "action circle" Delete in between, so its alert button lands at index 2 instead).
+- tapOn:
+    text: "Delete"
+    index: 1
+- extendedWaitUntil:
+    visible:
+      id: "trip-tab-plan"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 1500
+# Only the deleted "Lunch 2" card should be gone — the seed trip's other items remain, so this
+# checks the specific title, not the generic `plan-item-.*` id pattern.
+- assertNotVisible: "Lunch 2"
+- takeScreenshot: p3-09-plan-after-delete
+
+# --- Note tab: create ---------------------------------------------------------
+- tapOn:
+    id: "trip-tab-note"
+- waitForAnimationToEnd:
+    timeout: 1500
+- takeScreenshot: p3-10-note-tab
+- extendedWaitUntil:
+    visible:
+      id: "note-new-button"
+    timeout: 15000
+- tapOn:
+    id: "note-new-button"
+- extendedWaitUntil:
+    visible:
+      id: "note-title"
+    timeout: 15000
+- tapOn:
+    id: "note-title"
+- inputText: "Pack"
+# `note-title` is a `BottomSheetTextInput` inside a gorhom bottom sheet — the system
+# `hideKeyboard` action isn't reliable there, and tapping sheet text risks mis-hitting the
+# still-open keyboard underneath (a stray key press corrupted the title once during triage).
+# `note-save` sits above the keyboard inside the sheet, so it's reachable without dismissing.
+- takeScreenshot: p3-11-note-new
+- extendedWaitUntil:
+    visible:
+      id: "note-save"
+    timeout: 10000
+- tapOn:
+    id: "note-save"
+
+# --- Note tab: toggle checkbox ------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "note-checkbox-0"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 1500
+# Root cause found during triage: `assertVisible`/`extendedWaitUntil` given a *text* selector
+# (e.g. `"Pack"`) here deterministically knocked the app back to a stale, already-deleted plan
+# item's detail screen a couple of seconds later — reproduced repeatedly, and reproduced away by
+# switching to an id selector. No text-selector checks in the Note section; `note-card-0`'s
+# presence is enough (its content is asserted structurally, not by scanning for its text).
+- assertVisible:
+    id: "note-card-0"
+- takeScreenshot: p3-12-note-list
+- tapOn:
+    id: "note-checkbox-0"
+- waitForAnimationToEnd:
+    timeout: 1500
+- takeScreenshot: p3-13-note-checked
+
+# --- back to Home --------------------------------------------------------------
+# The header back button has an accessibilityLabel ("Back") but no testID.
+- waitForAnimationToEnd:
+    timeout: 2000
+- retry:
+    maxRetries: 2
+    commands:
+      - tapOn: "^Back$"
+      - extendedWaitUntil:
+          visible:
+            id: "fab"
+          timeout: 15000
+- takeScreenshot: p3-14-home-after

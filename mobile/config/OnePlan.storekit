@@ -1,0 +1,210 @@
+{
+  "appPolicies" : {
+    "eula" : "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/",
+    "policies" : [
+      {
+        "locale" : "en_US",
+        "policyText" : "",
+        "policyURL" : "https://oneplan.space/privacy-policy"
+      }
+    ]
+  },
+  "identifier" : "A1D0B937",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "4999000",
+      "familyShareable" : false,
+      "internalID" : "52023DCF",
+      "localizations" : [
+        {
+          "description" : "Stay Pro – Pay one time only",
+          "displayName" : "Pay once",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "pay_once",
+      "referenceName" : "Pay Once",
+      "type" : "NonConsumable"
+    },
+    {
+      "displayPrice" : "25000",
+      "familyShareable" : false,
+      "internalID" : "5C0A1F01",
+      "localizations" : [
+        {
+          "description" : "1 video scan credit",
+          "displayName" : "1 video scan",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "oneplan.video_scan_1",
+      "referenceName" : "Scan Pack 1",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "79000",
+      "familyShareable" : false,
+      "internalID" : "5C0A1F05",
+      "localizations" : [
+        {
+          "description" : "5 video scan credits",
+          "displayName" : "5 video scans",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "oneplan.video_scan_5",
+      "referenceName" : "Scan Pack 5",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "219000",
+      "familyShareable" : false,
+      "internalID" : "5C0A1F15",
+      "localizations" : [
+        {
+          "description" : "15 video scan credits",
+          "displayName" : "15 video scans",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "oneplan.video_scan_15",
+      "referenceName" : "Scan Pack 15",
+      "type" : "Consumable"
+    },
+    {
+      "displayPrice" : "349000",
+      "familyShareable" : false,
+      "internalID" : "5C0A1F30",
+      "localizations" : [
+        {
+          "description" : "30 video scan credits",
+          "displayName" : "30 video scans",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "oneplan.video_scan_30",
+      "referenceName" : "Scan Pack 30",
+      "type" : "Consumable"
+    }
+  ],
+  "settings" : {
+    "_askToBuyEnabled" : false,
+    "_billingGracePeriodEnabled" : true,
+    "_billingIssuesEnabled" : false,
+    "_disableDialogs" : false,
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_renewalBillingIssuesEnabled" : true,
+    "_storefront" : "VNM",
+    "_storeKitErrors" : [
+
+    ],
+    "_timeRate" : 0
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "998B088C",
+      "localizations" : [
+
+      ],
+      "name" : "OnePlan Pro",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "98000",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "601896DA",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "~14,000/day",
+              "displayName" : "Pay as you go",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "pro_weekly",
+          "recurringSubscriptionPeriod" : "P1W",
+          "referenceName" : "Weekly",
+          "subscriptionGroupID" : "998B088C",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "1499000",
+          "familyShareable" : false,
+          "groupNumber" : 3,
+          "internalID" : "74F06BB8",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "~4,000đ/day",
+              "displayName" : "Best value",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "pro_yearly",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Yearly",
+          "subscriptionGroupID" : "998B088C",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "199000",
+          "familyShareable" : false,
+          "groupNumber" : 2,
+          "internalID" : "16BDF79A",
+          "introductoryOffer" : {
+            "internalID" : "1A2B3C4D",
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P2W"
+          },
+          "localizations" : [
+            {
+              "description" : "",
+              "displayName" : "",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "pro_monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Monthly",
+          "subscriptionGroupID" : "998B088C",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

@@ -1,0 +1,140 @@
+/**
+ * Post-end Settlement tab for vault trips — port of
+ * `ios/OnePlan/OnePlan/View/Vault/VaultSettlementView.swift`. Figma `4013:13084` / `4013:12968`.
+ *
+ * Cash debts that involve the caller, after the vault has wound itself up on chain: expandable
+ * receive/pay rows, Mark as done, Show QR.
+ *
+ * TODO(web3): "Show QR" should open `DepositToOnePlanWalletView(mode: .receive)` and a paying row
+ * with a linked creditor wallet should open `WalletWithdrawView` prefilled with the address +
+ * amount — both are reused sheets owned by Wave A/C (deposit / withdraw), not built yet. Until
+ * they land, both actions show a "Coming soon" alert instead of a broken/no-op tap target.
+ */
+import { useTranslation } from 'react-i18next';
+import { Alert, StyleSheet, Text, View } from 'react-native';
+
+import { TripEndHeroHeader } from '@/features/settlement/components/TripEndHeroHeader';
+import { useExchangeRate } from '@/features/exchange/useExchangeRate';
+import type { TripMemberDto } from '@/features/trip/types';
+import { useConfirmVaultCashDebt, type CashDebtDto } from '@/features/vault/api/endTrip';
+import { useVaultSettlement } from '@/features/vault/api/queries';
+import { VaultSettlementRow } from '@/features/vault/components/VaultSettlementRow';
+import {
+  FALLBACK_USDC_TO_VND,
+  avatarUrlFor,
+  mapCashDebtToEntry,
+} from '@/features/vault/helpers/tripEndSettlement';
+import { useAppLanguage } from '@/i18n';
+import type { Currency } from '@/lib/currency';
+import { EmptyState, Spinner } from '@/ui/components';
+import { colors, spacing } from '@/ui/theme';
+import { beVietnamPro } from '@/ui/typography';
+
+export interface VaultSettlementScreenProps {
+  tripId: number;
+  coverImageUrl?: string | null;
+  totalSpent: number;
+  currency: Currency;
+  members: readonly TripMemberDto[];
+  myUserId: number | undefined;
+}
+
+function pairKey(debt: CashDebtDto): string {
+  return `${debt.fromUserId}-${debt.toUserId}`;
+}
+
+export function VaultSettlementScreen({
+  tripId,
+  coverImageUrl,
+  totalSpent,
+  currency,
+  members,
+  myUserId,
+}: VaultSettlementScreenProps) {
+  useAppLanguage();
+  const { t } = useTranslation();
+  const settlement = useVaultSettlement(tripId);
+  const confirm = useConfirmVaultCashDebt(tripId);
+  const rate = useExchangeRate('USD', 'VND');
+  const usdcToVnd = rate.data?.rate && rate.data.rate > 0 ? rate.data.rate : FALLBACK_USDC_TO_VND;
+
+  const preview = settlement.data;
+  const myDebts = (preview?.cashDebts ?? []).filter(
+    (debt) => debt.fromUserId === myUserId || debt.toUserId === myUserId,
+  );
+  const unsettledCount = myDebts.filter((debt) => !debt.isConfirmed).length;
+
+  const handleConfirm = (fromUserId: number) => {
+    confirm.mutate(fromUserId, {
+      onError: () => Alert.alert(t('Settlement failed')),
+    });
+  };
+
+  const handleShowQR = () => Alert.alert(t('Coming soon'));
+  const handleSendToWallet = () => Alert.alert(t('Coming soon'));
+
+  return (
+    <View style={styles.root} testID="vault-settlement-screen">
+      <TripEndHeroHeader
+        coverImageUrl={coverImageUrl}
+        totalSpent={totalSpent}
+        unsettledCount={unsettledCount}
+        currency={currency}
+      />
+
+      {!preview ? (
+        settlement.isError ? (
+          <View style={styles.rows} testID="vault-settlement-error">
+            <EmptyState
+              title={t('Could not load settlement')}
+              action={{ label: t('Retry'), onPress: () => void settlement.refetch() }}
+            />
+          </View>
+        ) : (
+          <Spinner style={styles.spinner} />
+        )
+      ) : !preview.isSettled ? (
+        <Text style={styles.settlingBanner}>{t('Settling the trip fund…')}</Text>
+      ) : myDebts.length === 0 ? (
+        <Text style={styles.emptyText}>{t('Nothing left to settle in cash')}</Text>
+      ) : (
+        <View style={styles.rows}>
+          {myDebts.map((debt) => (
+            <VaultSettlementRow
+              key={pairKey(debt)}
+              entry={mapCashDebtToEntry(
+                debt,
+                myUserId ?? 0,
+                usdcToVnd,
+                avatarUrlFor(members, debt.toUserId === myUserId ? debt.fromUserId : debt.toUserId),
+              )}
+              isWorking={confirm.isPending && confirm.variables === debt.fromUserId}
+              onMarkAsDone={() => handleConfirm(debt.fromUserId)}
+              onShowQR={handleShowQR}
+              onSendToWallet={handleSendToWallet}
+            />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { gap: spacing.sm, paddingBottom: spacing.xxl },
+  rows: { gap: spacing.sm, paddingHorizontal: spacing.md, paddingTop: spacing.xs },
+  spinner: { minHeight: 200 },
+  settlingBanner: {
+    ...beVietnamPro(14),
+    color: colors.contentM,
+    textAlign: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  emptyText: {
+    ...beVietnamPro(14),
+    color: colors.contentM,
+    textAlign: 'center',
+    paddingTop: spacing.md,
+  },
+});

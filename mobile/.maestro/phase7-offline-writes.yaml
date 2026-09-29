@@ -1,0 +1,144 @@
+# Offline write guards. Uses the dev-only `(dev)/offline` switch (forces TanStack onlineManager
+# offline — the simulator shares the Mac's network so NetInfo cannot be flipped from Maestro).
+# Preconditions: `pro` (Upload Trip is Pro-gated), `unacquire 4` (so Apply is a real write).
+# Asserts the "Offline" alert on Apply, Request a plan and Save draft, that nothing was written,
+# then that Apply works again once back online.
+appId: dev.lumilabs.oneplan
+---
+- runFlow: common/launch.yaml
+- openLink: "dev.lumilabs.oneplan:///offline"
+- extendedWaitUntil:
+    visible:
+      id: "dev-offline-screen"
+    timeout: 15000
+- tapOn:
+    id: "dev-offline-on"
+- assertVisible: "forced: true.*"
+- tapOn:
+    id: "dev-offline-back"
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 15000
+
+# --- Apply while offline -------------------------------------------------------------
+- tapOn:
+    id: "tab-market"
+- extendedWaitUntil:
+    visible:
+      id: "market-listing-4"
+    timeout: 30000
+- tapOn:
+    id: "market-listing-4"
+- extendedWaitUntil:
+    visible: "^Apply$"
+    timeout: 30000
+- tapOn: "^Apply$"
+- extendedWaitUntil:
+    visible: "Please check your connection and try again."
+    timeout: 15000
+- assertVisible: "Offline"
+- takeScreenshot: .maestro/artifacts/p7f-offline-01-apply
+- tapOn: "OK"
+- assertNotVisible: "Create new trip"
+- tapOn: "Back"
+
+# --- Request a plan while offline ------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "header-request-plan"
+    timeout: 15000
+- tapOn:
+    id: "header-request-plan"
+- extendedWaitUntil:
+    visible: "Where will you go?"
+    timeout: 15000
+- runFlow: common/request-pick-tokyo.yaml
+- tapOn:
+    id: "request-plan-submit"
+- extendedWaitUntil:
+    visible: "Please check your connection and try again."
+    timeout: 15000
+- takeScreenshot: .maestro/artifacts/p7f-offline-02-request
+- tapOn: "OK"
+- assertNotVisible: "Request submitted"
+# Dismiss the sheet by tapping the backdrop above it.
+- tapOn:
+    point: "50%,5%"
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# --- Save draft while offline ------------------------------------------------------------
+- tapOn:
+    id: "tab-home"
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 15000
+- tapOn:
+    id: "fab"
+- extendedWaitUntil:
+    visible:
+      id: "quick-uploadTrip"
+    timeout: 10000
+- tapOn:
+    id: "quick-uploadTrip"
+- extendedWaitUntil:
+    visible:
+      id: "market-name"
+    timeout: 30000
+# ✓ is disabled until the form has a name and destination; requireOnline runs before validation.
+- tapOn:
+    id: "market-name"
+- inputText: "Offline Plan"
+- runFlow: common/pick-tokyo.yaml
+- runFlow:
+    file: common/editor-submit.yaml
+    env:
+      ACTION: "Save as Draft"
+- extendedWaitUntil:
+    visible: "Please check your connection and try again."
+    timeout: 15000
+- takeScreenshot: .maestro/artifacts/p7f-offline-03-save
+- tapOn: "OK"
+- assertNotVisible: "Saved"
+# Leave the dirty editor: guarded exit → Discard.
+- tapOn:
+    id: "market-editor-back"
+- extendedWaitUntil:
+    visible: "Discard changes?"
+    timeout: 10000
+- tapOn: "Discard"
+
+# --- back online → Apply succeeds ----------------------------------------------------------
+- openLink: "dev.lumilabs.oneplan:///offline"
+- extendedWaitUntil:
+    visible:
+      id: "dev-offline-screen"
+    timeout: 15000
+- tapOn:
+    id: "dev-offline-off"
+- assertVisible: "forced: false.*"
+- tapOn:
+    id: "dev-offline-back"
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 15000
+- tapOn:
+    id: "tab-market"
+- extendedWaitUntil:
+    visible:
+      id: "market-listing-4"
+    timeout: 30000
+- tapOn:
+    id: "market-listing-4"
+- extendedWaitUntil:
+    visible: "^Apply$"
+    timeout: 30000
+- tapOn: "^Apply$"
+- extendedWaitUntil:
+    visible: "Create new trip"
+    timeout: 30000
+- assertNotVisible: "Offline"
+- takeScreenshot: .maestro/artifacts/p7f-offline-04-online-apply

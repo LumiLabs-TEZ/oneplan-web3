@@ -1,0 +1,168 @@
+# Phase 7 marketplace e2e: consumer (browse → detail → Pro unlock/apply → create trip) then creator
+# (Upload Trip quick action → name + destination + budget + one activity → ✓ Save as Draft →
+# ✓ Upload Plan → verification). Runs against the local API (:3000) through Metro
+# (API_URL=http://localhost:3000 pnpm exec expo start --dev-client --port 8081).
+# Preconditions: the signed-in dev user is Pro (Apply on an unacquired listing unlocks with Pro;
+# Upload Trip is Pro-gated) and listing "Da Lat Chill Weekend" (id 2) is APPROVED locally.
+# Re-runnable: once the listing is acquired, Apply reuses the acquisition and still lands on
+# "Create new trip"; each run creates one trip and one PENDING_REVIEW listing.
+appId: dev.lumilabs.oneplan
+---
+- launchApp:
+    stopApp: true
+- waitForAnimationToEnd:
+    timeout: 3000
+# The dev client usually reopens the remembered Metro bundle on its own. Let that first surface
+# finish mounting before handing it the deep link: reloading mid-mount trips ExpoFabricView's
+# "The app context has been lost" fatal (pre-existing dev-client race, seen since Phase 6).
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 20000
+    optional: true
+- openLink: "dev.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+- runFlow:
+    when:
+      visible: "This is the developer menu.*"
+    commands:
+      - tapOn: "^Continue$"
+- runFlow:
+    when:
+      visible: "^Go home$"
+    commands:
+      - tapOn:
+          point: "90%,48%"
+- runFlow:
+    when:
+      visible: "Welcome to One Plan"
+    commands:
+      - repeat:
+          while:
+            visible: "^Continue$"
+          commands:
+            - tapOn: "^Continue$"
+            - waitForAnimationToEnd:
+                timeout: 1500
+      - tapOn: "^Get Started$"
+- runFlow:
+    when:
+      visible: "Continue with Google"
+    commands:
+      - tapOn:
+          id: "login-dev"
+- runFlow:
+    when:
+      visible: "Ask App Not to Track"
+    commands:
+      - tapOn: "Ask App Not to Track"
+- runFlow:
+    when:
+      visible:
+        id: "free-trial-screen"
+    commands:
+      - tapOn:
+          id: "trial-close"
+      - waitForAnimationToEnd:
+          timeout: 2500
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 60000
+
+# --- consumer: Market tab → listing detail ---------------------------------------
+- tapOn:
+    id: "tab-market"
+- extendedWaitUntil:
+    visible:
+      id: "market-listing-2"
+    timeout: 30000
+- takeScreenshot: .maestro/artifacts/p7-01-feed
+- tapOn:
+    id: "market-listing-2"
+- extendedWaitUntil:
+    visible: "Da Lat Chill Weekend"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: "^Apply$"
+    timeout: 30000
+- takeScreenshot: .maestro/artifacts/p7-02-detail
+
+# --- Apply (Pro unlock or reuse acquisition) → success → Create new trip ----------
+- tapOn: "^Apply$"
+- extendedWaitUntil:
+    visible: "Create new trip"
+    timeout: 30000
+- assertNotVisible: "Error"
+- takeScreenshot: .maestro/artifacts/p7-03-unlocked
+- tapOn: "Create new trip"
+- extendedWaitUntil:
+    visible:
+      id: "trip-tab-bar"
+    timeout: 45000
+- assertNotVisible: "Error"
+- assertVisible: "Da Lat Chill Weekend"
+- takeScreenshot: .maestro/artifacts/p7-04-created-trip
+# A new trip auto-presents the invite QR sheet; dismiss it before leaving Trip Detail.
+- runFlow:
+    when:
+      visible:
+        id: "trip-invite-card"
+    commands:
+      - swipe:
+          start: "50%,42%"
+          end: "50%,95%"
+          duration: 600
+      - waitForAnimationToEnd:
+          timeout: 2000
+- assertNotVisible: "Join the group and plan together.*"
+
+# --- creator: back to Home → FAB → Upload Trip → empty editor ------------------------
+# Trip Detail is a pushed stack screen (no tab bar); its back chevron sits top-left.
+- tapOn:
+    point: "8%,10%"
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 30000
+- tapOn:
+    id: "fab"
+- extendedWaitUntil:
+    visible:
+      id: "quick-uploadTrip"
+    timeout: 10000
+- tapOn:
+    id: "quick-uploadTrip"
+- extendedWaitUntil:
+    visible:
+      id: "market-name"
+    timeout: 30000
+- assertNotVisible:
+    id: "free-trial-screen"
+- takeScreenshot: .maestro/artifacts/p7-05-editor-empty
+
+# --- name, destination, budget, one activity (iOS has no "create from trip" here) ---------
+- runFlow: common/editor-fill.yaml
+- takeScreenshot: .maestro/artifacts/p7-07-editor-filled
+
+# --- ✓ → Save as Draft → Saved -------------------------------------------------------------
+- runFlow:
+    file: common/editor-submit.yaml
+    env:
+      ACTION: "Save as Draft"
+- extendedWaitUntil:
+    visible: "Saved"
+    timeout: 60000
+- assertNotVisible: "Error"
+- takeScreenshot: .maestro/artifacts/p7-08-draft-saved
+- tapOn: "OK"
+
+# --- ✓ → Upload Plan → verification ----------------------------------------------------------
+- runFlow:
+    file: common/editor-submit.yaml
+    env:
+      ACTION: "Upload Plan"
+- extendedWaitUntil:
+    visible: "Your plan is being verified"
+    timeout: 60000
+- assertNotVisible: "Error"
+- takeScreenshot: .maestro/artifacts/p7-09-verification

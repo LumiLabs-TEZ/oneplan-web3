@@ -1,0 +1,72 @@
+appId: dev.lumilabs.oneplan
+---
+- stopApp
+- openLink: 'exp+oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081'
+- waitForAnimationToEnd:
+    timeout: 10000
+- openLink: 'dev.lumilabs.oneplan://missions-reference?scenario=retry'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 5000
+- extendedWaitUntil:
+    visible: 'Failed to load missions'
+    timeout: 15000
+- tapOn:
+    point: "50%,24%"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible:
+      id: mission-first_board
+    timeout: 10000
+- openLink: 'dev.lumilabs.oneplan://missions-reference?scenario=empty'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 5000
+- assertVisible: 'No missions available'
+- takeScreenshot: rn-empty-ios
+- openLink: 'dev.lumilabs.oneplan://missions-reference?scenario=insufficient'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 5000
+- tapOn:
+    point: "25%,26%"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: 'You need 30 more'
+    timeout: 10000
+- takeScreenshot: rn-insufficient-ios
+- openLink: 'dev.lumilabs.oneplan://missions-reference?scenario=partial'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 5000
+- tapOn:
+    point: "25%,26%"
+    retryTapIfNoChange: true
+- tapOn: 'Increase'
+- tapOn:
+    id: missions-redeem
+- assertVisible: 'Could not redeem this reward'
+- tapOn: 'OK'
+- assertVisible: 'Claimed 1 Scan credit'
+- takeScreenshot: rn-partial-ios
+- openLink: 'dev.lumilabs.oneplan://missions-reference?language=vi'
+- extendedWaitUntil:
+    visible:
+      id: missions-ready
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 5000
+- assertVisible: 'Nhiệm vụ'
+- takeScreenshot: rn-missions-vi-ios

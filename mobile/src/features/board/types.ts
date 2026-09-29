@@ -1,0 +1,15 @@
+import type { components } from '@/api/schema';
+type Schema = components['schemas'];
+export type Board = Schema['BoardDto'];
+export type BoardSummary = Schema['BoardSummaryDto'];
+export type BoardPin = Schema['BoardPinDto'];
+export type PinInput = Schema['PinInputDto'];
+export type ExtractedPin = Schema['ExtractedPinDto'];
+export type ExtractionSession = Schema['PinExtractionSessionDto'];
+export type CreditError = Schema['InsufficientScanCreditsErrorDto'];
+export type CreditBalance = Schema['ScanCreditBalanceDto'];
+export type CreateBoard = Schema['CreateBoardDto'];
+export type UpdateBoard = Schema['UpdateBoardDto'];
+export type GenerateTrip = Schema['GenerateTripFromBoardDto'];
+export type GenerateDescription = Schema['GenerateBoardDescriptionDto'];
+export type TripVibe = Schema['TripVibe'];

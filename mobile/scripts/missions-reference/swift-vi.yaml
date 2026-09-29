@@ -1,0 +1,11 @@
+appId: dev.oneplan.missions-reference
+---
+- launchApp:
+    stopApp: true
+    arguments:
+      AppleLanguages: '(vi)'
+      AppleLocale: vi_VN
+- extendedWaitUntil:
+    visible: 'Nhiệm vụ'
+    timeout: 10000
+- takeScreenshot: swift-missions-vi

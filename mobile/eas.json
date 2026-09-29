@@ -1,0 +1,86 @@
+{
+  "cli": {
+    "version": ">= 24.4.1",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "base": {
+      "node": "22.17.0",
+      "pnpm": "10.25.0"
+    },
+    "development": {
+      "extends": "base",
+      "developmentClient": true,
+      "distribution": "internal",
+      "channel": "development",
+      "env": {
+        "APP_VARIANT": "dev",
+        "GOOGLE_IOS_URL_SCHEME": "com.googleusercontent.apps.559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "66936502756-llt4amv7b9fsjbit5gtu08snu0b9fjip.apps.googleusercontent.com"
+      },
+      "ios": {
+        "simulator": false
+      }
+    },
+    "local": {
+      "extends": "development",
+      "channel": "local",
+      "env": {
+        "APP_VARIANT": "local",
+        "GOOGLE_IOS_URL_SCHEME": "com.googleusercontent.apps.559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "66936502756-llt4amv7b9fsjbit5gtu08snu0b9fjip.apps.googleusercontent.com"
+      }
+    },
+    "preview": {
+      "extends": "base",
+      "distribution": "internal",
+      "channel": "preview",
+      "env": {
+        "APP_VARIANT": "dev",
+        "GOOGLE_IOS_URL_SCHEME": "com.googleusercontent.apps.559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "66936502756-llt4amv7b9fsjbit5gtu08snu0b9fjip.apps.googleusercontent.com"
+      }
+    },
+    "production": {
+      "extends": "base",
+      "channel": "production",
+      "autoIncrement": true,
+      "env": {
+        "APP_VARIANT": "prod",
+        "GOOGLE_IOS_URL_SCHEME": "com.googleusercontent.apps.559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "559176877871-88pt71ii9lo2v508e4vgjgnuu95nsbff.apps.googleusercontent.com"
+      },
+      "environment": "production",
+      "distribution": "store",
+      "android": {
+        "credentialsSource": "local"
+      }
+    },
+    "dev": {
+      "extends": "base",
+      "channel": "dev",
+      "autoIncrement": true,
+      "env": {
+        "APP_VARIANT": "dev",
+        "GOOGLE_IOS_URL_SCHEME": "com.googleusercontent.apps.559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "66936502756-llt4amv7b9fsjbit5gtu08snu0b9fjip.apps.googleusercontent.com"
+      },
+      "environment": "preview",
+      "distribution": "store",
+      "android": {
+        "credentialsSource": "local"
+      }
+    },
+    "development-simulator": {
+      "extends": "development",
+      "ios": {
+        "simulator": true
+      }
+    }
+  }
+}

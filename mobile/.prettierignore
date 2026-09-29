@@ -1,0 +1,4 @@
+.expo/
+src/api/schema.d.ts
+src/i18n/infoplist/
+src/i18n/locales/

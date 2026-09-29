@@ -1,0 +1,119 @@
+# Local API on :3001, Metro on :8081; see Phase 5 E2E report.
+appId: dev.lumilabs.oneplan
+---
+# Dev client: open via deep link so it keeps the Metro URL (launchApp+clearState would drop it).
+- openLink: "dev.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+- runFlow:
+    when:
+      visible: "This is the developer menu.*"
+    commands:
+      - tapOn: "^Continue$"
+- runFlow:
+    when:
+      visible: "^Go home$"
+    commands:
+      - tapOn:
+          point: "90%,48%"
+
+# Onboarding only shows on a fresh install.
+- runFlow:
+    when:
+      visible: "Welcome to One Plan"
+    commands:
+      - repeat:
+          while:
+            visible: "^Continue$"
+          commands:
+            - tapOn: "^Continue$"
+            - waitForAnimationToEnd:
+                timeout: 1500
+      - tapOn: "^Get Started$"
+# Keychain tokens survive a reinstall on iOS, so login only shows on a truly fresh device.
+- runFlow:
+    when:
+      visible: "Continue with Google"
+    commands:
+      - tapOn:
+          id: "login-dev"
+
+- runFlow:
+    when:
+      visible: "Ask App Not to Track"
+    commands:
+      - tapOn: "Ask App Not to Track"
+
+# The free-trial offer screen (`/free-trial`) auto-presents on launch inside its eligibility
+# window — close it if it's up, otherwise it covers Home for the whole flow.
+- runFlow:
+    when:
+      visible:
+        id: "free-trial-screen"
+    commands:
+      - tapOn:
+          id: "trial-close"
+      - waitForAnimationToEnd:
+          timeout: 2500
+
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 60000
+- tapOn:
+    id: "tab-board"
+- scrollUntilVisible:
+    element:
+      id: "board-create"
+    direction: DOWN
+    timeout: 15000
+- takeScreenshot: .maestro/artifacts/p5-01-board
+# scrollUntilVisible stops as soon as the row is on-screen, which can leave its lower half under
+# the floating tab bar; scroll to the end of the list so the tap lands on the row itself.
+- scroll
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "board-create"
+- extendedWaitUntil:
+    visible:
+      id: "board-name-input"
+    timeout: 10000
+- tapOn:
+    id: "board-name-input"
+- waitForAnimationToEnd:
+    timeout: 1500
+# Controlled BottomSheetTextInput re-syncs native text from JS state on every keystroke; burst
+# XCTest typing races that and scrambles the value, so type one character per command.
+- inputText: "M"
+- inputText: "a"
+- inputText: "e"
+- inputText: "s"
+- inputText: "t"
+- inputText: "r"
+- inputText: "o"
+- inputText: " "
+- inputText: "b"
+- inputText: "o"
+- inputText: "a"
+- inputText: "r"
+- inputText: "d"
+- assertVisible: "^Maestro board$"
+- tapOn:
+    id: "board-destination"
+- tapOn:
+    id: "location-search-input"
+- inputText: "Tokyo"
+- extendedWaitUntil:
+    visible: ".*Tokyo.*Japan.*"
+    timeout: 15000
+- tapOn: ".*Tokyo.*Japan.*"
+- scrollUntilVisible:
+    element:
+      id: "board-save"
+    direction: DOWN
+- tapOn:
+    id: "board-save"
+- extendedWaitUntil:
+    visible: "^Maestro board, Tokyo.*"
+    timeout: 15000
+- assertVisible: "^0$"
+- takeScreenshot: .maestro/artifacts/p5-02-board-created

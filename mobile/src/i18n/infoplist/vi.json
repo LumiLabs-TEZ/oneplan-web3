@@ -1,0 +1,11 @@
+{
+  "CFBundleDisplayName": "OnePlan Travel",
+  "CFBundleName": "OnePlan",
+  "NSCameraUsageDescription": "Quét hóa đơn để chia tiền, chụp ảnh chuyến đi và thêm ảnh bìa cho kế hoạch của bạn.",
+  "NSFaceIDUsageDescription": "Xác nhận các thao tác quan trọng như xóa tài khoản hoặc mua kế hoạch trên Chợ.",
+  "NSLocationWhenInUseUsageDescription": "Hiển thị địa điểm chuyến đi trên bản đồ và gắn các mục kế hoạch với địa điểm gần bạn.",
+  "NSMicrophoneUsageDescription": "Ghi chú thoại ngắn đính kèm vào các mục kế hoạch.",
+  "NSPhotoLibraryAddUsageDescription": "Lưu ảnh chuyến đi và ảnh kế hoạch đã xuất vào thư viện ảnh của bạn.",
+  "NSPhotoLibraryUsageDescription": "Đính kèm ảnh vào kỷ niệm chuyến đi, mục kế hoạch và tin đăng trên Chợ.",
+  "NSUserTrackingUsageDescription": "Dữ liệu của bạn sẽ được dùng để hiển thị quảng cáo phù hợp hơn và hỗ trợ các tính năng miễn phí như lượt quét thưởng khi xem quảng cáo."
+}

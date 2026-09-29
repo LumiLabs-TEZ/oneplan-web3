@@ -1,0 +1,24 @@
+# Pick "Tokyo, Japan" in the Request-a-plan LocationSearchSheet (one char per inputText — the
+# controlled sheet input drops characters on burst input).
+appId: dev.lumilabs.oneplan
+---
+- tapOn:
+    id: "request-plan-destination"
+- extendedWaitUntil:
+    visible:
+      id: "location-search-input"
+    timeout: 15000
+- tapOn:
+    id: "location-search-input"
+- inputText: "T"
+- inputText: "o"
+- inputText: "k"
+- inputText: "y"
+- inputText: "o"
+- extendedWaitUntil:
+    visible: ".*Japan.*"
+    timeout: 30000
+- tapOn:
+    id: "location-result-0"
+- waitForAnimationToEnd:
+    timeout: 2000

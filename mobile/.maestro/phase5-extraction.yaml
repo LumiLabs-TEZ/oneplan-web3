@@ -1,0 +1,29 @@
+# Before running, copy the video URL to the simulator clipboard with simctl pbcopy.
+# Start on the Board tab without an active scan; local API and Metro must be running.
+appId: dev.lumilabs.oneplan
+---
+- tapOn:
+    id: board-paste
+- runFlow:
+    when:
+      visible: "Allow Paste"
+    commands:
+      - tapOn: "Allow Paste"
+- takeScreenshot: .maestro/artifacts/p5-03-extraction-started
+- extendedWaitUntil:
+    visible:
+      id: extraction-pin-0
+    timeout: 240000
+- takeScreenshot: .maestro/artifacts/p5-04-pins-extracted
+- tapOn: "Add to Boards"
+- takeScreenshot: .maestro/artifacts/p5-board-picker
+- scrollUntilVisible:
+    element: ".*UI parity board.*"
+    direction: DOWN
+    timeout: 20000
+- tapOn: ".*UI parity board.*"
+- extendedWaitUntil:
+    visible:
+      id: board-generate
+    timeout: 30000
+- takeScreenshot: .maestro/artifacts/p5-05-pins-saved

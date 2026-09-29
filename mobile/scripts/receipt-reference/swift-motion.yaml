@@ -1,0 +1,37 @@
+appId: dev.oneplan.receipt-reference
+---
+- launchApp:
+    stopApp: true
+- assertVisible: Members
+- takeScreenshot: /tmp/phase6-swift-initial
+- swipe:
+    start: '24%,88%'
+    end: '19%,20%'
+    duration: 1500
+- takeScreenshot: /tmp/phase6-swift-assigned
+- swipe:
+    start: '24%,88%'
+    end: '19%,20%'
+    duration: 1500
+- takeScreenshot: /tmp/phase6-swift-exhausted
+- tapOn: Undo
+- tapOn: Split
+- tapOn: Alice
+- tapOn: Bob
+- takeScreenshot: /tmp/phase6-swift-split-selection
+- swipe:
+    start: '71%,88%'
+    end: '50%,45%'
+    duration: 2000
+- takeScreenshot: /tmp/phase6-swift-split-assigned
+
+- swipe:
+    start: '66%,83%'
+    end: '66%,83%'
+    duration: 1800
+- takeScreenshot: /tmp/phase6-swift-reset-cancelled
+- swipe:
+    start: '66%,83%'
+    end: '66%,83%'
+    duration: 3500
+- takeScreenshot: /tmp/phase6-swift-reset-completed

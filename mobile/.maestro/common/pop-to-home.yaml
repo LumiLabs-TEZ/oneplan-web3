@@ -1,0 +1,18 @@
+# Pop any pushed screens (up to 3) until the Home FAB is visible.
+appId: dev.lumilabs.oneplan
+---
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            notVisible:
+              id: "fab"
+          commands:
+            - tapOn: "^Back$"
+            - waitForAnimationToEnd:
+                timeout: 1500
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 15000

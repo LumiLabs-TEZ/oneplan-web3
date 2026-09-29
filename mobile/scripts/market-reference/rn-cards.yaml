@@ -1,0 +1,9 @@
+appId: dev.lumilabs.oneplan
+---
+- openLink: 'dev.lumilabs.oneplan:///market-reference'
+- extendedWaitUntil:
+    visible:
+      id: market-listing-1
+    timeout: 60000
+- waitForAnimationToEnd
+- takeScreenshot: /tmp/phase7-rn-cards

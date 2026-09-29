@@ -1,0 +1,32 @@
+# Regression for Phase 8 layout failures. See layout-fixes-2026-09-18 evidence README.
+appId: dev.lumilabs.oneplan
+env:
+  METRO_URL: "http%3A%2F%2Flocalhost%3A8081"
+---
+- stopApp
+- openLink: 'dev.lumilabs.oneplan://expo-development-client/?url=${METRO_URL}'
+- runFlow:
+    when:
+      visible: '^Open$'
+    commands:
+      - tapOn: '^Open$'
+- extendedWaitUntil:
+    visible:
+      id: login-scroll
+    timeout: 40000
+- scrollUntilVisible:
+    element: 'Privacy Policy'
+    direction: DOWN
+    timeout: 15000
+- assertVisible: 'Terms of Service'
+- assertVisible: 'Continue with Google'
+- assertVisible:
+    id: login-dev
+- takeScreenshot: .maestro/artifacts/p8-layout-login-se-reachable
+- tapOn:
+    id: login-dev
+- extendedWaitUntil:
+    visible:
+      id: fab
+    timeout: 30000
+- takeScreenshot: .maestro/artifacts/p8-layout-login-se-signed-in

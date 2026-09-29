@@ -1,0 +1,22 @@
+{
+  "qr": {
+    "content": "oneplan://friend/abc123",
+    "size": 222
+  },
+  "notes": [
+    {
+      "id": 1,
+      "title": "Pack sunscreen",
+      "body": "Buy SPF 50 and bring water for the trip.",
+      "isDone": false,
+      "createdAt": "2026-05-15T00:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "title": "Dresscode",
+      "body": "Wear brown and black.",
+      "isDone": true,
+      "createdAt": "2026-05-14T00:00:00.000Z"
+    }
+  ]
+}

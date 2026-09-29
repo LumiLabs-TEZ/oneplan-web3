@@ -1,0 +1,8 @@
+appId: dev.lumilabs.oneplan
+---
+- tapOn:
+    point: "50%,24%"
+- extendedWaitUntil:
+    visible:
+      id: mission-first_board
+    timeout: 10000

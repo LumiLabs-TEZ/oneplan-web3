@@ -1,0 +1,11 @@
+{
+  "CFBundleDisplayName": "OnePlan Travel",
+  "CFBundleName": "OnePlan",
+  "NSCameraUsageDescription": "Scan receipts to split bills, capture trip photos, and add cover images to your plans.",
+  "NSFaceIDUsageDescription": "Confirm sensitive actions like deleting your account or acquiring a marketplace plan.",
+  "NSLocationWhenInUseUsageDescription": "Show your trip locations on the map and tag plan items with nearby places.",
+  "NSMicrophoneUsageDescription": "Record short voice notes attached to plan items.",
+  "NSPhotoLibraryAddUsageDescription": "Save trip photos and exported plan images to your photo library.",
+  "NSPhotoLibraryUsageDescription": "Attach photos to trip memories, plan items, and marketplace listings.",
+  "NSUserTrackingUsageDescription": "Your data will be used to deliver more relevant ads and support free features like ad-rewarded scans."
+}

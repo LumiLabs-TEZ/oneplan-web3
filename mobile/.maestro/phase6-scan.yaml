@@ -1,0 +1,157 @@
+# Phase 6 receipt scan → assignment → expense e2e. Real Gemini scan against the local API (:3000),
+# Metro: API_URL=http://localhost:3000 pnpm exec expo start --dev-client --clear --port 8081. Preconditions: the signed-in dev user is Pro (server gates Scan bill), the fixture
+# `src/features/receipt/fixtures/receipt-reference.png` was added to the simulator's Photos
+# (`xcrun simctl addmedia booted …`), and Home shows an ONGOING trip with ≥2 accepted members.
+appId: dev.lumilabs.oneplan
+---
+# Cold-stop first so the router starts at Home regardless of where the previous flow ended, then
+# open via deep link so the dev client keeps the Metro URL (clearState would drop it).
+- launchApp:
+    stopApp: true
+# Let the dev client finish its cold launch before handing it the Metro deep link (relaunching
+# immediately occasionally trips Maestro's "app crashed" detection).
+- waitForAnimationToEnd:
+    timeout: 3000
+- openLink: "dev.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+- runFlow:
+    when:
+      visible: "This is the developer menu.*"
+    commands:
+      - tapOn: "^Continue$"
+- runFlow:
+    when:
+      visible: "^Go home$"
+    commands:
+      - tapOn:
+          point: "90%,48%"
+- runFlow:
+    when:
+      visible: "Welcome to One Plan"
+    commands:
+      - repeat:
+          while:
+            visible: "^Continue$"
+          commands:
+            - tapOn: "^Continue$"
+            - waitForAnimationToEnd:
+                timeout: 1500
+      - tapOn: "^Get Started$"
+- runFlow:
+    when:
+      visible: "Continue with Google"
+    commands:
+      - tapOn:
+          id: "login-dev"
+- runFlow:
+    when:
+      visible: "Ask App Not to Track"
+    commands:
+      - tapOn: "Ask App Not to Track"
+- runFlow:
+    when:
+      visible:
+        id: "free-trial-screen"
+    commands:
+      - tapOn:
+          id: "trial-close"
+      - waitForAnimationToEnd:
+          timeout: 2500
+
+# --- open the ongoing trip -------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 60000
+- extendedWaitUntil:
+    visible:
+      id: "ongoing-card"
+    timeout: 15000
+- tapOn:
+    id: "ongoing-card"
+- runFlow:
+    when:
+      visible:
+        id: "trip-invite-card"
+    commands:
+      - tapOn:
+          point: "50%,8%"
+      - waitForAnimationToEnd:
+          timeout: 2000
+- extendedWaitUntil:
+    visible:
+      id: "trip-tab-bar"
+    timeout: 20000
+- takeScreenshot: .maestro/artifacts/p6-01-trip
+
+# --- New expense → Scan bill (Pro-gated) ------------------------------------------
+- tapOn:
+    id: "home-card-new-expense"
+- extendedWaitUntil:
+    visible: "Scan bill"
+    timeout: 15000
+- tapOn: "Scan bill"
+- extendedWaitUntil:
+    visible:
+      id: "receipt-lens"
+    timeout: 15000
+- assertNotVisible:
+    id: "free-trial-screen"
+- takeScreenshot: .maestro/artifacts/p6-02-capture
+
+# --- pick the fixture from Photos (PHPicker cells are labelled "Photo, <date>"; newest first) ---
+- tapOn: "Photo library"
+- extendedWaitUntil:
+    visible: "Photos"
+    timeout: 15000
+- takeScreenshot: .maestro/artifacts/p6-03-picker
+- tapOn: "Photo, .*"
+
+# --- scan → assignment --------------------------------------------------------------
+# The parsing state can be gone before Maestro polls when the scan returns fast; don't fail on it.
+- extendedWaitUntil:
+    visible: "Scanning receipt..."
+    timeout: 15000
+    optional: true
+- takeScreenshot: .maestro/artifacts/p6-04-parsing
+- extendedWaitUntil:
+    visible: "Members"
+    timeout: 90000
+- assertNotVisible: "Error"
+- takeScreenshot: .maestro/artifacts/p6-05-assignment
+
+# Assign the first item to the first member (same gesture as the fixture motion recording).
+- swipe:
+    start: "24%,88%"
+    end: "19%,20%"
+    duration: 1500
+- waitForAnimationToEnd:
+    timeout: 1500
+- takeScreenshot: .maestro/artifacts/p6-06-assigned
+# Split the next item evenly between two members.
+- tapOn: "Split"
+- tapOn: "Alice"
+- tapOn: "Kai"
+- swipe:
+    start: "71%,88%"
+    end: "50%,45%"
+    duration: 2000
+- waitForAnimationToEnd:
+    timeout: 1500
+- takeScreenshot: .maestro/artifacts/p6-07-split-assigned
+
+# --- confirm → Creating expense → Trip Detail --------------------------------------
+- tapOn: "Confirm"
+- extendedWaitUntil:
+    visible:
+      id: "trip-tab-bar"
+    timeout: 30000
+- assertNotVisible: "Error"
+# Trip Detail also has a Members tab; assert the scanner action is gone.
+- assertNotVisible: "Confirm"
+- assertNotVisible: "Scan bill"
+- takeScreenshot: .maestro/artifacts/p6-08-back-on-trip-detail
+- extendedWaitUntil:
+    visible:
+      id: "history-row-expense-.*"
+    timeout: 20000
+- takeScreenshot: .maestro/artifacts/p6-09-history

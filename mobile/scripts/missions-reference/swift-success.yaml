@@ -1,0 +1,19 @@
+appId: dev.oneplan.missions-reference
+---
+- tapOn:
+    point: '74%,71%'
+- tapOn:
+    point: '50%,92%'
+- extendedWaitUntil:
+    visible: 'Claimed 2 Scan credits'
+    timeout: 10000
+- takeScreenshot: swift-success
+- tapOn: 'Redeem more'
+- swipe:
+    start: '50%,76%'
+    end: '50%,28%'
+- swipe:
+    start: '50%,76%'
+    end: '50%,28%'
+- tapOn: 'Rewards Program Terms'
+- takeScreenshot: swift-terms
