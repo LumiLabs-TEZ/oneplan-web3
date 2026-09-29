@@ -124,7 +124,7 @@ export default function TripDetailScreen() {
   // `VaultLeaveBottomSheet` vs the classic sheet) — the existing classic `getLeavePreview` already
   // carries it (`docs/web3/rn-ui-parity-inventory.md`, `vault-leave-bottom-sheet` row). Only
   // fetched with the flag on, so a non-web3 build never adds this request.
-  const web3Enabled = useWeb3Enabled();
+  const web3Enabled = useWeb3Enabled(tripId);
   const vaultLeavePreview = useLeavePreview(tripId, { enabled: web3Enabled });
   const hasVault = web3Enabled && vaultLeavePreview.data?.hasVault === true;
   // One-shot QR/share sheet on the creator's first open (TripDetailView.swift:1540-1558).

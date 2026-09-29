@@ -14,6 +14,7 @@ import { JwtTokenService } from './jwt.service';
 import { AppleAuthService } from './apple-auth.service';
 import { GoogleAuthService } from './google-auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { Web3Module } from '../web3/web3.module';
 import { StorageModule } from '../storage/storage.module';
 import { ScanCreditModule } from '../scan-credit/scan-credit.module';
 import { DeletedUsersModule } from '../deleted-users/deleted-users.module';
@@ -21,6 +22,7 @@ import { DeletedUsersModule } from '../deleted-users/deleted-users.module';
 @Module({
   imports: [
     StorageModule,
+    Web3Module,
     ScanCreditModule,
     DeletedUsersModule,
     JwtModule.registerAsync({

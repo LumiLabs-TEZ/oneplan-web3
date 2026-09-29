@@ -17,6 +17,7 @@ import {
 
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Web3EnabledGuard } from '../solana/web3-enabled.guard';
+import { Web3EligibleGuard } from '../web3/web3-eligible.guard';
 import { LinkWalletDto, LinkWalletResponseDto } from './dto/link-wallet.dto';
 import { SubmitSignedDto } from './dto/prepare-payment.dto';
 import { WalletHistoryEntryDto } from './dto/wallet-history.dto';
@@ -40,7 +41,7 @@ import { WalletWithdrawService } from './wallet-withdraw.service';
  */
 @ApiTags('wallet')
 @ApiBearerAuth()
-@UseGuards(Web3EnabledGuard)
+@UseGuards(Web3EnabledGuard, Web3EligibleGuard)
 @Controller('wallet')
 export class WalletController {
   constructor(

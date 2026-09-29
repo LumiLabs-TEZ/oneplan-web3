@@ -53,6 +53,7 @@ function trip(over: Partial<TripDto> = {}): TripDto {
     createdAt: '2026-03-01T00:00:00.000Z',
     currency: 'VND',
     localCurrencies: [],
+    web3: false,
     marketplaceListingId: null,
     userMarketplaceRating: null,
     members: [],

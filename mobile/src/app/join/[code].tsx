@@ -15,7 +15,10 @@ import { Alert, StyleSheet, Text, View } from 'react-native';
 import { useInvitePreview } from '@/features/invite/api/queries';
 import { InvitationDragPreview } from '@/features/invite/components';
 import { hasOngoingConflict } from '@/features/invite/helpers/dragToJoin';
-import { ongoingConflictFromError } from '@/features/invite/helpers/joinConflict';
+import {
+  isWeb3UnavailableError,
+  ongoingConflictFromError,
+} from '@/features/invite/helpers/joinConflict';
 import { pendingInvitesStore } from '@/features/invite/pendingInvitesStore';
 import { markInvitePresented } from '@/features/invite/presenterState';
 import { FriendRequestDismissButton } from '@/features/friends/components';
@@ -38,6 +41,7 @@ const JOINED_HOLD_MS = 600;
  */
 const SCREEN_TOP_PADDING = 100;
 const DISMISS_BOTTOM = 60;
+const WEB3_REGION_MESSAGE = "This trip uses a group wallet, which isn't available in your region.";
 
 export default function JoinScreen() {
   useAppLanguage();
@@ -63,6 +67,9 @@ export default function JoinScreen() {
   const tripName = joinedName ?? preview.data?.name ?? t('Trip Invitation');
   const memberCount = preview.data?.memberCount ?? 0;
   const ongoing = partitionTrips(trips.data ?? []).ongoing;
+  // A web3 trip is closed to a non-eligible region (e.g. Vietnam without a VPN).
+  const web3Blocked =
+    preview.data?.web3 === true && !preview.data.web3Eligible && !preview.data.isMember;
 
   // Claim the presentation first: a deep link mounts this screen without going
   // through `useRootModalPresenter`, and marking the code active (a) keeps `upsert`
@@ -104,9 +111,7 @@ export default function JoinScreen() {
       // Android back button or a system interruption, and the avatar must not be
       // left latched at the bottom of the track in any of those paths.
       setResetSignal((n) => n + 1);
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
-        () => undefined,
-      );
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => undefined);
       Alert.alert(
         t('Already on a Trip'),
         existingTripName
@@ -126,7 +131,7 @@ export default function JoinScreen() {
   }, []);
 
   const handleJoin = useCallback(async () => {
-    if (isJoining || !code) return;
+    if (isJoining || !code || web3Blocked) return;
     // Already an accepted member (re-opened invite link): nothing to join, and the
     // ongoing-trip rule doesn't apply — just go to the trip.
     if (preview.data?.isMember) {
@@ -152,18 +157,32 @@ export default function JoinScreen() {
       openTrip(trip.id);
     } catch (err) {
       setIsJoining(false);
+      if (isWeb3UnavailableError(err)) {
+        setResetSignal((n) => n + 1);
+        setError(t(WEB3_REGION_MESSAGE));
+        return;
+      }
       const conflict = ongoingConflictFromError(err);
       if (conflict) {
         showConflict(conflict.existingTripName || ongoing?.name);
         return;
       }
       setResetSignal((n) => n + 1);
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(
-        () => undefined,
-      );
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => undefined);
       setError(t('Failed to join trip'));
     }
-  }, [code, isJoining, join, ongoing, openTrip, preview.data, queryClient, showConflict, t]);
+  }, [
+    code,
+    isJoining,
+    join,
+    ongoing,
+    openTrip,
+    preview.data,
+    queryClient,
+    showConflict,
+    t,
+    web3Blocked,
+  ]);
 
   // Stable identity: rebuilding this mid-drag would recreate the Pan gesture.
   const handleJoinTriggered = useCallback(() => {
@@ -188,6 +207,10 @@ export default function JoinScreen() {
                 <Text style={styles.title}>{t('Joining group...')}</Text>
               ) : error ? (
                 <Text style={styles.error}>{error}</Text>
+              ) : web3Blocked ? (
+                <Text style={styles.error} testID="invite-web3-blocked">
+                  {t(WEB3_REGION_MESSAGE)}
+                </Text>
               ) : (
                 <>
                   <Text style={styles.title}>{t("You've got an invitation to\njoin a group")}</Text>
@@ -200,6 +223,7 @@ export default function JoinScreen() {
               coverImageUrl={preview.data?.coverImageUrl}
               avatarUrl={me.data?.avatarUrl}
               isJoining={isJoining}
+              disabled={web3Blocked}
               resetSignal={resetSignal}
               onJoinTriggered={handleJoinTriggered}
             />

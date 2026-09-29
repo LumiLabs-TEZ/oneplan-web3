@@ -54,6 +54,8 @@ export interface InvitationDragPreviewProps {
   coverImageUrl?: string | null;
   avatarUrl?: string | null;
   isJoining: boolean;
+  /** The drag is inert (e.g. a web3 trip in a non-eligible region). */
+  disabled?: boolean;
   /** Bumped by the parent to send the avatar home after a failed join / conflict alert. */
   resetSignal: number;
   onJoinTriggered: () => void;
@@ -63,6 +65,7 @@ export function InvitationDragPreview({
   coverImageUrl,
   avatarUrl,
   isJoining,
+  disabled = false,
   resetSignal,
   onJoinTriggered,
 }: InvitationDragPreviewProps) {
@@ -86,7 +89,7 @@ export function InvitationDragPreview({
         .minDistance(0)
         .onUpdate((event) => {
           'worklet';
-          if (isJoining || latched.get() === 1) return;
+          if (isJoining || disabled || latched.get() === 1) return;
           const y = Math.min(Math.max(0, event.translationY), MAX_DRAG);
           offset.set(y);
           const next = milestoneIndex(dragProgress(y));
@@ -97,7 +100,7 @@ export function InvitationDragPreview({
         })
         .onEnd(() => {
           'worklet';
-          if (isJoining || latched.get() === 1) return;
+          if (isJoining || disabled || latched.get() === 1) return;
           milestone.set(0);
           if (shouldJoin(dragProgress(offset.get()))) {
             latched.set(1);
@@ -108,7 +111,16 @@ export function InvitationDragPreview({
           }
           offset.set(withSpring(0, SPRING));
         }),
-    [fireHaptics, fireLatchHaptic, isJoining, latched, milestone, offset, onJoinTriggered],
+    [
+      fireHaptics,
+      fireLatchHaptic,
+      isJoining,
+      disabled,
+      latched,
+      milestone,
+      offset,
+      onJoinTriggered,
+    ],
   );
 
   const pillStyle = useAnimatedStyle(() => ({

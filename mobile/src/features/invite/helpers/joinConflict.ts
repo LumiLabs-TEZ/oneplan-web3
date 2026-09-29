@@ -24,3 +24,12 @@ export function ongoingConflictFromError(err: unknown): { existingTripName: stri
     existingTripName: typeof body.existingTripName === 'string' ? body.existingTripName : '',
   };
 }
+
+export const WEB3_UNAVAILABLE = 'web3_unavailable';
+
+/** True for the 403 `{ code: 'web3_unavailable' }` a web3 trip answers to a non-eligible region. */
+export function isWeb3UnavailableError(err: unknown): boolean {
+  if (!(err instanceof ApiMutationError) || err.status !== 403) return false;
+  const body = (err.body ?? null) as { code?: unknown } | null;
+  return typeof body === 'object' && body !== null && body.code === WEB3_UNAVAILABLE;
+}

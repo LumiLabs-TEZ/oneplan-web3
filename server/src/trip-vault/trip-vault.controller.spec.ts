@@ -106,7 +106,9 @@ describe('TripVaultController', () => {
     function notAMember(d: ReturnType<typeof deps>) {
       d.vaultService.assertMember = jest
         .fn()
-        .mockRejectedValue(new ForbiddenException('You are not a member of this trip'));
+        .mockRejectedValue(
+          new ForbiddenException('You are not a member of this trip'),
+        );
       return d;
     }
 
@@ -179,11 +181,13 @@ describe('TripVaultController', () => {
       const d = deps();
       d.vaultService.assertHost = jest
         .fn()
-        .mockRejectedValue(new ForbiddenException('Only the trip host can do this'));
+        .mockRejectedValue(
+          new ForbiddenException('Only the trip host can do this'),
+        );
       d.vaultService.createVault = jest.fn();
-      await expect(
-        build(d).createVault(42, {}, USER_ID),
-      ).rejects.toThrow(ForbiddenException);
+      await expect(build(d).createVault(42, {}, USER_ID)).rejects.toThrow(
+        ForbiddenException,
+      );
       expect(d.vaultService.createVault).not.toHaveBeenCalled();
     });
 
@@ -191,7 +195,9 @@ describe('TripVaultController', () => {
       const d = deps();
       d.vaultService.assertHost = jest
         .fn()
-        .mockRejectedValue(new ForbiddenException('Only the trip host can do this'));
+        .mockRejectedValue(
+          new ForbiddenException('Only the trip host can do this'),
+        );
       await expect(build(d).syncMembers(42, USER_ID)).rejects.toThrow(
         ForbiddenException,
       );

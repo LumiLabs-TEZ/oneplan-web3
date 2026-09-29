@@ -97,6 +97,91 @@ function SessionEffects({ ready }: { ready: boolean }) {
   return null;
 }
 
+/**
+ * The root navigator. Lives below `QueryClientProvider` because `useWeb3Enabled` runs react-query
+ * hooks; `Stack` needs `Stack.Screen` as direct children, so the whole navigator moves here.
+ */
+function RootStack({ route }: { route: ReturnType<typeof resolveRootRoute> }) {
+  const web3Enabled = useWeb3Enabled();
+  return (
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        contentStyle: { backgroundColor: colors.background },
+      }}
+    >
+      <Stack.Protected guard={route === 'onboarding'}>
+        <Stack.Screen name="onboarding" options={{ animation: 'fade' }} />
+      </Stack.Protected>
+      <Stack.Protected guard={route === 'login'}>
+        <Stack.Screen name="login" options={{ animation: 'fade' }} />
+      </Stack.Protected>
+      <Stack.Protected guard={route === 'app'}>
+        <Stack.Screen name="index" />
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="trips/ended" />
+        <Stack.Screen name="trip/[tripId]" />
+        {/* Pushed, like `CreateTripView` on the iOS Trip stack (`TripView.swift:174`). */}
+        <Stack.Screen name="trip/new" />
+        <Stack.Screen name="profile" />
+        {/* Friends list / trip members → friend profile sheet. */}
+        <Stack.Screen name="friend-profile/[userId]" options={friendProfileSheetOptions} />
+        <Stack.Screen name="board" />
+        {/* Trip → Your plan → "Explore on market" enters at the feed index and is a
+          `.fullScreenCover` on iOS (`TripPlanSection.swift:523`); deeper entries
+          (Market tab → listing) stay pushed. */}
+        <Stack.Screen
+          name="market"
+          options={({ route }) => ({
+            presentation:
+              (route.params as { screen?: string } | undefined)?.screen === 'index'
+                ? 'fullScreenModal'
+                : 'card',
+          })}
+        />
+        <Stack.Screen
+          name="missions"
+          options={{
+            presentation: 'transparentModal',
+            animation: 'none',
+            contentStyle: { backgroundColor: 'transparent' },
+          }}
+        />
+        <Stack.Screen name="paywall" options={{ presentation: 'fullScreenModal' }} />
+        {web3RootScreens(web3Enabled)}
+        <Stack.Screen
+          name="free-trial"
+          options={{ presentation: 'fullScreenModal', gestureEnabled: false }}
+        />
+        <Stack.Screen name="join" options={{ presentation: 'fullScreenModal' }} />
+        <Stack.Screen
+          name="friend/[code]"
+          options={{ presentation: 'fullScreenModal', gestureEnabled: false }}
+        />
+        <Stack.Screen
+          name="friend-request/[id]"
+          options={{ presentation: 'fullScreenModal', gestureEnabled: false }}
+        />
+        <Stack.Screen name="_parked" options={{ animation: 'none' }} />
+      </Stack.Protected>
+      <Stack.Protected guard={!isProd}>
+        <Stack.Screen name="(dev)/foundation-reference" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/missions-reference" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/market-reference" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/offline" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/receipt" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/web3-flag" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/vault-kit" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/web3-wave-a" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/vault-pay" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/vault-leave" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/vault-wave-c" options={{ headerShown: false }} />
+        <Stack.Screen name="(dev)/vault-wave-d" options={{ headerShown: false }} />
+      </Stack.Protected>
+    </Stack>
+  );
+}
+
 export default function RootLayout() {
   const segments = useSegments();
   const isReference =
@@ -112,7 +197,6 @@ export default function RootLayout() {
   const route = resolveRootRoute({ hasSeenOnboarding, status });
   // Client-side forced-update gate (VersionCheckManager.swift / AppUpdateGate.kt); fail-open.
   const updateInfo = useVersionGate(!isReference);
-  const web3Enabled = useWeb3Enabled();
 
   useEffect(() => {
     void Promise.allSettled([tokenStore.hydrate(), migrateNativePreferences()]).then(() => {
@@ -156,90 +240,7 @@ export default function RootLayout() {
               <BottomSheetModalProvider>
                 <StatusBar style={showSplash ? 'light' : 'dark'} />
                 {!isReference ? <SessionEffects ready={route === 'app' && !updateInfo} /> : null}
-                <Stack
-                  screenOptions={{
-                    headerShown: false,
-                    contentStyle: { backgroundColor: colors.background },
-                  }}
-                >
-                  <Stack.Protected guard={route === 'onboarding'}>
-                    <Stack.Screen name="onboarding" options={{ animation: 'fade' }} />
-                  </Stack.Protected>
-                  <Stack.Protected guard={route === 'login'}>
-                    <Stack.Screen name="login" options={{ animation: 'fade' }} />
-                  </Stack.Protected>
-                  <Stack.Protected guard={route === 'app'}>
-                    <Stack.Screen name="index" />
-                    <Stack.Screen name="(tabs)" />
-                    <Stack.Screen name="trips/ended" />
-                    <Stack.Screen name="trip/[tripId]" />
-                    {/* Pushed, like `CreateTripView` on the iOS Trip stack (`TripView.swift:174`). */}
-                    <Stack.Screen name="trip/new" />
-                    <Stack.Screen name="profile" />
-                    {/* Friends list / trip members → friend profile sheet. */}
-                    <Stack.Screen
-                      name="friend-profile/[userId]"
-                      options={friendProfileSheetOptions}
-                    />
-                    <Stack.Screen name="board" />
-                    {/* Trip → Your plan → "Explore on market" enters at the feed index and is a
-                      `.fullScreenCover` on iOS (`TripPlanSection.swift:523`); deeper entries
-                      (Market tab → listing) stay pushed. */}
-                    <Stack.Screen
-                      name="market"
-                      options={({ route }) => ({
-                        presentation:
-                          (route.params as { screen?: string } | undefined)?.screen === 'index'
-                            ? 'fullScreenModal'
-                            : 'card',
-                      })}
-                    />
-                    <Stack.Screen
-                      name="missions"
-                      options={{
-                        presentation: 'transparentModal',
-                        animation: 'none',
-                        contentStyle: { backgroundColor: 'transparent' },
-                      }}
-                    />
-                    <Stack.Screen name="paywall" options={{ presentation: 'fullScreenModal' }} />
-                    {web3RootScreens(web3Enabled)}
-                    <Stack.Screen
-                      name="free-trial"
-                      options={{ presentation: 'fullScreenModal', gestureEnabled: false }}
-                    />
-                    <Stack.Screen name="join" options={{ presentation: 'fullScreenModal' }} />
-                    <Stack.Screen
-                      name="friend/[code]"
-                      options={{ presentation: 'fullScreenModal', gestureEnabled: false }}
-                    />
-                    <Stack.Screen
-                      name="friend-request/[id]"
-                      options={{ presentation: 'fullScreenModal', gestureEnabled: false }}
-                    />
-                    <Stack.Screen name="_parked" options={{ animation: 'none' }} />
-                  </Stack.Protected>
-                  <Stack.Protected guard={!isProd}>
-                    <Stack.Screen
-                      name="(dev)/foundation-reference"
-                      options={{ headerShown: false }}
-                    />
-                    <Stack.Screen
-                      name="(dev)/missions-reference"
-                      options={{ headerShown: false }}
-                    />
-                    <Stack.Screen name="(dev)/market-reference" options={{ headerShown: false }} />
-                    <Stack.Screen name="(dev)/offline" options={{ headerShown: false }} />
-                    <Stack.Screen name="(dev)/receipt" options={{ headerShown: false }} />
-                    <Stack.Screen name="(dev)/web3-flag" options={{ headerShown: false }} />
-                    <Stack.Screen name="(dev)/vault-kit" options={{ headerShown: false }} />
-                    <Stack.Screen name="(dev)/web3-wave-a" options={{ headerShown: false }} />
-                    <Stack.Screen name="(dev)/vault-pay" options={{ headerShown: false }} />
-                    <Stack.Screen name="(dev)/vault-leave" options={{ headerShown: false }} />
-                    <Stack.Screen name="(dev)/vault-wave-c" options={{ headerShown: false }} />
-                    <Stack.Screen name="(dev)/vault-wave-d" options={{ headerShown: false }} />
-                  </Stack.Protected>
-                </Stack>
+                <RootStack route={route} />
                 {updateInfo ? <LazyUpdateRequired info={updateInfo} /> : null}
                 {showSplash ? <AnimatedSplash onComplete={() => setShowSplash(false)} /> : null}
               </BottomSheetModalProvider>

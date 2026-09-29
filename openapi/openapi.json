@@ -724,6 +724,33 @@
         ]
       }
     },
+    "/web3/eligibility": {
+      "get": {
+        "operationId": "getWeb3Eligibility",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Web3EligibilityDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Whether web3 surfaces apply to the caller",
+        "tags": [
+          "web3"
+        ]
+      }
+    },
     "/scan-credit/app-launch": {
       "post": {
         "operationId": "reportAppLaunch",
@@ -10653,6 +10680,23 @@
           "expiresIn"
         ]
       },
+      "Web3EligibilityDto": {
+        "type": "object",
+        "properties": {
+          "eligible": {
+            "type": "boolean",
+            "description": "Caller may create/enable web3 trips: server web3 is on and configured, and the request IP is not in a blocked country."
+          },
+          "hasWeb3Trip": {
+            "type": "boolean",
+            "description": "Informational only (UI copy): caller belongs to a web3 trip. Never grants web3 access; only `eligible` does."
+          }
+        },
+        "required": [
+          "eligible",
+          "hasWeb3Trip"
+        ]
+      },
       "AppLaunchDto": {
         "type": "object",
         "properties": {
@@ -11246,6 +11290,10 @@
               }
             ]
           },
+          "web3": {
+            "type": "boolean",
+            "description": "Trip uses a group wallet (fixed at creation by creator eligibility)."
+          },
           "marketplaceListingId": {
             "type": "number",
             "nullable": true
@@ -11273,6 +11321,7 @@
           "createdAt",
           "currency",
           "localCurrencies",
+          "web3",
           "marketplaceListingId",
           "userMarketplaceRating",
           "members"
@@ -11363,6 +11412,14 @@
           "isMember": {
             "type": "boolean",
             "description": "True only when the request is authenticated and that user is an ACCEPTED member of this trip. Always false for the unauthenticated web landing page."
+          },
+          "web3": {
+            "type": "boolean",
+            "description": "The trip uses a group wallet (web3)."
+          },
+          "web3Eligible": {
+            "type": "boolean",
+            "description": "The requesting IP may take part in web3 trips. When `web3` is true and this is false, joining answers 403 `web3_unavailable`."
           }
         },
         "required": [
@@ -11370,7 +11427,9 @@
           "name",
           "memberCount",
           "status",
-          "isMember"
+          "isMember",
+          "web3",
+          "web3Eligible"
         ]
       },
       "PendingTripInviteDto": {

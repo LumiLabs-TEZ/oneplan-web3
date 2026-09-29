@@ -39,7 +39,7 @@ export function useTripRealtimeEffects(
 ): void {
   const { t } = useTranslation();
   // `tripMemberRemoved` (and its leave-the-screen navigation) is web3-only: flag off = develop.
-  const web3Enabled = useWeb3Enabled();
+  const web3Enabled = useWeb3Enabled(tripId);
   const endedAt = useRealtimeStore((s) => s.lastTripEnded);
   const deletedAt = useRealtimeStore((s) => s.lastTripDeleted);
   const memberRemovedAt = useRealtimeStore((s) => s.lastTripMemberRemoved);

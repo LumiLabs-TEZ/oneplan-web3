@@ -1,6 +1,6 @@
 import { ApiMutationError } from '@/api/mutationError';
 
-import { ongoingConflictFromError } from './joinConflict';
+import { isWeb3UnavailableError, ongoingConflictFromError } from './joinConflict';
 
 /** The exact body NestJS sends from `TripsService.joinTrip`. */
 const serverBody = {
@@ -37,5 +37,19 @@ describe('ongoingConflictFromError', () => {
     expect(ongoingConflictFromError(new ApiMutationError(400, serverBody))).toBeNull();
     expect(ongoingConflictFromError(new ApiMutationError(409, null))).toBeNull();
     expect(ongoingConflictFromError(new Error('offline'))).toBeNull();
+  });
+});
+
+describe('isWeb3UnavailableError', () => {
+  const body = { code: 'web3_unavailable', message: 'Web3 features are not available here' };
+
+  it('matches the 403 a web3 trip answers to a non-eligible region', () => {
+    expect(isWeb3UnavailableError(new ApiMutationError(403, body))).toBe(true);
+  });
+
+  it('ignores other 403s, other statuses and non-API errors', () => {
+    expect(isWeb3UnavailableError(new ApiMutationError(403, { message: 'nope' }))).toBe(false);
+    expect(isWeb3UnavailableError(new ApiMutationError(409, body))).toBe(false);
+    expect(isWeb3UnavailableError(new Error('offline'))).toBe(false);
   });
 });

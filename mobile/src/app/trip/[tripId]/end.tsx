@@ -115,7 +115,7 @@ export default function TripEndScreen() {
   // breakdown — and rename the second tab to "Settlement" (`TripEndView.swift` tab label + the
   // "Trip Balance" toolbar chip). A leaving member always keeps the classic breakdown (their own
   // card travels in the `settlement` route param, same as before web3).
-  const web3Enabled = useWeb3Enabled();
+  const web3Enabled = useWeb3Enabled(tripId);
   const { hasVault } = useTripHasVault(tripId, { enabled: web3Enabled && mode !== 'leaving' });
   const usesVaultSettlement = web3Enabled && hasVault && mode !== 'leaving';
   const vaultBalance = useVaultBalance(tripId, { enabled: web3Enabled && hasVault });

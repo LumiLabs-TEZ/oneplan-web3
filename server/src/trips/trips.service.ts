@@ -44,6 +44,7 @@ import {
 import { ANALYTICS_EVENTS } from '../analytics/constants/events';
 import { MissionsService } from '../missions/missions.service';
 import { effectiveSubscriptionStatus } from '../common/subscription-status.util';
+import { web3UnavailableException } from '../web3/web3-eligible.guard';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { InviteMembersDto } from './dto/invite-members.dto';
 import { InvitePreviewDto } from './dto/invite-preview.dto';
@@ -113,7 +114,11 @@ export class TripsService {
     private readonly vaultSafety: VaultSafetyService,
   ) {}
 
-  async createTrip(userId: number, dto: CreateTripDto): Promise<TripDto> {
+  async createTrip(
+    userId: number,
+    dto: CreateTripDto,
+    web3 = false,
+  ): Promise<TripDto> {
     const inviteCode = randomBytes(32).toString('hex');
 
     // Get user's preferred currency if not specified in DTO
@@ -158,6 +163,7 @@ export class TripsService {
           localCurrencies,
           createdById: userId,
           inviteCode,
+          web3,
         },
       });
 
@@ -652,7 +658,11 @@ export class TripsService {
     );
   }
 
-  async joinTrip(inviteCode: string, userId: number): Promise<TripDto> {
+  async joinTrip(
+    inviteCode: string,
+    userId: number,
+    web3Eligible: boolean,
+  ): Promise<TripDto> {
     const trip = await this.prisma.trip.findUnique({
       where: { inviteCode },
     });
@@ -672,6 +682,10 @@ export class TripsService {
     if (existingMember?.inviteStatus === InviteStatus.ACCEPTED) {
       return this.findTripDetail(trip.id, userId);
     }
+
+    // A web3 trip is closed to non-eligible request IPs (e.g. Vietnam): no
+    // membership row is created.
+    if (trip.web3 && !web3Eligible) throw web3UnavailableException();
 
     // Prevent joining an ongoing trip if user already has one
     if (trip.status === TripStatus.ONGOING) {
@@ -761,6 +775,7 @@ export class TripsService {
   async getInvitePreview(
     inviteCode: string,
     userId?: number,
+    web3Eligible = false,
   ): Promise<InvitePreviewDto> {
     const trip = await this.prisma.trip.findUnique({
       where: { inviteCode },
@@ -769,6 +784,7 @@ export class TripsService {
         name: true,
         coverImageUrl: true,
         status: true,
+        web3: true,
         _count: {
           select: {
             members: { where: { inviteStatus: InviteStatus.ACCEPTED } },
@@ -797,6 +813,8 @@ export class TripsService {
       memberCount: trip._count.members,
       status: trip.status,
       isMember,
+      web3: trip.web3,
+      web3Eligible,
     };
   }
 
@@ -804,6 +822,7 @@ export class TripsService {
     tripId: number,
     userId: number,
     dto: RespondInviteDto,
+    web3Eligible: boolean,
   ): Promise<TripMemberDto> {
     const member = await this.prisma.tripMember.findUnique({
       where: { tripId_userId: { tripId, userId } },
@@ -815,6 +834,14 @@ export class TripsService {
 
     if (member.inviteStatus !== InviteStatus.PENDING) {
       throw new BadRequestException('Invitation has already been responded to');
+    }
+
+    if (dto.status === InviteStatus.ACCEPTED && !web3Eligible) {
+      const trip = await this.prisma.trip.findUnique({
+        where: { id: tripId },
+        select: { web3: true },
+      });
+      if (trip?.web3) throw web3UnavailableException();
     }
 
     const updated = await this.prisma.tripMember.update({
@@ -1685,6 +1712,7 @@ export class TripsService {
       currency: trip.currency,
       localCurrencies: trip.localCurrencies,
       location: this.formatLocation(trip.city, trip.state, trip.country),
+      web3: trip.web3,
       marketplaceListingId: trip.marketplaceListingId,
       userMarketplaceRating,
       members: await Promise.all(trip.members.map((m) => this.formatMember(m))),

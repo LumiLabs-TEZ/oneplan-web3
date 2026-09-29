@@ -254,6 +254,9 @@ model Trip {
   createdAt            DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   marketplaceListingId Int?                @map("marketplace_listing_id")
+  // Fixed at creation: true only if the creator was web3-eligible (non-VN IP,
+  // server web3 on). Members of a web3 trip use the vault whatever their IP.
+  web3                 Boolean             @default(false) @map("web3")
   marketplaceListing   MarketplaceListing? @relation(fields: [marketplaceListingId], references: [id], onDelete: SetNull)
   budgets              Budget[]
   chatMessages         ChatMessage[]

@@ -7,8 +7,9 @@ import { Button } from '@/ui/components/Button';
 import { colors, spacing } from '@/ui/theme';
 
 /**
- * Dev-only override for the web3 vault/wallet feature flag (`useWeb3Enabled`). Prod always
- * resolves OFF regardless of what is persisted here — see `resolveWeb3Enabled`.
+ * Dev-only kill switch for the web3 vault/wallet UI (`useWeb3Enabled`). It can only turn web3 OFF;
+ * ON is decided by the server (`GET /web3/eligibility`). Prod always resolves OFF — see
+ * `resolveWeb3Enabled`.
  * Open with `dev.lumilabs.oneplan:///web3-flag`.
  */
 export default function DevWeb3FlagScreen() {
@@ -18,11 +19,10 @@ export default function DevWeb3FlagScreen() {
   return (
     <SafeAreaView style={styles.screen} testID="dev-web3-flag-screen">
       <View style={styles.content}>
-        <Text style={styles.title}>Web3 vault flag</Text>
+        <Text style={styles.title}>Web3 vault flag (OFF-only override)</Text>
         <Text style={styles.status}>
           override: {String(override)} · resolved: {String(enabled)}
         </Text>
-        <Button title="Force ON" testID="dev-web3-flag-on" onPress={() => setOverride(true)} />
         <Button
           title="Force OFF"
           variant="secondary"

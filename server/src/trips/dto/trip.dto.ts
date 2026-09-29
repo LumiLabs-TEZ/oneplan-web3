@@ -70,6 +70,12 @@ export class TripDto {
   @ApiPropertyOptional({ type: TripLocationDto })
   location: TripLocationDto | null;
 
+  @ApiProperty({
+    description:
+      'Trip uses a group wallet (fixed at creation by creator eligibility).',
+  })
+  web3: boolean;
+
   @ApiProperty({ nullable: true, type: Number })
   marketplaceListingId: number | null;
 

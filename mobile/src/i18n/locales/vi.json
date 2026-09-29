@@ -1222,6 +1222,7 @@
   "This trip already has budgets or expenses. Delete them before changing currency.": "Chuyến đi này đã có ngân sách hoặc chi phí. Hãy xóa chúng trước khi đổi tiền tệ.",
   "This trip does not have a group wallet yet.": "Chuyến đi này chưa có ví nhóm.",
   "This trip has been deleted by the owner.": "Chuyến đi này đã bị chủ nhóm xóa.",
+  "This trip uses a group wallet, which isn't available in your region.": "Chuyến đi này dùng ví nhóm, hiện chưa khả dụng ở khu vực của bạn.",
   "This will delete every plan in this day.": "Thao tác này sẽ xóa mọi kế hoạch trong ngày này.",
   "This will end the trip for all members. This action cannot be undone.": "Thao tác này sẽ kết thúc chuyến đi với mọi thành viên. Không thể hoàn tác.",
   "This will permanently delete the trip for all members. This action cannot be undone.": "Thao tác này sẽ xóa vĩnh viễn chuyến đi với mọi thành viên. Không thể hoàn tác.",

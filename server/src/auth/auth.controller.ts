@@ -26,6 +26,7 @@ import {
 import { AuthProvider } from '@prisma/client';
 import { Throttle } from '@nestjs/throttler';
 import { Web3EnabledGuard } from '../solana/web3-enabled.guard';
+import { Web3EligibleGuard } from '../web3/web3-eligible.guard';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { Public } from './decorators/public.decorator';
@@ -65,7 +66,7 @@ export class AuthController {
 
   // 404 unless WEB3_ENABLED: prod stays dark whatever WALLET_JWT_* holds.
   @Get('wallet-token')
-  @UseGuards(Web3EnabledGuard)
+  @UseGuards(Web3EnabledGuard, Web3EligibleGuard)
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Short-lived token the app exchanges for a wallet session',

@@ -31,6 +31,12 @@ export const solanaConfigSchema = {
   SOLANA_RECEIVER_SECRET_KEY: Joi.string().allow('').default(''),
   /** Owner of the USDC ATA that receives the 0.1% deposit skim. Empty = fee payer. */
   SOLANA_TREASURY_OWNER: Joi.string().allow('').default(''),
+  /** Local dev only: country assumed for loopback/private IPs (else not eligible). */
+  WEB3_DEV_COUNTRY_OVERRIDE: Joi.string()
+    .length(2)
+    .uppercase()
+    .allow('')
+    .default(''),
   MOCK_PAYOUT_OUTCOME: Joi.string()
     .valid('success', 'failed', 'timeout', 'unknown')
     .default('success'),

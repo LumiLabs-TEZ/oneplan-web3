@@ -17,6 +17,7 @@ import {
 import { VaultTxSource } from '@prisma/client';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Web3EnabledGuard } from '../solana/web3-enabled.guard';
+import { Web3TripGuard } from '../web3/web3-trip.guard';
 import {
   DEFAULT_DAILY_LIMIT_MICRO,
   DEFAULT_THRESHOLD_MICRO,
@@ -51,7 +52,7 @@ import { UpdateVaultSpendDto } from './dto/update-vault-spend.dto';
 
 @ApiTags('trip-vault')
 @ApiBearerAuth()
-@UseGuards(Web3EnabledGuard)
+@UseGuards(Web3EnabledGuard, Web3TripGuard)
 @ApiParam({ name: 'tripId', type: 'integer' })
 @Controller('trips/:tripId/vault')
 export class TripVaultController {

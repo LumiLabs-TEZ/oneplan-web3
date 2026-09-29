@@ -10,8 +10,10 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { FastifyRequest } from 'fastify';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -26,6 +28,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Web3EligibilityService } from '../web3/web3-eligibility.service';
+import { Web3EligibleGuard } from '../web3/web3-eligible.guard';
 import { Web3EnabledGuard } from '../solana/web3-enabled.guard';
 import { TripEndConsensusService } from './trip-end-consensus.service';
 import { TripsService } from './trips.service';
@@ -62,6 +66,7 @@ export class TripsController {
   constructor(
     private readonly tripsService: TripsService,
     private readonly tripEndConsensus: TripEndConsensusService,
+    private readonly web3Eligibility: Web3EligibilityService,
   ) {}
 
   @Post()
@@ -70,8 +75,14 @@ export class TripsController {
   createTrip(
     @CurrentUser('sub') userId: number,
     @Body() dto: CreateTripDto,
+    @Req() req: FastifyRequest,
   ): Promise<TripDto> {
-    return this.tripsService.createTrip(userId, dto);
+    // No opt-in in the create flow: an eligible creator's trip is a web3 trip.
+    return this.tripsService.createTrip(
+      userId,
+      dto,
+      this.web3Eligibility.isEligible(req.ip),
+    );
   }
 
   @Get()
@@ -99,8 +110,13 @@ export class TripsController {
   joinTrip(
     @CurrentUser('sub') userId: number,
     @Param('inviteCode') inviteCode: string,
+    @Req() req: FastifyRequest,
   ): Promise<TripDto> {
-    return this.tripsService.joinTrip(inviteCode, userId);
+    return this.tripsService.joinTrip(
+      inviteCode,
+      userId,
+      this.web3Eligibility.isEligible(req.ip),
+    );
   }
 
   @Get('join/:inviteCode/preview')
@@ -114,8 +130,13 @@ export class TripsController {
   getInvitePreview(
     @CurrentUser('sub') userId: number,
     @Param('inviteCode') inviteCode: string,
+    @Req() req: FastifyRequest,
   ): Promise<InvitePreviewDto> {
-    return this.tripsService.getInvitePreview(inviteCode, userId);
+    return this.tripsService.getInvitePreview(
+      inviteCode,
+      userId,
+      this.web3Eligibility.isEligible(req.ip),
+    );
   }
 
   @Get('invites/pending')
@@ -146,7 +167,7 @@ export class TripsController {
   }
 
   @Post(':id/members/:userId/vault-leave-clear')
-  @UseGuards(Web3EnabledGuard)
+  @UseGuards(Web3EnabledGuard, Web3EligibleGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     operationId: 'clearVaultLeave',
@@ -165,7 +186,7 @@ export class TripsController {
   }
 
   @Post(':id/vault-leave/announce')
-  @UseGuards(Web3EnabledGuard)
+  @UseGuards(Web3EnabledGuard, Web3EligibleGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     operationId: 'announceVaultLeave',
@@ -181,7 +202,7 @@ export class TripsController {
   }
 
   @Get(':id/vault-leave/requests')
-  @UseGuards(Web3EnabledGuard)
+  @UseGuards(Web3EnabledGuard, Web3EligibleGuard)
   @ApiOperation({
     operationId: 'listVaultLeaveRequests',
     summary: 'Host: pending vault leave announcements',
@@ -196,7 +217,7 @@ export class TripsController {
   }
 
   @Post(':id/vault-leave/requests/:userId/confirm')
-  @UseGuards(Web3EnabledGuard)
+  @UseGuards(Web3EnabledGuard, Web3EligibleGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     operationId: 'confirmVaultLeave',
@@ -215,7 +236,7 @@ export class TripsController {
   }
 
   @Post(':id/end-request')
-  @UseGuards(Web3EnabledGuard)
+  @UseGuards(Web3EnabledGuard, Web3EligibleGuard)
   @ApiOperation({
     operationId: 'requestTripEnd',
     summary:
@@ -233,7 +254,7 @@ export class TripsController {
   }
 
   @Get(':id/end-request')
-  @UseGuards(Web3EnabledGuard)
+  @UseGuards(Web3EnabledGuard, Web3EligibleGuard)
   @ApiOperation({
     operationId: 'getTripEndRequest',
     summary: 'Current end-trip consensus request and vote summary',
@@ -249,7 +270,7 @@ export class TripsController {
   }
 
   @Get(':id/end-request/review')
-  @UseGuards(Web3EnabledGuard)
+  @UseGuards(Web3EnabledGuard, Web3EligibleGuard)
   @ApiOperation({
     operationId: 'getTripEndReview',
     summary: 'Ledger + settlement preview for end-trip Approve/Deny',
@@ -264,7 +285,7 @@ export class TripsController {
   }
 
   @Post(':id/end-request/vote')
-  @UseGuards(Web3EnabledGuard)
+  @UseGuards(Web3EnabledGuard, Web3EligibleGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     operationId: 'castTripEndVote',
@@ -350,8 +371,14 @@ export class TripsController {
     @CurrentUser('sub') userId: number,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: RespondInviteDto,
+    @Req() req: FastifyRequest,
   ): Promise<TripMemberDto> {
-    return this.tripsService.respondToInvite(id, userId, dto);
+    return this.tripsService.respondToInvite(
+      id,
+      userId,
+      dto,
+      this.web3Eligibility.isEligible(req.ip),
+    );
   }
 
   @Patch(':id/members/:userId/role')

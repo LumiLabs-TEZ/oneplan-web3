@@ -61,7 +61,7 @@ export function MembersSection({
 }: MembersSectionProps) {
   const { t } = useTranslation();
   useAppLanguage();
-  const web3Enabled = useWeb3Enabled();
+  const web3Enabled = useWeb3Enabled(tripId);
   const friendsQuery = useFriends();
   const currentUserIsPro = useIsPro();
   const hostSheetRef = useRef<VaultLeaveHostSheetRef>(null);

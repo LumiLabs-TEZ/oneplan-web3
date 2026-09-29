@@ -345,6 +345,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/web3/eligibility": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Whether web3 surfaces apply to the caller */
+        get: operations["getWeb3Eligibility"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scan-credit/app-launch": {
         parameters: {
             query?: never;
@@ -3543,6 +3560,12 @@ export interface components {
             /** @description Seconds until URL expires */
             expiresIn: number;
         };
+        Web3EligibilityDto: {
+            /** @description Caller may create/enable web3 trips: server web3 is on and configured, and the request IP is not in a blocked country. */
+            eligible: boolean;
+            /** @description Informational only (UI copy): caller belongs to a web3 trip. Never grants web3 access; only `eligible` does. */
+            hasWeb3Trip: boolean;
+        };
         AppLaunchDto: {
             /**
              * @description The running app version (CFBundleShortVersionString).
@@ -3718,6 +3741,8 @@ export interface components {
             /** @description Additional local currencies used on the trip. */
             localCurrencies: components["schemas"]["Currency"][];
             location?: components["schemas"]["TripLocationDto"] | null;
+            /** @description Trip uses a group wallet (fixed at creation by creator eligibility). */
+            web3: boolean;
             marketplaceListingId: number | null;
             userMarketplaceRating: number | null;
             members: components["schemas"]["TripMemberDto"][];
@@ -3744,6 +3769,10 @@ export interface components {
             status: components["schemas"]["TripStatus"];
             /** @description True only when the request is authenticated and that user is an ACCEPTED member of this trip. Always false for the unauthenticated web landing page. */
             isMember: boolean;
+            /** @description The trip uses a group wallet (web3). */
+            web3: boolean;
+            /** @description The requesting IP may take part in web3 trips. When `web3` is true and this is false, joining answers 403 `web3_unavailable`. */
+            web3Eligible: boolean;
         };
         PendingTripInviteDto: {
             inviteCode: string;
@@ -6980,6 +7009,25 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DownloadUrlDto"];
+                };
+            };
+        };
+    };
+    getWeb3Eligibility: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Web3EligibilityDto"];
                 };
             };
         };

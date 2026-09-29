@@ -94,7 +94,7 @@ export function TripMenuController({
   const deleteTrip = useDeleteTrip();
   // Batched below in `applyDates`, which invalidates once after the loop.
   const deletePlanItem = useDeletePlanItem(tripId, { skipInvalidate: true });
-  const web3Enabled = useWeb3Enabled();
+  const web3Enabled = useWeb3Enabled(tripId);
   const hasVault = useTripHasVault(tripId, { enabled: web3Enabled });
   const requestTripEnd = useRequestTripEnd(tripId);
 

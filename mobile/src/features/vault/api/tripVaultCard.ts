@@ -20,7 +20,7 @@ export function useTripVaultCard(
   tripId: number,
   homeCurrencyCode: string,
 ): { hasVaultCard: boolean; balanceInHomeCurrency: number } {
-  const web3Enabled = useWeb3Enabled();
+  const web3Enabled = useWeb3Enabled(tripId);
   const vaultBalance = useVaultBalance(tripId, { enabled: web3Enabled });
   const hasVaultCard = web3Enabled && vaultBalance.isSuccess;
   const balanceUsdc = hasVaultCard

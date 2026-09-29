@@ -957,7 +957,7 @@ describe('TripsService', () => {
       prisma.user.findUnique.mockResolvedValue({ displayName: 'Test User' });
       prisma.trip.findUniqueOrThrow.mockResolvedValue(mockTripWithIncludes);
 
-      const result = await service.joinTrip('abc123', 2);
+      const result = await service.joinTrip('abc123', 2, true);
 
       expect(prisma.trip.findUnique).toHaveBeenCalledWith({
         where: { inviteCode: 'abc123' },
@@ -998,7 +998,7 @@ describe('TripsService', () => {
       prisma.user.findUnique.mockResolvedValue({ displayName: 'Test User' });
       prisma.trip.findUniqueOrThrow.mockResolvedValue(mockTripWithIncludes);
 
-      await service.joinTrip('abc123', 2);
+      await service.joinTrip('abc123', 2, true);
 
       expect(prisma.tripMember.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1016,7 +1016,7 @@ describe('TripsService', () => {
       prisma.tripMember.findUnique.mockResolvedValue(mockMember); // ACCEPTED
       prisma.trip.findUniqueOrThrow.mockResolvedValue(mockTripWithIncludes);
 
-      const result = await service.joinTrip('abc123', 2);
+      const result = await service.joinTrip('abc123', 2, true);
 
       expect(prisma.tripMember.upsert).not.toHaveBeenCalled();
       expect(activityService.log).not.toHaveBeenCalled();
@@ -1034,7 +1034,7 @@ describe('TripsService', () => {
         name: 'Existing Ongoing Trip',
       });
 
-      await expect(service.joinTrip('abc123', 2)).rejects.toThrow(
+      await expect(service.joinTrip('abc123', 2, true)).rejects.toThrow(
         HttpException,
       );
       expect(prisma.tripMember.upsert).not.toHaveBeenCalled();
@@ -1048,7 +1048,7 @@ describe('TripsService', () => {
       prisma.tripMember.findUnique.mockResolvedValue(mockMember); // ACCEPTED
       prisma.trip.findUniqueOrThrow.mockResolvedValue(mockTripWithIncludes);
 
-      const result = await service.joinTrip('abc123', 2);
+      const result = await service.joinTrip('abc123', 2, true);
 
       expect(prisma.trip.findFirst).not.toHaveBeenCalled();
       expect(result.id).toBe(1);
@@ -1057,7 +1057,7 @@ describe('TripsService', () => {
     it('should throw NotFoundException for invalid invite code', async () => {
       prisma.trip.findUnique.mockResolvedValue(null);
 
-      await expect(service.joinTrip('invalid', 1)).rejects.toThrow(
+      await expect(service.joinTrip('invalid', 1, true)).rejects.toThrow(
         NotFoundException,
       );
     });
@@ -1070,6 +1070,7 @@ describe('TripsService', () => {
         name: 'Trip to Dubai',
         coverImageUrl: 'trip-covers/abc123',
         status: 'PLANNING',
+        web3: true,
         _count: { members: 4 },
       });
 
@@ -1082,6 +1083,7 @@ describe('TripsService', () => {
           name: true,
           coverImageUrl: true,
           status: true,
+          web3: true,
           _count: {
             select: {
               members: { where: { inviteStatus: InviteStatus.ACCEPTED } },
@@ -1099,6 +1101,8 @@ describe('TripsService', () => {
         memberCount: 4,
         status: 'PLANNING',
         isMember: false,
+        web3: true,
+        web3Eligible: false,
       });
     });
 
@@ -1116,6 +1120,7 @@ describe('TripsService', () => {
         name: 'Trip to Da Lat',
         coverImageUrl: null,
         status: 'PLANNING',
+        web3: false,
         _count: { members: 2 },
       });
 
@@ -1129,6 +1134,8 @@ describe('TripsService', () => {
         memberCount: 2,
         status: 'PLANNING',
         isMember: false,
+        web3: false,
+        web3Eligible: false,
       });
     });
 
@@ -1251,7 +1258,7 @@ describe('TripsService', () => {
       prisma.tripMember.findUnique.mockResolvedValue(mockMember); // ACCEPTED
 
       await expect(
-        service.respondToInvite(1, 1, { status: 'ACCEPTED' }),
+        service.respondToInvite(1, 1, { status: 'ACCEPTED' }, true),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -1259,7 +1266,7 @@ describe('TripsService', () => {
       prisma.tripMember.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.respondToInvite(1, 99, { status: 'ACCEPTED' }),
+        service.respondToInvite(1, 99, { status: 'ACCEPTED' }, true),
       ).rejects.toThrow(NotFoundException);
     });
 

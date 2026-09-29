@@ -1,10 +1,18 @@
 import { PrivyProvider } from '@privy-io/expo';
-import { render, screen } from '@testing-library/react-native';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render as rtlRender, screen } from '@testing-library/react-native';
+import type { ReactElement } from 'react';
 import { Text } from 'react-native';
 
 import { useWeb3FlagStore } from '../web3Flag';
 import { PrivyVaultProvider } from './PrivyVaultProvider';
 import { _resetWalletHandleForTests, isVaultWalletConfigured } from './walletHandle';
+
+// The provider reads server eligibility through react-query, as it does under the real root layout.
+function render(ui: ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 const mockedPrivyProvider = jest.mocked(PrivyProvider);
 

@@ -49,6 +49,7 @@ import { adminConfig } from './config/admin.config';
 import { solanaConfigSchema } from './solana/solana.config';
 import { SolanaModule } from './solana/solana.module';
 import { TripVaultModule } from './trip-vault/trip-vault.module';
+import { Web3Module } from './web3/web3.module';
 
 @Module({
   imports: [
@@ -344,6 +345,7 @@ import { TripVaultModule } from './trip-vault/trip-vault.module';
     DeletedUsersModule,
     SolanaModule,
     TripVaultModule,
+    Web3Module,
     FareWatchModule,
     TractionModule,
   ],

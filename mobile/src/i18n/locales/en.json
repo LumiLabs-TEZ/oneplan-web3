@@ -1222,6 +1222,7 @@
   "This trip already has budgets or expenses. Delete them before changing currency.": "This trip already has budgets or expenses. Delete them before changing currency.",
   "This trip does not have a group wallet yet.": "This trip does not have a group wallet yet.",
   "This trip has been deleted by the owner.": "This trip has been deleted by the owner.",
+  "This trip uses a group wallet, which isn't available in your region.": "This trip uses a group wallet, which isn't available in your region.",
   "This will delete every plan in this day.": "This will delete every plan in this day.",
   "This will end the trip for all members. This action cannot be undone.": "This will end the trip for all members. This action cannot be undone.",
   "This will permanently delete the trip for all members. This action cannot be undone.": "This will permanently delete the trip for all members. This action cannot be undone.",

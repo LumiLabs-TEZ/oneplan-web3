@@ -73,6 +73,8 @@ export const keys = {
   health: ['health', 'live'] as const,
   missions: ['missions'] as const,
   exchangeRate: (from: string, to: string) => ['exchange-rate', from, to] as const,
+  /** Server-decided web3 eligibility of this device's IP + web3-trip membership. */
+  web3Eligibility: ['web3', 'eligibility'] as const,
   vault: {
     balance: (tripId: number) => ['vault', tripId, 'balance'] as const,
     myWallet: (tripId: number) => ['vault', tripId, 'my-wallet'] as const,
