@@ -1,85 +1,114 @@
-# OnePlan — group trips with a shared on-chain wallet
+# OnePlan — group trips with a shared Solana USDC vault
 
-Group trip planning (itinerary, expenses, bill splitting, chat) plus a **Solana USDC group vault**: members fund a shared wallet, pay merchants via VietQR, approve large spends, and settle at trip end.
+OnePlan is a group trip planner (itinerary, expenses, bill splitting, chat) with a **Solana USDC group vault**. Trip members fund a shared on-chain wallet, pay merchants by scanning a local QR code (VietQR), approve large spends together, and settle what is left when the trip ends. Merchant payments are off-ramped to local fiat (VND) through a payout provider.
+
+> Hackathon submission (Solana Mobile). This repo is a snapshot of the web3 work; the full product also has a marketplace, board and subscription side that is out of scope here.
+
+## Architecture
 
 ```
-ios/      SwiftUI app (iOS 17.2+, Xcode 16+)
-server/   NestJS + Fastify + Prisma + PostgreSQL API
-solana/   Anchor program `oneplan-vault`
+ Expo / React Native app (mobile/)
+   │  Privy embedded wallet (Solana)
+   │  REST + JWT
+   ▼
+ NestJS API (server/) ──── PostgreSQL (Prisma)
+   │   trip-vault: vault sync, pay, settlement, reconcile crons
+   │   payout:     VietQR parsing + payout provider (mock)
+   │  @solana/web3.js, server fee payer
+   ▼
+ Anchor program oneplan-vault (solana/) on Solana devnet
+   USDC vault per trip · member roles · spend / propose / approve · settlement
 ```
 
-## Backend
+## Repo layout
 
-```bash
-cd server
-pnpm install
-pnpm db:up                  # PostgreSQL in Docker on localhost:5433
-cp .env.example .env        # create your own — see variables below
-pnpm prisma:migrate:dev
-pnpm start:dev              # http://localhost:3000 — Swagger at /docs
-pnpm test
+```
+solana/    Anchor program `oneplan-vault` (Rust) + tests
+server/    NestJS + Fastify + Prisma API
+mobile/    Expo SDK 57 React Native app (iOS + Android)
+openapi/   Generated OpenAPI spec used by mobile (`pnpm api:gen`)
 ```
 
-Minimum env vars to boot: `PORT`, `DATABASE_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET` (≥32 chars each), `APPLE_CLIENT_ID`, `GOOGLE_CLIENT_ID`, `GCS_MEDIA_BUCKET`, `GCS_PUBLIC_BUCKET`, `STORAGE_SA_KEY_FILE`. The Joi config schema (`src/config/`) lists everything else.
+## Where the off-ramp payment logic lives
 
-Web3 vault vars:
-
-| Var | Purpose |
+| Piece | Location |
 |---|---|
-| `SOLANA_RPC_URL` | `https://api.devnet.solana.com` |
-| `SOLANA_PROGRAM_ID` | `8pjmDZvmRzjcSwzffqnsdzsPRb3nV9BiVDhGU3vmR7uD` (devnet) |
-| `SOLANA_USDC_MINT` | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` (devnet USDC) |
-| `SOLANA_COMMITMENT` | `confirmed` |
-| `SOLANA_FEE_PAYER_SECRET_KEY` | base58 key of the server fee payer; empty disables vault endpoints |
-| `SOLANA_RECEIVER_SECRET_KEY` | mock merchant receiver (phase 1) |
-| `MOCK_PAYOUT_OUTCOME` | `success \| failed \| timeout \| unknown` |
-| `WALLET_JWT_PRIVATE_KEY_FILE` | PEM used to sign embedded-wallet JWTs |
+| QR parsing (VietQR / EMVCo) | `server/src/payout/vietqr.ts` |
+| Payout provider interface + mock | `server/src/payout/` |
+| Pay-a-merchant flow, claim/idempotency, failure codes | `server/src/trip-vault/trip-vault-pay.service.ts`, `payout-claim.ts`, `vault-failure-codes.ts` |
+| Reconcile of unknown / timed-out payouts | `server/src/trip-vault/trip-vault-reconcile.service.ts` |
+| Settlement at trip end | `server/src/trip-vault/trip-vault-settlement.service.ts`, `settlement-math.ts` |
+| On-chain instructions | `solana/programs/oneplan-vault/src/` — `spend`, `revert_spend`, `propose_spend`, `approve_spend`, `cancel_spend`, `execute_settlement`, `payout_leave` |
 
-`scripts/setup-solana-devnet.mjs` generates a fee-payer keypair and airdrops devnet SOL.
+Flow: the app scans a QR → the server validates it and creates a payout claim → the program's `spend` moves USDC from the trip vault to the treasury (large amounts go through `propose_spend` / `approve_spend` first) → the payout provider pays the merchant in VND → on failure the server calls `revert_spend` so the funds return to the vault.
 
-## iOS
+## Build and run
 
-Open `ios/OnePlan/OnePlan.xcodeproj`, select the `OnePlan` scheme, build for a simulator. The API client is generated at build time by the swift-openapi-generator plugin from `OnePlan/OpenAPI/openapi.json`.
+### Program (`solana/`)
 
-`GoogleService-Info.plist` is not included — add your own Firebase/Google config to enable Google Sign-In; Apple Sign-In and email work without it.
-
-## Solana program
+Requires Rust (see `rust-toolchain.toml`) and the Anchor CLI.
 
 ```bash
 cd solana
 anchor build
-cargo test            # unit + attack/invariant tests in programs/oneplan-vault/tests
+cargo test
 ```
 
-Deployed on devnet at `8pjmDZvmRzjcSwzffqnsdzsPRb3nV9BiVDhGU3vmR7uD`. The IDL and TS types are committed under `server/src/solana/idl/` and `server/src/solana/types/` (`server/scripts/sync-idl.sh` refreshes them after a build).
+Devnet program id: `HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL`
 
-### Vault design
+### Server (`server/`)
 
-One `TripVault` PDA + its USDC ATA per trip — no per-member or per-proposal accounts.
+```bash
+cd server
+pnpm install
+pnpm prisma:generate        # if the postinstall step was skipped
+pnpm db:up                  # PostgreSQL in Docker on localhost:5433
+cp .env.example .env        # fill in values
+pnpm prisma:migrate:dev
+pnpm start:dev              # http://localhost:3000, Swagger at /docs
+pnpm build
+npx jest --testPathPatterns='solana|trip-vault|payout'
+```
 
-| Role | On-chain |
+Minimum env vars to boot: `PORT`, `DATABASE_URL`, `JWT_SECRET`, `JWT_REFRESH_SECRET` (≥32 chars each), `APPLE_CLIENT_ID`, `GOOGLE_CLIENT_ID`, `GCS_MEDIA_BUCKET`, `GCS_PUBLIC_BUCKET`, `STORAGE_SA_KEY_FILE`. The Joi schema in `src/config/` lists everything.
+
+Web3 vars:
+
+| Var | Purpose |
 |---|---|
-| HOST | `authority` (trip creator); approver |
-| CO_HOST | approver bit |
-| MEMBER | deposit / spend; approves only when no HOST+CO_HOST pair exists |
+| `WEB3_ENABLED` | Master switch for vault endpoints, crons and vault sync on join (default `false`) |
+| `SOLANA_RPC_URL` | `https://api.devnet.solana.com` |
+| `SOLANA_PROGRAM_ID` | `HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL` (devnet) |
+| `SOLANA_USDC_MINT` | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` (devnet USDC) |
+| `SOLANA_COMMITMENT` | `confirmed` |
+| `SOLANA_FEE_PAYER_SECRET_KEY` | base58 key of the server fee payer; generate your own and fund it with devnet SOL |
+| `SOLANA_RECEIVER_SECRET_KEY` | mock merchant receiver |
+| `SOLANA_TREASURY_OWNER` | treasury owner pubkey |
+| `MOCK_PAYOUT_OUTCOME` | `success \| failed \| timeout \| unknown` |
+| `WALLET_JWT_PRIVATE_KEY_FILE` | PEM used to sign embedded-wallet JWTs |
 
-| Action | On-chain |
-|---|---|
-| Enable group wallet / first deposit | `init_vault` + seed members + deposit (0.1% fee → treasury) |
-| Pay ≤ threshold | `spend` within daily limit |
-| Pay > threshold | `active_spend` proposal → second approval → transfer |
-| End trip | settlement → `Settling` → 2 approvals → payouts → `Closed` |
-| Member leaves mid-trip | `payout_leave` refund |
-| After close | server `close_vault` reclaims rent |
+No keys are committed to this repo.
 
-Users never hold SOL; the server pays rent and tx fees.
+### Mobile (`mobile/`)
 
-### Mocked in this build
+```bash
+cd mobile
+pnpm install
+cp .env.example .env
+pnpm typecheck
+CI=1 npx jest --watchman=false features/vault
+npx expo run:ios   # or run:android — needs an Expo dev client, not Expo Go
+```
 
-| What | Now | Where |
-|---|---|---|
-| QR scan | photo library | `VaultScanQRView.swift` |
-| Merchant payout | always SUCCESS | `mock-payout.provider.ts` |
-| FX | `VND_PER_USDC = 26_500` | `mock-payout.provider.ts` |
-| Quote fee | `FEE_BPS = 75` | `mock-payout.provider.ts` |
-| Approval threshold | 3 USDC | `trips.service.ts` |
+`APP_VARIANT=local|dev|prod` selects bundle id and default API URL; override the backend with `API_URL` (for example your local server). App code reads env only through `src/lib/env.ts`. Android push needs a Firebase `google-services.json`, which is not in this repo: set `GOOGLE_SERVICES_JSON=/path/to/file` to enable it; the app builds without it.
+
+## Honest status
+
+- **Devnet only.** Nothing here has been deployed to mainnet.
+- **The payout provider is a mock** (`MOCK_PAYOUT_OUTCOME`); no real fiat leaves the system.
+- **Program hardening is in progress.** An internal security review is under way and fixes will land before any mainnet use. Do not put real funds in this program.
+- Web3 features are gated server-side; the default configuration has them off (`WEB3_ENABLED=false`). When enabled, eligibility is decided per request by the server (region-based), and each trip is fixed as web3 or classic at creation.
+
+## License
+
+TODO: license (operator to choose)
