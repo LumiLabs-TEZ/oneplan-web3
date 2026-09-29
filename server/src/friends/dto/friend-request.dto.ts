@@ -12,6 +12,9 @@ export class FriendRequestSenderDto {
 
   @ApiProperty({ description: 'Whether user has active Pro subscription' })
   isPro: boolean;
+
+  @ApiProperty({ description: 'Sender account creation date (ISO 8601)' })
+  memberSince: string;
 }
 
 export class FriendRequestDto {

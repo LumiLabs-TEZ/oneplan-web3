@@ -149,7 +149,8 @@ export class SubscriptionController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     operationId: 'handlePlaySubscriptionWebhook',
-    summary: 'Handle Google Play Real-Time Developer Notifications (RTDN) via Pub/Sub',
+    summary:
+      'Handle Google Play Real-Time Developer Notifications (RTDN) via Pub/Sub',
   })
   @ApiOkResponse({ description: 'Webhook processed successfully' })
   async handlePlayWebhook(

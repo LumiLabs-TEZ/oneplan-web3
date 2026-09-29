@@ -31,6 +31,9 @@ describe('TripRequestsService', () => {
     tag: ListingTag.FRIENDS,
     budget: null,
     currency: 'VND',
+    participantCount: null,
+    dayCount: null,
+    description: null,
     status: TripRequestStatus.OPEN,
     createdAt: new Date('2026-06-11T00:00:00Z'),
     updatedAt: new Date('2026-06-11T00:00:00Z'),
@@ -94,6 +97,62 @@ describe('TripRequestsService', () => {
       expect(analytics.track).toHaveBeenCalledWith(
         'TRIP_REQUEST_CREATED',
         expect.objectContaining({ userId: 7 }),
+      );
+    });
+
+    it('persists participants, days and trimmed description and tracks them', async () => {
+      prisma.tripRequest.findFirst.mockResolvedValue(null);
+      prisma.tripRequest.create.mockResolvedValue({
+        ...baseEntity,
+        participantCount: 4,
+        dayCount: 5,
+        description: 'Beach trip with friends',
+      });
+
+      const result = await service.create(7, {
+        ...dto,
+        participantCount: 4,
+        dayCount: 5,
+        description: '  Beach trip with friends  ',
+      });
+
+      expect(prisma.tripRequest.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          data: expect.objectContaining({
+            participantCount: 4,
+            dayCount: 5,
+            description: 'Beach trip with friends',
+          }),
+        }),
+      );
+      expect(result.participantCount).toBe(4);
+      expect(result.dayCount).toBe(5);
+      expect(result.description).toBe('Beach trip with friends');
+      expect(analytics.track).toHaveBeenCalledWith(
+        'TRIP_REQUEST_CREATED',
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          properties: expect.objectContaining({
+            participantCount: 4,
+            dayCount: 5,
+            hasDescription: true,
+          }),
+        }),
+      );
+    });
+
+    it('stores null instead of an empty/whitespace description', async () => {
+      prisma.tripRequest.findFirst.mockResolvedValue(null);
+      prisma.tripRequest.create.mockResolvedValue(baseEntity);
+
+      await service.create(7, { ...dto, description: '   ' });
+
+      expect(prisma.tripRequest.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          data: expect.objectContaining({ description: undefined }),
+        }),
       );
     });
 

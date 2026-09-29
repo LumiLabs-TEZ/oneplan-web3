@@ -7,13 +7,7 @@ import {
   UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import {
-  AuthProvider,
-  InviteStatus,
-  Prisma,
-  TripStatus,
-  SubscriptionStatus,
-} from '@prisma/client';
+import { AuthProvider, InviteStatus, Prisma, TripStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
@@ -39,6 +33,8 @@ import { AnalyticsService } from '../analytics/analytics.service';
 import { ANALYTICS_EVENTS } from '../analytics/constants/events';
 import { ScanCreditService } from '../scan-credit/scan-credit.service';
 import { DeletedUsersService } from '../deleted-users/deleted-users.service';
+import { isEntitledToPro } from '../common/subscription-status.util';
+import { VaultSafetyService } from '../solana/vault-safety.service';
 
 const BCRYPT_SALT_ROUNDS = 12;
 
@@ -56,6 +52,7 @@ export class AuthService {
     private readonly analytics: AnalyticsService,
     private readonly scanCredit: ScanCreditService,
     private readonly deletedUsers: DeletedUsersService,
+    private readonly vaultSafety: VaultSafetyService,
   ) {}
 
   private isAdminEmail(email: string): boolean {
@@ -550,7 +547,7 @@ export class AuthService {
       createdAt: user.createdAt.toISOString(),
       friendCode: user.friendCode ?? null,
       providers: user.authAccounts.map((a) => a.provider),
-      isPro: this.isUserPro(user.subscriptionStatus),
+      isPro: isEntitledToPro(user),
       preferredCurrency: user.preferredCurrency,
       isAdmin: this.isAdminEmail(user.email),
       locale: user.locale,
@@ -611,14 +608,6 @@ export class AuthService {
     } catch {
       return null;
     }
-  }
-
-  private isUserPro(status: SubscriptionStatus | null): boolean {
-    const proStatuses: SubscriptionStatus[] = [
-      SubscriptionStatus.ACTIVE,
-      SubscriptionStatus.GRACE_PERIOD,
-    ];
-    return status !== null && proStatuses.includes(status);
   }
 
   async getPassportSummary(
@@ -726,6 +715,10 @@ export class AuthService {
   }
 
   async deleteAccount(userId: number): Promise<void> {
+    // Before anything is archived or deleted: owned trips cascade their vaults
+    // and deposits made into other people's vaults would lose their owner.
+    await this.vaultSafety.assertAccountDeletable(userId);
+
     const { photoUrls, listingCovers } = await this.prisma.$transaction(
       async (tx) => {
         // 0. Snapshot everything about this user into the retention archive

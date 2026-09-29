@@ -139,6 +139,54 @@ describe('GooglePlaySubscriptionVerifierService', () => {
     expect(result.revoked).toBe(true);
   });
 
+  // Regression guard: the Play Billing Library (client-supplied dto.orderId)
+  // reports the BASE order id without the "..N" renewal suffix — only the
+  // Android Publisher REST API (sub.orderId) returns the per-cycle suffixed
+  // form. Falling back to dto.orderId when sub.orderId is absent would hand
+  // PlayStoreAdapter a constant id across renewals again, silently
+  // reintroducing the single-grant-per-subscription bug.
+  it('does NOT fall back to the client-supplied dto.orderId for a subscription when sub.orderId is absent', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          expiryTimeMillis: String(Date.now() + 86400000),
+          paymentState: 1,
+          acknowledgementState: 1,
+          // No orderId in the Play API response.
+        }),
+    });
+
+    const result = await service.verifyAndAcknowledge(
+      { ...dto, orderId: 'GPA.1-client-base-no-suffix' },
+      'subscription',
+    );
+
+    expect(result.orderId).toBeNull();
+  });
+
+  it('uses the Android Publisher (server-verified) orderId for a subscription, not the client one', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          expiryTimeMillis: String(Date.now() + 86400000),
+          paymentState: 1,
+          acknowledgementState: 1,
+          orderId: 'GPA.1..1',
+        }),
+    });
+
+    const result = await service.verifyAndAcknowledge(
+      { ...dto, orderId: 'GPA.1-client-base-no-suffix' },
+      'subscription',
+    );
+
+    expect(result.orderId).toBe('GPA.1..1');
+  });
+
   it('throws when the subscription token is not found (404)', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 404 });
 

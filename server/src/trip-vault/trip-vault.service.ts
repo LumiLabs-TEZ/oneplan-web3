@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -7,6 +9,7 @@ import {
 } from '@nestjs/common';
 import {
   InviteStatus,
+  Prisma,
   TripMemberRole,
   TripVault,
   VaultStatus,
@@ -14,13 +17,22 @@ import {
   VaultTxStatus,
   WalletAccount,
 } from '@prisma/client';
-import { getAssociatedTokenAddressSync } from '@solana/spl-token';
+import {
+  getAssociatedTokenAddressSync,
+  TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
 import { PublicKey } from '@solana/web3.js';
 import BN from 'bn.js';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { TripsHandler } from '../realtime/handlers/trips.handler';
 import { SolanaService } from '../solana/solana.service';
+import {
+  assertInstructionAccounts,
+  decodeVaultInstruction,
+  transactionSignature,
+} from '../solana/tx-verify';
+import { VaultSafetyService } from '../solana/vault-safety.service';
 
 function toPublicKey(value: string, field: string): PublicKey {
   try {
@@ -39,6 +51,19 @@ function toPublicKey(value: string, field: string): PublicKey {
 /// moves money clears it anyway.
 const BALANCE_CACHE_MS = 15_000;
 
+/** 3 USDC: above it a second member must approve a spend. */
+export const DEFAULT_THRESHOLD_MICRO = 3_000_000n;
+/** 100 USDC a day. */
+export const DEFAULT_DAILY_LIMIT_MICRO = 100_000_000n;
+
+/// Upper bounds on caller-supplied vault limits. Without these, whoever wins
+/// the race to create a trip's vault (see assertMember on createVault — this
+/// closes the race, but the value is still caller-chosen) could set a
+/// threshold so high every spend needs only one signature. Generous enough
+/// that no real trip budget needs more; the defaults above sit far under both.
+export const MAX_THRESHOLD_MICRO = 1_000_000_000n; // 1,000 USDC
+export const MAX_DAILY_LIMIT_MICRO = 10_000_000_000n; // 10,000 USDC
+
 /// Matches the program's own threshold. Below it the chain lets any active
 /// member approve, and the app has to agree or it offers a button that fails.
 const MIN_APPROVERS_TO_RESTRICT = 2;
@@ -56,6 +81,7 @@ export class TripVaultService {
     private readonly prisma: PrismaService,
     private readonly solana: SolanaService,
     private readonly trips: TripsHandler,
+    private readonly safety: VaultSafetyService,
   ) {}
 
   private assertConfigured(): void {
@@ -63,6 +89,36 @@ export class TripVaultService {
       throw new ServiceUnavailableException(
         'Solana is not configured on this server',
       );
+    }
+  }
+
+  /**
+   * Every vault endpoint is nested under a trip, so every one of them needs
+   * this: without it any logged-in user can read or act on another trip's
+   * ledger by guessing/incrementing the tripId in the URL. Mirrors
+   * TripsService's own private assertMember (trips.service.ts) — duplicated
+   * rather than shared to avoid a circular module dependency (TripsModule
+   * already imports TripVaultModule).
+   */
+  async assertMember(tripId: number, userId: number): Promise<void> {
+    const member = await this.prisma.tripMember.findUnique({
+      where: { tripId_userId: { tripId, userId } },
+    });
+    if (!member || member.inviteStatus !== InviteStatus.ACCEPTED) {
+      throw new ForbiddenException('You are not a member of this trip');
+    }
+  }
+
+  /** Membership plus HOST role, for the vault actions only the trip's creator may take. */
+  async assertHost(tripId: number, userId: number): Promise<void> {
+    const member = await this.prisma.tripMember.findUnique({
+      where: { tripId_userId: { tripId, userId } },
+    });
+    if (!member || member.inviteStatus !== InviteStatus.ACCEPTED) {
+      throw new ForbiddenException('You are not a member of this trip');
+    }
+    if (member.role !== TripMemberRole.HOST) {
+      throw new ForbiddenException('Only the trip host can do this');
     }
   }
 
@@ -76,11 +132,24 @@ export class TripVaultService {
 
   async linkWallet(userId: number, publicKey: string): Promise<WalletAccount> {
     const key = toPublicKey(publicKey, 'publicKey');
-    return this.prisma.walletAccount.upsert({
-      where: { userId },
-      create: { userId, publicKey: key.toBase58() },
-      update: { publicKey: key.toBase58() },
-    });
+    try {
+      return await this.prisma.walletAccount.upsert({
+        where: { userId },
+        create: { userId, publicKey: key.toBase58() },
+        update: { publicKey: key.toBase58() },
+      });
+    } catch (error) {
+      // public_key is unique (S12): another account already holds this key.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          'This wallet is already linked to another account',
+        );
+      }
+      throw error;
+    }
   }
 
   /**
@@ -91,9 +160,7 @@ export class TripVaultService {
    * vault from an exchange has no attributable sender, and settlement is built
    * on knowing who put in what.
    */
-  async walletBalance(
-    userId: number,
-  ): Promise<{
+  async walletBalance(userId: number): Promise<{
     publicKey: string | null;
     usdcAta: string | null;
     balanceMicro: bigint;
@@ -123,19 +190,65 @@ export class TripVaultService {
     }
   }
 
+  /**
+   * The vault with the defaults the create screen would have used, made if
+   * the trip has none. For flows that need a ledger to write to before anyone
+   * has chosen to deposit — a member paying from their own wallet.
+   */
+  async ensureDefaultVault(tripId: number, userId: number): Promise<TripVault> {
+    const existing = await this.prisma.tripVault.findUnique({
+      where: { tripId },
+    });
+    if (existing) {
+      return existing;
+    }
+    const vault = await this.createVault(
+      tripId,
+      userId,
+      DEFAULT_THRESHOLD_MICRO,
+      DEFAULT_DAILY_LIMIT_MICRO,
+    );
+    await this.syncMembers(tripId);
+    return vault;
+  }
+
   async createVault(
     tripId: number,
-    // Retained for the call site's clarity and future auditing; the on-chain
-    // authority is the server, so it does not affect what is created.
+    // Also used to gate creation below; the on-chain authority is still the
+    // server fee payer, so this has no effect on what gets created.
     userId: number,
     thresholdMicro: bigint,
     dailyLimitMicro: bigint,
   ): Promise<TripVault> {
     this.assertConfigured();
 
+    // Without this, POST-ing a not-yet-created trip id sends a real init_vault
+    // (and pays real rent) for a trip that may never exist — a cheap SOL drain
+    // and, if the id is later reused, a permanent block on the real trip ever
+    // getting a vault (the PDA is already initialized).
+    const trip = await this.prisma.trip.findUnique({
+      where: { id: tripId },
+      select: { id: true },
+    });
+    if (!trip) {
+      throw new NotFoundException(`Trip ${tripId} not found`);
+    }
+    await this.assertMember(tripId, userId);
+
     if (thresholdMicro <= 0n || dailyLimitMicro < thresholdMicro) {
       throw new BadRequestException(
         'thresholdMicro must be positive and dailyLimitMicro must be at least thresholdMicro',
+      );
+    }
+    if (
+      thresholdMicro > MAX_THRESHOLD_MICRO ||
+      dailyLimitMicro > MAX_DAILY_LIMIT_MICRO
+    ) {
+      // Otherwise whoever creates the vault first picks a threshold so high
+      // every spend clears with one signature — the vault's whole approval
+      // model is a caller-supplied number with no cap.
+      throw new BadRequestException(
+        `thresholdMicro must be at most ${MAX_THRESHOLD_MICRO} and dailyLimitMicro at most ${MAX_DAILY_LIMIT_MICRO}`,
       );
     }
 
@@ -189,6 +302,28 @@ export class TripVaultService {
         dailyLimitMicro,
       },
     });
+  }
+
+  async hasVault(tripId: number): Promise<boolean> {
+    const vault = await this.prisma.tripVault.findUnique({
+      where: { tripId },
+      select: { id: true },
+    });
+    return vault !== null;
+  }
+
+  /**
+   * syncMembers for callers that must not care whether the trip has a vault:
+   * a no-op unless web3 is enabled and configured and the trip has one.
+   */
+  async syncMembersIfVault(tripId: number): Promise<number> {
+    if (!this.solana.isEnabled || !this.solana.isConfigured) {
+      return 0;
+    }
+    if (!(await this.hasVault(tripId))) {
+      return 0;
+    }
+    return this.syncMembers(tripId);
   }
 
   /**
@@ -341,9 +476,7 @@ export class TripVaultService {
     this.invalidateBalance(tripId);
   }
 
-  async getBalance(
-    tripId: number,
-  ): Promise<{
+  async getBalance(tripId: number): Promise<{
     balanceMicro: bigint;
     vaultPda: string;
     usdcAta: string;
@@ -461,56 +594,152 @@ export class TripVaultService {
    * Without this the signed bytes would have nowhere to go and the deposit would
    * silently never land.
    *
-   * Idempotent at the chain level: resubmitting the same signed transaction
-   * yields the same signature rather than a second transfer.
+   * The signed transaction is DECODED here and the ledger is written from what
+   * it says, never from the request body (audit S1): the program, the
+   * `deposit` discriminator, this trip's vault PDA and token account, the
+   * caller's own linked wallet as signer and token owner, and the amount all
+   * come out of the bytes. A body-supplied amount let a 1-micro deposit book a
+   * huge credit, and a deposit into trip A's vault be submitted under trip B.
+   *
+   * Idempotent (S7): the row is claimed under the transaction's own signature,
+   * which is unique, before anything is broadcast. Submitting the same signed
+   * transaction twice, in parallel or later, yields one row and one credit.
    */
   async submitDeposit(
     tripId: number,
     userId: number,
     signedTx: string,
-    amountMicro: bigint,
   ): Promise<string> {
     this.assertConfigured();
     const vault = await this.requireVault(tripId);
+    if (vault.status !== VaultStatus.ACTIVE) {
+      throw new BadRequestException('This trip’s group wallet is closed');
+    }
 
-    const signature = await this.solana.broadcastSigned(signedTx);
+    const wallet = await this.prisma.walletAccount.findUnique({
+      where: { userId },
+    });
+    if (!wallet) {
+      throw new BadRequestException('Link a wallet before depositing');
+    }
+    const owner = new PublicKey(wallet.publicKey);
+
+    const ix = decodeVaultInstruction(
+      signedTx,
+      this.solana.feePayer.publicKey,
+      this.solana.program.programId,
+      'deposit',
+    );
+    const expected: [string, PublicKey][] = [
+      ['vault', new PublicKey(vault.vaultPda)],
+      ['vault_ata', new PublicKey(vault.usdcAta)],
+      ['usdc_mint', this.solana.usdcMint],
+      ['treasury_ata', this.solana.treasuryAta()],
+      ['owner', owner],
+      ['owner_ata', getAssociatedTokenAddressSync(this.solana.usdcMint, owner)],
+      ['token_program', TOKEN_PROGRAM_ID],
+    ];
+    assertInstructionAccounts(ix, expected, 'Deposit');
+    if (!ix.signers.some((signer) => signer.equals(owner))) {
+      throw new BadRequestException('Deposit rejected: not signed by you');
+    }
+    const amountMicro = ix.amountMicro ?? 0n;
+    if (amountMicro <= 0n) {
+      throw new BadRequestException(
+        'Deposit rejected: amount must be positive',
+      );
+    }
 
     // Credit the net after the 0.1% skim — that is what landed in the vault.
     const feeMicro = (amountMicro * 10n) / 10_000n;
     const netMicro = amountMicro - feeMicro;
 
-    const row = await this.prisma.vaultTransaction.create({
-      data: {
-        tripVaultId: vault.id,
-        userId,
-        kind: VaultTxKind.DEPOSIT,
-        status: VaultTxStatus.PENDING,
-        amountMicro: netMicro,
-        signature,
-      },
-    });
+    const signature = transactionSignature(signedTx);
+    const rowId = await this.claimDeposit(
+      vault.id,
+      userId,
+      signature,
+      netMicro,
+    );
+    if (rowId === null) {
+      // Already booked by an earlier submit of this exact transaction.
+      return signature;
+    }
 
+    await this.solana.broadcastSigned(signedTx);
     await this.solana.confirmSigned(signedTx, signature);
-    await this.prisma.vaultTransaction.update({
-      where: { id: row.id },
+    // Only the submit that moves PENDING -> CONFIRMED announces the deposit.
+    const confirmed = await this.prisma.vaultTransaction.updateMany({
+      where: { id: rowId, status: VaultTxStatus.PENDING },
       data: { status: VaultTxStatus.CONFIRMED },
     });
 
     this.invalidateBalance(tripId);
-    // Nothing announced a deposit before, so every other member's screen sat on
-    // a stale balance and an incomplete history until they left and came back.
-    const actor = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { displayName: true },
-    });
-    this.trips.sendVaultBalanceChanged(tripId, {
-      kind: VaultTxKind.DEPOSIT,
-      actorUserId: userId,
-      actorName: actor?.displayName ?? '',
-      amountMicro: amountMicro.toString(),
-    });
-    this.logger.log(`deposit ${signature} confirmed for trip ${tripId}`);
+    if (confirmed.count > 0) {
+      // Nothing announced a deposit before, so every other member's screen sat
+      // on a stale balance and an incomplete history until they left and came
+      // back.
+      const actor = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { displayName: true },
+      });
+      this.trips.sendVaultBalanceChanged(tripId, {
+        kind: VaultTxKind.DEPOSIT,
+        actorUserId: userId,
+        actorName: actor?.displayName ?? '',
+        amountMicro: amountMicro.toString(),
+      });
+      this.logger.log(`deposit ${signature} confirmed for trip ${tripId}`);
+    }
     return signature;
+  }
+
+  /**
+   * Creates the PENDING deposit row under `signature`, or finds the one an
+   * earlier submit created. Returns the row id still to be broadcast and
+   * confirmed, or null when the deposit is already settled / owned by someone
+   * else's row (nothing left to do).
+   */
+  private async claimDeposit(
+    vaultId: number,
+    userId: number,
+    signature: string,
+    netMicro: bigint,
+  ): Promise<number | null> {
+    try {
+      const row = await this.prisma.vaultTransaction.create({
+        data: {
+          tripVaultId: vaultId,
+          userId,
+          kind: VaultTxKind.DEPOSIT,
+          status: VaultTxStatus.PENDING,
+          amountMicro: netMicro,
+          signature,
+        },
+      });
+      return row.id;
+    } catch (error) {
+      if (
+        !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+        error.code !== 'P2002'
+      ) {
+        throw error;
+      }
+    }
+    const existing = await this.prisma.vaultTransaction.findFirst({
+      where: { signature },
+    });
+    if (
+      !existing ||
+      existing.userId !== userId ||
+      existing.tripVaultId !== vaultId ||
+      existing.kind !== VaultTxKind.DEPOSIT
+    ) {
+      throw new ConflictException('This transaction was already submitted');
+    }
+    // A PENDING row means the earlier submit died before confirming; carry on
+    // and finish it. A settled row means there is nothing to do.
+    return existing.status === VaultTxStatus.PENDING ? existing.id : null;
   }
 
   /**
@@ -518,17 +747,6 @@ export class TripVaultService {
    * USDC cannot be stranded in a vault the app can no longer reach.
    */
   async assertDeletable(tripId: number): Promise<void> {
-    const vault = await this.prisma.tripVault.findUnique({ where: { tripId } });
-    if (!vault) {
-      return;
-    }
-    const balance = await this.solana.getTokenBalance(
-      new PublicKey(vault.usdcAta),
-    );
-    if (balance > 0n) {
-      throw new BadRequestException(
-        'Settle or withdraw the trip vault before deleting the trip',
-      );
-    }
+    await this.safety.assertTripDeletable(tripId);
   }
 }

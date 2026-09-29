@@ -137,7 +137,9 @@ export class VaultTransactionDetailDto {
   @ApiProperty({ description: 'Fee in micro-USDC as a decimal string' })
   feeMicro: string;
 
-  @ApiProperty({ description: 'VND per USDC at the time the payment was priced' })
+  @ApiProperty({
+    description: 'VND per USDC at the time the payment was priced',
+  })
   rate: string;
 
   @ApiPropertyOptional({

@@ -49,6 +49,16 @@ export class CreateReceiptExpenseDto {
   @IsEnum(ExpenseCategory)
   category?: ExpenseCategory;
 
+  @ApiPropertyOptional({
+    type: 'integer',
+    description:
+      'Trip member who paid. Must be an accepted member of the trip. Defaults to the authenticated caller when omitted — the scanner is often not the payer.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  paidById?: number;
+
   @ApiPropertyOptional({ maxLength: 500 })
   @IsOptional()
   @IsString()

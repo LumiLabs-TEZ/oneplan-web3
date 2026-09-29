@@ -5,6 +5,8 @@ export type PushType =
   | 'trip_invite'
   | 'member_joined'
   | 'member_left'
+  | 'trip_started'
+  | 'trip_auto_start_blocked'
   | 'vault_leave_announced'
   | 'plan_reminder'
   | 'listing_approved'
@@ -14,7 +16,8 @@ export type PushType =
   | 'engagement_dormant'
   | 'engagement_new_plan'
   | 'engagement_unfinished_plan'
-  | 'engagement_weather';
+  | 'engagement_weather'
+  | 'mission_completed';
 
 export interface LogicalPushPayload {
   type: PushType;
@@ -131,6 +134,32 @@ export const PushPayloadBuilder = {
     };
   },
 
+  tripStarted(input: { tripId: number; tripName: string }): LogicalPushPayload {
+    return {
+      type: 'trip_started',
+      title: input.tripName,
+      body: 'Your trip has started. Have a great time!',
+      threadId: `trip-${input.tripId}`,
+      badge: 1,
+      data: { tripId: String(input.tripId) },
+    };
+  },
+
+  tripAutoStartBlocked(input: {
+    tripId: number;
+    tripName: string;
+    memberNames: string[];
+  }): LogicalPushPayload {
+    return {
+      type: 'trip_auto_start_blocked',
+      title: input.tripName,
+      body: `Couldn't start automatically: ${input.memberNames.join(', ')} are still on another trip. Open the trip to start it.`,
+      threadId: `trip-${input.tripId}`,
+      badge: 1,
+      data: { tripId: String(input.tripId) },
+    };
+  },
+
   planReminder(input: {
     tripId: number;
     tripName: string;
@@ -214,6 +243,22 @@ export const PushPayloadBuilder = {
         ...(input.deepLink.listingId != null
           ? { listingId: String(input.deepLink.listingId) }
           : {}),
+      },
+    };
+  },
+
+  missionCompleted(input: {
+    missionId: string;
+    rewardAmount: number;
+  }): LogicalPushPayload {
+    return {
+      type: 'mission_completed',
+      title: 'Mission complete! ⚡',
+      body: `You earned ${input.rewardAmount}⚡.`,
+      threadId: 'missions',
+      data: {
+        missionId: input.missionId,
+        rewardAmount: String(input.rewardAmount),
       },
     };
   },

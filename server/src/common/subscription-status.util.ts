@@ -33,3 +33,22 @@ export function effectiveSubscriptionStatus(
     user.subscriptionExpiresAt.getTime() <= Date.now();
   return isStaleActive ? SubscriptionStatus.EXPIRED : user.subscriptionStatus;
 }
+
+// Statuses that still confer a paid entitlement — the store is either
+// actively billing (ACTIVE) or still retrying/holding entitlement open
+// (GRACE_PERIOD, BILLING_RETRY). Mirrors iOS StoreManager's precedence.
+export const ENTITLED_STATUSES = new Set<SubscriptionStatus>([
+  SubscriptionStatus.ACTIVE,
+  SubscriptionStatus.GRACE_PERIOD,
+  SubscriptionStatus.BILLING_RETRY,
+]);
+
+/**
+ * The single "does this user currently get Pro" predicate. Every isPro/tier
+ * read (auth profile, friends list, subscription status, scan credits) must
+ * route through this — see the module-level comment for why a second,
+ * independently-written check reliably drifts out of sync.
+ */
+export function isEntitledToPro(user: SubscriptionStatusFields): boolean {
+  return ENTITLED_STATUSES.has(effectiveSubscriptionStatus(user));
+}

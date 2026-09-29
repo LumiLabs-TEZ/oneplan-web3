@@ -48,10 +48,35 @@ export class EntitlementService {
     }
   }
 
+  /**
+   * Fail-closed on entitlement removal (spec 7.4 read the other way round):
+   * wrongly REVOKING a paying user is the worst outcome in this file, so an
+   * event that doesn't actually know the subscription's state must never be
+   * allowed to write. Without this guard a caller that omits `status` lands on
+   * `event.status ?? NONE` below and silently downgrades a live subscriber to
+   * NONE / '' / null — which is exactly what replayOrphans() used to do with
+   * its synthesized events.
+   *
+   * Both fields are always populated by AppleStoreAdapter/PlayStoreAdapter for
+   * a real SUBSCRIPTION_STATE event, so this only ever fires on a
+   * programming error, never on a legitimate store event.
+   */
+  private isWritableSubscriptionState(event: StoreEvent): boolean {
+    return event.status != null && event.productId !== '';
+  }
+
   private async applySubscriptionState(
     event: StoreEvent,
     userId: number,
   ): Promise<void> {
+    if (!this.isWritableSubscriptionState(event)) {
+      this.logger.error(
+        `Refusing SUBSCRIPTION_STATE write for user ${userId} (line ${event.lineId}, ` +
+          `txn ${event.transactionId}): status=${event.status ?? 'MISSING'}, ` +
+          `productId='${event.productId}'. Entitlement left untouched.`,
+      );
+      return;
+    }
     await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${userId}::bigint)`;
       await this.upsertLedger(tx, event, userId);

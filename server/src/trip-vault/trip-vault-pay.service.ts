@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -9,19 +10,30 @@ import {
 import {
   ExpenseCategory,
   InviteStatus,
+  Prisma,
   TripMemberRole,
   TripStatus,
   VaultStatus,
   VaultTransaction,
   VaultTxKind,
+  VaultTxSource,
   VaultTxStatus,
 } from '@prisma/client';
-import { getAssociatedTokenAddressSync } from '@solana/spl-token';
+import {
+  createTransferCheckedInstruction,
+  getAssociatedTokenAddressSync,
+  TOKEN_PROGRAM_ID,
+} from '@solana/spl-token';
 import { PublicKey } from '@solana/web3.js';
 import BN from 'bn.js';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { SolanaService } from '../solana/solana.service';
+import {
+  assertInstructionAccounts,
+  decodeTransferChecked,
+  decodeVaultInstruction,
+} from '../solana/tx-verify';
 import { PAYOUT_PROVIDER } from '../payout/payout-provider.interface';
 // Imported as a type: an interface in a decorated constructor breaks
 // emitDecoratorMetadata under isolatedModules unless it is a type-only import.
@@ -30,6 +42,8 @@ import { decodeVietQr } from '../payout/vietqr';
 import { ExpensesService } from '../expenses/expenses.service';
 import { TripsHandler } from '../realtime/handlers/trips.handler';
 import { TripVaultService } from './trip-vault.service';
+import { PAYOUT_SENDING } from './payout-claim';
+import { VAULT_FAILURE_CODES } from './vault-failure-codes';
 
 export interface PayQuote {
   recipientName: string;
@@ -41,6 +55,9 @@ export interface PayQuote {
   rate: string;
   needsApproval: boolean;
   description: string | null;
+  source: VaultTxSource;
+  /** PERSONAL only: the payer's wallet, resolved during the balance check. */
+  payer: { publicKey: PublicKey; usdcAta: PublicKey } | null;
 }
 
 export interface PreparePaymentInput {
@@ -49,7 +66,11 @@ export interface PreparePaymentInput {
   name: string;
   category: ExpenseCategory;
   shareWithUserIds: number[];
+  source: VaultTxSource;
 }
+
+/** Circle USDC has six decimals, and transferChecked is told so on purpose. */
+const USDC_DECIMALS = 6;
 
 @Injectable()
 export class TripVaultPayService {
@@ -102,13 +123,28 @@ export class TripVaultPayService {
     };
   }
 
+  /**
+   * Prices a payment and checks the wallet that will fund it.
+   *
+   * A VAULT payment is checked against the group balance and may need a second
+   * signature above the trip threshold. A PERSONAL payment is checked against
+   * the caller's own USDC account and never needs approval: it is their money,
+   * fronted for the group, and nobody else has a say in how they spend it.
+   */
   async quote(
     tripId: number,
     userId: number,
     qrPayload: string,
     amountVndOverride?: bigint,
+    source: VaultTxSource = VaultTxSource.VAULT,
   ): Promise<PayQuote> {
-    const vault = await this.vaultService.requireVault(tripId);
+    // Personal money does not need the group to have funded anything, but
+    // the ledger row still hangs off the trip's vault, so one is created on
+    // demand rather than sending the member off to deposit first.
+    const vault =
+      source === VaultTxSource.PERSONAL
+        ? await this.vaultService.ensureDefaultVault(tripId, userId)
+        : await this.vaultService.requireVault(tripId);
     const decoded = decodeVietQr(qrPayload);
 
     const amountVnd = decoded.amountVnd ?? amountVndOverride;
@@ -128,11 +164,32 @@ export class TripVaultPayService {
 
     const priced = await this.payout.quote({ amountVnd });
 
-    const { balanceMicro } = await this.vaultService.getBalance(tripId);
-    if (priced.amountUsdcMicro + priced.feeMicro > balanceMicro) {
-      throw new BadRequestException(
-        'Vault balance is not enough for this payment',
-      );
+    let payer: PayQuote['payer'] = null;
+    let needsApproval = false;
+    if (source === VaultTxSource.PERSONAL) {
+      // No fee here: the vault skims its fee at deposit, and personal money was
+      // never deposited. What the transfer moves is exactly what is checked.
+      const wallet = await this.vaultService.walletBalance(userId);
+      if (!wallet.publicKey || !wallet.usdcAta) {
+        throw new BadRequestException('Link a wallet before paying');
+      }
+      if (priced.amountUsdcMicro > wallet.balanceMicro) {
+        throw new BadRequestException(
+          'Your wallet balance is not enough for this payment',
+        );
+      }
+      payer = {
+        publicKey: new PublicKey(wallet.publicKey),
+        usdcAta: new PublicKey(wallet.usdcAta),
+      };
+    } else {
+      const { balanceMicro } = await this.vaultService.getBalance(tripId);
+      if (priced.amountUsdcMicro + priced.feeMicro > balanceMicro) {
+        throw new BadRequestException(
+          'Vault balance is not enough for this payment',
+        );
+      }
+      needsApproval = priced.amountUsdcMicro > vault.thresholdMicro;
     }
 
     return {
@@ -143,8 +200,10 @@ export class TripVaultPayService {
       amountUsdcMicro: priced.amountUsdcMicro,
       feeMicro: priced.feeMicro,
       rate: priced.rate,
-      needsApproval: priced.amountUsdcMicro > vault.thresholdMicro,
+      needsApproval,
       description: decoded.description,
+      source,
+      payer,
     };
   }
 
@@ -161,20 +220,33 @@ export class TripVaultPayService {
     base64Tx: string;
     vaultTransactionId: number;
     needsApproval: boolean;
+    source: VaultTxSource;
+    amountUsdcMicro: string;
+    payerAta?: string;
   }> {
     const priced = await this.quote(
       tripId,
       userId,
       input.qrPayload,
       input.amountVnd,
+      input.source,
     );
     const vault = await this.vaultService.requireVault(tripId);
+    const isPersonal = input.source === VaultTxSource.PERSONAL;
+    // Before any row exists: an outsider or duplicate id would otherwise make
+    // createFromVault throw AFTER the fiat payout, leaving the row PENDING for
+    // the cron to retry forever.
+    const shareWithUserIds = await this.validateShares(
+      tripId,
+      input.shareWithUserIds,
+    );
 
     const record = await this.prisma.vaultTransaction.create({
       data: {
         tripVaultId: vault.id,
         userId,
         kind: VaultTxKind.SPEND,
+        source: input.source,
         status: VaultTxStatus.PENDING,
         amountMicro: priced.amountUsdcMicro,
         amountVnd: priced.amountVnd,
@@ -182,12 +254,13 @@ export class TripVaultPayService {
         bankAccount: priced.accountNumber,
         recipientName: priced.recipientName,
         qrPayload: input.qrPayload,
-        feeMicro: priced.feeMicro,
+        // A personal payment pays no fee (see quote), so the receipt says so.
+        feeMicro: isPersonal ? 0n : priced.feeMicro,
         rate: priced.rate,
         note: priced.description,
         expenseName: input.name,
         expenseCategory: input.category,
-        shareWithUserIds: input.shareWithUserIds,
+        shareWithUserIds,
       },
     });
 
@@ -204,11 +277,9 @@ export class TripVaultPayService {
     }
     const signer = new PublicKey(wallet.publicKey);
 
-    const base64Tx = await this.buildSpendTx(
-      tripId,
-      priced.amountUsdcMicro,
-      signer,
-    );
+    const base64Tx = isPersonal
+      ? await this.buildPersonalSpendTx(signer, priced.amountUsdcMicro)
+      : await this.buildSpendTx(tripId, priced.amountUsdcMicro, signer);
 
     // Nothing about the proposal is recorded or announced here. This method only
     // builds a transaction; whether it reaches the chain is decided later, and
@@ -220,6 +291,11 @@ export class TripVaultPayService {
       base64Tx,
       vaultTransactionId: record.id,
       needsApproval: priced.needsApproval,
+      source: input.source,
+      amountUsdcMicro: priced.amountUsdcMicro.toString(),
+      ...(isPersonal && priced.payer
+        ? { payerAta: priced.payer.usdcAta.toBase58() }
+        : {}),
     };
   }
 
@@ -232,6 +308,187 @@ export class TripVaultPayService {
    * - UNKNOWN  leaves the row PENDING. Never revert here: the payout may well
    *            have gone through and reverting would pay twice.
    */
+  /**
+   * Deduplicates the ids a payment is split across and requires every one to be
+   * an accepted member of this trip. Empty stays empty (= everyone).
+   */
+  private async validateShares(
+    tripId: number,
+    shareWithUserIds: number[],
+  ): Promise<number[]> {
+    const unique = [...new Set(shareWithUserIds)];
+    if (unique.length === 0) {
+      return unique;
+    }
+    const accepted = await this.prisma.tripMember.findMany({
+      where: {
+        tripId,
+        inviteStatus: InviteStatus.ACCEPTED,
+        userId: { in: unique },
+      },
+      select: { userId: true },
+    });
+    if (accepted.length !== unique.length) {
+      throw new BadRequestException(
+        'shareWithUserIds must be accepted trip members',
+      );
+    }
+    return unique;
+  }
+
+  private async callerWallet(
+    userId: number,
+    action: string,
+  ): Promise<PublicKey> {
+    const wallet = await this.prisma.walletAccount.findUnique({
+      where: { userId },
+    });
+    if (!wallet) {
+      throw new BadRequestException(`Link a wallet before ${action}`);
+    }
+    return new PublicKey(wallet.publicKey);
+  }
+
+  /** Host or co-host of the trip (accepted). */
+  private async isHostOrCoHost(
+    tripId: number,
+    userId: number,
+  ): Promise<boolean> {
+    const row = await this.prisma.tripMember.findFirst({
+      where: {
+        tripId,
+        userId,
+        inviteStatus: InviteStatus.ACCEPTED,
+        role: { in: [TripMemberRole.HOST, TripMemberRole.CO_HOST] },
+      },
+      select: { id: true },
+    });
+    return row !== null;
+  }
+
+  /**
+   * Proves the signed transaction is the one this row asked for and that the
+   * caller is allowed to submit it (audit S2). The request body says nothing
+   * about the bytes, so everything is read out of them: program, instruction,
+   * vault, token accounts, signer and amount must all match the row, and the
+   * caller must be the row's payer — or, for the approval leg, an approver who
+   * is not the proposer.
+   */
+  private async verifyPaymentTx(
+    record: VaultTransaction,
+    vault: { vaultPda: string; usdcAta: string; thresholdMicro: bigint },
+    signedTx: string,
+    callerUserId: number,
+    tripId: number,
+  ): Promise<void> {
+    const signer = await this.callerWallet(callerUserId, 'paying');
+    const feePayer = this.solana.feePayer.publicKey;
+    const mint = this.solana.usdcMint;
+    const receiverAta = getAssociatedTokenAddressSync(
+      mint,
+      this.solana.receiverPublicKey,
+    );
+    const requirePayer = () => {
+      if (record.userId !== callerUserId) {
+        throw new ForbiddenException('Only the payer can submit this payment');
+      }
+    };
+    const requireSigner = (signers: PublicKey[]) => {
+      if (!signers.some((key) => key.equals(signer))) {
+        throw new BadRequestException('Payment rejected: not signed by you');
+      }
+    };
+
+    if (record.source === VaultTxSource.PERSONAL) {
+      requirePayer();
+      const transfer = decodeTransferChecked(signedTx, feePayer);
+      if (
+        !transfer.authority.equals(signer) ||
+        !transfer.source.equals(getAssociatedTokenAddressSync(mint, signer)) ||
+        !transfer.destination.equals(receiverAta) ||
+        !transfer.mint.equals(mint) ||
+        transfer.decimals !== USDC_DECIMALS ||
+        transfer.amountMicro !== record.amountMicro
+      ) {
+        throw new BadRequestException(
+          'Payment rejected: the transfer does not match this payment',
+        );
+      }
+      return;
+    }
+
+    const vaultPda = new PublicKey(vault.vaultPda);
+    const vaultAta = new PublicKey(vault.usdcAta);
+    const needsApproval = record.amountMicro > vault.thresholdMicro;
+
+    if (needsApproval && record.proposalPda) {
+      // Second leg: an approver signs approve_spend; no amount in the bytes,
+      // so the binding is to this vault's open proposal and the receiver.
+      if (record.userId === callerUserId) {
+        throw new ForbiddenException(
+          'The member who raised a payment cannot approve it',
+        );
+      }
+      const approvers = await this.vaultService.approverUserIds(tripId);
+      if (approvers && !approvers.includes(callerUserId)) {
+        throw new ForbiddenException('Only a host or co-host can approve');
+      }
+      const ix = decodeVaultInstruction(
+        signedTx,
+        feePayer,
+        this.solana.program.programId,
+        'approve_spend',
+      );
+      assertInstructionAccounts(
+        ix,
+        [
+          ['vault', vaultPda],
+          ['vault_ata', vaultAta],
+          ['signer', signer],
+          ['recipient_ata', receiverAta],
+          ['usdc_mint', mint],
+          ['token_program', TOKEN_PROGRAM_ID],
+        ],
+        'Approval',
+      );
+      requireSigner(ix.signers);
+      return;
+    }
+
+    requirePayer();
+    const name = needsApproval ? 'propose_spend' : 'spend';
+    const ix = decodeVaultInstruction(
+      signedTx,
+      feePayer,
+      this.solana.program.programId,
+      name,
+    );
+    assertInstructionAccounts(
+      ix,
+      needsApproval
+        ? [
+            ['vault', vaultPda],
+            ['signer', signer],
+            ['recipient_ata', receiverAta],
+          ]
+        : [
+            ['vault', vaultPda],
+            ['vault_ata', vaultAta],
+            ['signer', signer],
+            ['recipient_ata', receiverAta],
+            ['usdc_mint', mint],
+            ['token_program', TOKEN_PROGRAM_ID],
+          ],
+      'Payment',
+    );
+    requireSigner(ix.signers);
+    if (ix.amountMicro !== record.amountMicro) {
+      throw new BadRequestException(
+        'Payment rejected: the amount does not match this payment',
+      );
+    }
+  }
+
   /// Loads a vault transaction and proves it belongs to `tripId`.
   ///
   /// The route is nested under a trip, so without this check the trip segment is
@@ -255,6 +512,7 @@ export class TripVaultPayService {
     vaultTransactionId: number,
     signedTx: string,
     tripId: number,
+    callerUserId: number,
   ): Promise<VaultTransaction> {
     const record = await this.requireTransactionInTrip(
       vaultTransactionId,
@@ -263,24 +521,41 @@ export class TripVaultPayService {
     if (record.status !== VaultTxStatus.PENDING) {
       return record;
     }
+    const vault = await this.vaultService.requireVault(tripId);
+    await this.verifyPaymentTx(record, vault, signedTx, callerUserId, tripId);
 
     // Recorded before the wait, not after. Confirming is a second network call,
     // and losing it used to lose the signature with it — the payment had left
     // the vault and nothing on this side could say so, or even ask. With the
     // signature stored the reconcile job can settle it whatever happens next.
+    // The unique index on signature makes a replayed transaction fail here
+    // instead of being attached to a second row (S7).
     const signature = await this.solana.broadcastSigned(signedTx);
-    await this.prisma.vaultTransaction.update({
-      where: { id: record.id },
-      data: { signature },
-    });
+    try {
+      await this.prisma.vaultTransaction.update({
+        where: { id: record.id },
+        data: { signature },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException('This transaction was already submitted');
+      }
+      throw error;
+    }
     await this.solana.confirmSigned(signedTx, signature);
 
     // An above-threshold payment reaches here twice: once for the proposal and
     // again for the approval that executes it. Only the second moves any USDC,
     // so only the second may pay the merchant — paying on the first would hand
     // over dong for money still sitting in the vault.
-    const vault = await this.vaultService.requireVault(tripId);
-    const needsApproval = record.amountMicro > vault.thresholdMicro;
+    // Only the group's money answers to the group's threshold. A personal
+    // payment was signed by the only person whose money it is.
+    const needsApproval =
+      record.source !== VaultTxSource.PERSONAL &&
+      record.amountMicro > vault.thresholdMicro;
 
     if (needsApproval && !record.proposalPda) {
       // The proposal leg. Its address is read back from the chain now that it
@@ -317,6 +592,22 @@ export class TripVaultPayService {
       });
     }
 
+    // One submit owns the fiat leg. Without the claim two parallel submits of
+    // the same signed transaction both paid out and both created the expense.
+    const claim = await this.prisma.vaultTransaction.updateMany({
+      where: {
+        id: record.id,
+        status: VaultTxStatus.PENDING,
+        payoutStatus: null,
+      },
+      data: { payoutStatus: PAYOUT_SENDING },
+    });
+    if (claim.count === 0) {
+      return this.prisma.vaultTransaction.findUniqueOrThrow({
+        where: { id: record.id },
+      });
+    }
+
     const result = await this.payout.payout({
       bankBin: record.bankBin!,
       accountNumber: record.bankAccount!,
@@ -325,12 +616,8 @@ export class TripVaultPayService {
     });
 
     if (result.outcome === 'SUCCESS') {
-      const vault = await this.prisma.tripVault.findUniqueOrThrow({
-        where: { id: record.tripVaultId },
-        select: { tripId: true },
-      });
       const expense = await this.expenses.createFromVault({
-        tripId: vault.tripId,
+        tripId,
         paidByUserId: record.userId ?? undefined,
         amountVnd: record.amountVnd!,
         amountUsdcMicro: record.amountMicro,
@@ -339,14 +626,18 @@ export class TripVaultPayService {
         category: record.expenseCategory ?? ExpenseCategory.OTHER,
         shareWithUserIds: record.shareWithUserIds,
       });
-      this.vaultService.invalidateBalance(vault.tripId);
+      // A personal payment never touched the vault, so its cached balance is
+      // still right.
+      if (record.source !== VaultTxSource.PERSONAL) {
+        this.vaultService.invalidateBalance(tripId);
+      }
       const actor = record.userId
         ? await this.prisma.user.findUnique({
             where: { id: record.userId },
             select: { displayName: true },
           })
         : null;
-      this.trips.sendVaultBalanceChanged(vault.tripId, {
+      this.trips.sendVaultBalanceChanged(tripId, {
         kind: VaultTxKind.SPEND,
         actorUserId: record.userId,
         actorName: actor?.displayName ?? '',
@@ -456,6 +747,33 @@ export class TripVaultPayService {
     return this.solana.buildUnsignedTx([ix]);
   }
 
+  /**
+   * A plain USDC transfer from the member's own token account to the receiver,
+   * with this server paying the network fee — the same shape as a wallet
+   * withdrawal, pointed at the payout receiver instead of an address the member
+   * typed. Nothing here touches the vault program.
+   *
+   * The receiver account is created in its own fee-payer transaction when
+   * missing, so the member-signed transaction stays a single instruction the
+   * client can verify before signing.
+   */
+  async buildPersonalSpendTx(
+    owner: PublicKey,
+    amountMicro: bigint,
+  ): Promise<string> {
+    const from = getAssociatedTokenAddressSync(this.solana.usdcMint, owner);
+    const to = await this.solana.ensureReceiverAta();
+    const ix = createTransferCheckedInstruction(
+      from,
+      this.solana.usdcMint,
+      to,
+      owner,
+      amountMicro,
+      USDC_DECIMALS,
+    );
+    return this.solana.buildUnsignedTx([ix]);
+  }
+
   /** Builds the second signature for an above-threshold payment. */
   async buildApprovalTx(
     vaultTransactionId: number,
@@ -466,8 +784,17 @@ export class TripVaultPayService {
       vaultTransactionId,
       tripId,
     );
-    if (!record.proposalPda) {
-      throw new BadRequestException('This payment did not need approval');
+    if (record.status !== VaultTxStatus.PENDING || !record.proposalPda) {
+      throw new BadRequestException('This payment is not awaiting approval');
+    }
+    if (record.userId === userId) {
+      throw new ForbiddenException(
+        'The member who raised a payment cannot approve it',
+      );
+    }
+    const approvers = await this.vaultService.approverUserIds(tripId);
+    if (approvers && !approvers.includes(userId)) {
+      throw new ForbiddenException('Only a host or co-host can approve');
     }
 
     const wallet = await this.prisma.walletAccount.findUnique({
@@ -510,9 +837,7 @@ export class TripVaultPayService {
       vaultTransactionId,
       tripId,
     );
-    if (!record.proposalPda) {
-      throw new BadRequestException('This payment has no open proposal');
-    }
+    await this.assertCancellable(record, userId, tripId);
 
     const wallet = await this.prisma.walletAccount.findUnique({
       where: { userId },
@@ -536,24 +861,125 @@ export class TripVaultPayService {
     return this.solana.buildUnsignedTx([ix]);
   }
 
+  /** A cancel needs an open proposal and is the proposer's or a host's to make. */
+  private async assertCancellable(
+    record: VaultTransaction,
+    userId: number,
+    tripId: number,
+  ): Promise<void> {
+    if (record.status !== VaultTxStatus.PENDING || !record.proposalPda) {
+      throw new BadRequestException('This payment has no open proposal');
+    }
+    if (
+      record.userId !== userId &&
+      !(await this.isHostOrCoHost(tripId, userId))
+    ) {
+      throw new ForbiddenException(
+        'Only the member who raised this payment or a host can cancel it',
+      );
+    }
+  }
+
   async submitCancel(
     vaultTransactionId: number,
     signedTx: string,
     tripId: number,
+    callerUserId: number,
   ): Promise<VaultTransaction> {
     const record = await this.requireTransactionInTrip(
       vaultTransactionId,
       tripId,
     );
+    // S3: without these checks any member could flip someone else's CONFIRMED
+    // spend to FAILED/cancelled with any transaction at all, erasing it from
+    // every share while the fiat was already paid.
+    await this.assertCancellable(record, callerUserId, tripId);
+    const vault = await this.vaultService.requireVault(tripId);
+    const signer = await this.callerWallet(callerUserId, 'cancelling');
+    const ix = decodeVaultInstruction(
+      signedTx,
+      this.solana.feePayer.publicKey,
+      this.solana.program.programId,
+      'cancel_spend',
+    );
+    assertInstructionAccounts(
+      ix,
+      [
+        ['vault', new PublicKey(vault.vaultPda)],
+        ['signer', signer],
+      ],
+      'Cancel',
+    );
+    if (!ix.signers.some((key) => key.equals(signer))) {
+      throw new BadRequestException('Cancel rejected: not signed by you');
+    }
+
     const signature = await this.solana.broadcastSigned(signedTx);
     await this.solana.confirmSigned(signedTx, signature);
+    // Atomic: only a row still PENDING with an open proposal flips, so a second
+    // submit of the same cancel cannot rewrite an outcome that has moved on.
+    try {
+      await this.prisma.vaultTransaction.updateMany({
+        where: {
+          id: record.id,
+          status: VaultTxStatus.PENDING,
+          proposalPda: { not: null },
+        },
+        data: {
+          status: VaultTxStatus.FAILED,
+          failureCode: VAULT_FAILURE_CODES.cancelled,
+          signature,
+          proposalPda: null,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException('This transaction was already submitted');
+      }
+      throw error;
+    }
+    return this.prisma.vaultTransaction.findUniqueOrThrow({
+      where: { id: record.id },
+    });
+  }
+
+  /**
+   * Retires a payment the client could not sign.
+   *
+   * The row is created before the signature is requested, so a failed
+   * verification or wallet error would otherwise leave a PENDING spend that
+   * looks paid. Only the member who started it can abandon it, and only while
+   * nothing has reached the chain: once a signature exists the reconcile job
+   * owns the outcome.
+   */
+  async abandonPayment(
+    vaultTransactionId: number,
+    tripId: number,
+    userId: number,
+  ): Promise<VaultTransaction> {
+    const record = await this.requireTransactionInTrip(
+      vaultTransactionId,
+      tripId,
+    );
+    if (record.status !== VaultTxStatus.PENDING) {
+      return record;
+    }
+    if (record.userId !== userId) {
+      throw new ForbiddenException('Only the payer can abandon this payment');
+    }
+    if (record.signature !== null || record.proposalPda !== null) {
+      throw new BadRequestException(
+        'This payment has already been submitted; it cannot be abandoned',
+      );
+    }
     return this.prisma.vaultTransaction.update({
       where: { id: record.id },
       data: {
         status: VaultTxStatus.FAILED,
-        failureCode: 'cancelled',
-        signature,
-        proposalPda: null,
+        failureCode: VAULT_FAILURE_CODES.abandoned,
       },
     });
   }
@@ -603,7 +1029,9 @@ export class TripVaultPayService {
       select: { status: true },
     });
     if (trip.status === TripStatus.ENDED) {
-      throw new BadRequestException('Cannot edit spends after the trip has ended');
+      throw new BadRequestException(
+        'Cannot edit spends after the trip has ended',
+      );
     }
 
     const isHost = await this.prisma.tripMember.findFirst({
@@ -659,23 +1087,31 @@ export class TripVaultPayService {
     });
 
     if (record.expenseId) {
-      await this.expenses.updateExpense(tripId, record.expenseId, callerUserId, {
-        ...(input.name !== undefined ? { name: input.name } : {}),
-        ...(input.category !== undefined ? { category: input.category } : {}),
-        ...(input.shareWithUserIds !== undefined
-          ? {
-              memberIds:
-                nextShares.length > 0
-                  ? nextShares
-                  : (
-                      await this.prisma.tripMember.findMany({
-                        where: { tripId, inviteStatus: InviteStatus.ACCEPTED },
-                        select: { userId: true },
-                      })
-                    ).map((row) => row.userId),
-            }
-          : {}),
-      });
+      await this.expenses.updateExpense(
+        tripId,
+        record.expenseId,
+        callerUserId,
+        {
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.category !== undefined ? { category: input.category } : {}),
+          ...(input.shareWithUserIds !== undefined
+            ? {
+                memberIds:
+                  nextShares.length > 0
+                    ? nextShares
+                    : (
+                        await this.prisma.tripMember.findMany({
+                          where: {
+                            tripId,
+                            inviteStatus: InviteStatus.ACCEPTED,
+                          },
+                          select: { userId: true },
+                        })
+                      ).map((row) => row.userId),
+              }
+            : {}),
+        },
+      );
     }
 
     return updated;

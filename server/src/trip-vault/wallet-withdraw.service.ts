@@ -3,7 +3,9 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   createAssociatedTokenAccountInstruction,
   createTransferCheckedInstruction,
@@ -18,6 +20,10 @@ import { WalletHistoryEntryDto } from './dto/wallet-history.dto';
 
 /** Circle USDC has six decimals, and transferChecked is told so on purpose. */
 const USDC_DECIMALS = 6;
+
+/** Recipient token accounts one member may make the fee payer open per day. */
+const MAX_NEW_RECIPIENT_ACCOUNTS_PER_DAY = 5;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Cap how far back we scan so a busy ATA cannot blow the RPC budget. */
 const HISTORY_SIGNATURE_LIMIT = 40;
@@ -37,7 +43,16 @@ export class WalletWithdrawService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly solana: SolanaService,
+    private readonly config: ConfigService,
   ) {}
+
+  private assertConfigured(): void {
+    if (!this.solana.isConfigured) {
+      throw new ServiceUnavailableException(
+        'Solana is not configured on this server',
+      );
+    }
+  }
 
   /**
    * Checks an address the member pasted, before any amount is chosen.
@@ -146,10 +161,10 @@ export class WalletWithdrawService {
     address: string,
     amountMicro: bigint,
   ): Promise<{ base64Tx: string; createsRecipientAccount: boolean }> {
+    this.assertConfigured();
     if (amountMicro <= 0n) {
       throw new BadRequestException('Enter an amount to withdraw');
     }
-
     const wallet = await this.prisma.walletAccount.findUnique({
       where: { userId },
     });
@@ -161,6 +176,18 @@ export class WalletWithdrawService {
     const recipient = this.parseAddress(address);
     if (recipient.equals(owner)) {
       throw new BadRequestException('That is this wallet');
+    }
+
+    // A floor makes the fee payer's ~0.002 SOL of rent per new recipient
+    // account cost the requester real money (S9: 1-micro withdrawals to fresh
+    // addresses were a free SOL drain on the operator).
+    const minMicro = BigInt(
+      this.config.get<number>('WALLET_WITHDRAW_MIN_MICRO', 1_000_000),
+    );
+    if (amountMicro < minMicro) {
+      throw new BadRequestException(
+        `The minimum withdrawal is ${minMicro} micro-USDC`,
+      );
     }
 
     const from = getAssociatedTokenAddressSync(this.solana.usdcMint, owner);
@@ -198,16 +225,59 @@ export class WalletWithdrawService {
       ),
     );
 
-    return {
-      base64Tx: await this.solana.buildUnsignedTx(instructions),
-      createsRecipientAccount,
-    };
+    const base64Tx = await this.solana.buildUnsignedTx(instructions);
+    await this.reserveWithdrawal(userId, amountMicro, createsRecipientAccount);
+    return { base64Tx, createsRecipientAccount };
+  }
+
+  /**
+   * Books the withdrawal against the member's rolling 24h allowance, or throws.
+   * Counted when the transaction is built, not when it lands: the drain is the
+   * ATA rent the fee payer spends on submit, and an abandoned build that keeps
+   * counting is the cheap side of that trade. Serialised per user so parallel
+   * builds cannot each slip under the cap.
+   */
+  private async reserveWithdrawal(
+    userId: number,
+    amountMicro: bigint,
+    createsRecipientAccount: boolean,
+  ): Promise<void> {
+    const capMicro = BigInt(
+      this.config.get<number>('WALLET_WITHDRAW_DAILY_CAP_MICRO', 1_000_000_000),
+    );
+    const since = new Date(Date.now() - DAY_MS);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${userId})`;
+      const recent = await tx.walletWithdrawal.findMany({
+        where: { userId, createdAt: { gte: since } },
+        select: { amountMicro: true, createsRecipientAccount: true },
+      });
+      const total = recent.reduce((sum, row) => sum + row.amountMicro, 0n);
+      if (total + amountMicro > capMicro) {
+        throw new BadRequestException(
+          'Daily withdrawal limit reached; try again later',
+        );
+      }
+      const newAccounts = recent.filter((r) => r.createsRecipientAccount);
+      if (
+        createsRecipientAccount &&
+        newAccounts.length >= MAX_NEW_RECIPIENT_ACCOUNTS_PER_DAY
+      ) {
+        throw new BadRequestException(
+          'Too many withdrawals to new addresses today; try again later',
+        );
+      }
+      await tx.walletWithdrawal.create({
+        data: { userId, amountMicro, createsRecipientAccount },
+      });
+    });
   }
 
   /** Sends the signed transfer and reports what the chain did with it. */
   async submitWithdrawal(
     signedTx: string,
   ): Promise<{ signature: string; status: string }> {
+    this.assertConfigured();
     const signature = await this.solana.broadcastSigned(signedTx);
     try {
       await this.solana.confirmSigned(signedTx, signature);

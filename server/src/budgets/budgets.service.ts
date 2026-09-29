@@ -7,6 +7,7 @@ import {
 import {
   ActivityAction,
   Currency,
+  ExpenseCategory,
   InviteStatus,
   PlanScope,
   Prisma,
@@ -50,6 +51,14 @@ export class BudgetsService {
 
     const scope = dto.scope ?? PlanScope.GROUP;
 
+    // Mirrors the same guard in updateBudget: a PERSONAL budget has exactly one
+    // payment row (the creator's), so a contributor list is meaningless there.
+    if (dto.userIds !== undefined && scope !== PlanScope.GROUP) {
+      throw new BadRequestException(
+        'Contributors can only be updated for GROUP budgets',
+      );
+    }
+
     const trip = await this.prisma.trip.findUniqueOrThrow({
       where: { id: tripId },
       select: { currency: true },
@@ -65,17 +74,28 @@ export class BudgetsService {
 
     const budget = await this.prisma.$transaction(async (tx) => {
       if (scope === PlanScope.GROUP) {
-        const members = await tx.tripMember.findMany({
-          where: { tripId, inviteStatus: InviteStatus.ACCEPTED },
-        });
+        // An explicit contributor list narrows the fan-out; omitting it keeps
+        // the original behaviour of charging every accepted member.
+        let contributorIds: number[];
+        if (dto.userIds !== undefined) {
+          await this.validateMemberIds(tripId, dto.userIds, tx);
+          contributorIds = Array.from(new Set(dto.userIds));
+        } else {
+          const members = await tx.tripMember.findMany({
+            where: { tripId, inviteStatus: InviteStatus.ACCEPTED },
+          });
+          contributorIds = members.map((member) => member.userId);
+        }
 
         const created = await tx.budget.create({
           data: {
             tripId,
             name: dto.name,
             amount: homeAmount,
+            // NOT a division: each contributor is charged the full amount.
             perPersonAmount: homeAmount,
             scope,
+            category: dto.category ?? null,
             originalAmount: resolved.originalAmount,
             originalCurrency: resolved.originalCurrency,
             exchangeRate: resolved.exchangeRate,
@@ -83,9 +103,9 @@ export class BudgetsService {
         });
 
         await tx.budgetPayment.createMany({
-          data: members.map((member) => ({
+          data: contributorIds.map((contributorId) => ({
             budgetId: created.id,
-            userId: member.userId,
+            userId: contributorId,
             amount: homeAmount,
           })),
         });
@@ -99,6 +119,7 @@ export class BudgetsService {
             amount: homeAmount,
             perPersonAmount: null,
             scope,
+            category: dto.category ?? null,
             originalAmount: resolved.originalAmount,
             originalCurrency: resolved.originalCurrency,
             exchangeRate: resolved.exchangeRate,
@@ -218,6 +239,9 @@ export class BudgetsService {
       const updateData: Prisma.BudgetUpdateInput = {};
       if (dto.name !== undefined) {
         updateData.name = dto.name;
+      }
+      if (dto.category !== undefined) {
+        updateData.category = dto.category;
       }
 
       let nextAmount: Prisma.Decimal | number | null = null;
@@ -485,6 +509,7 @@ export class BudgetsService {
     amount: any;
     perPersonAmount: any;
     scope: PlanScope;
+    category?: ExpenseCategory | null;
     originalAmount?: any;
     originalCurrency?: Currency | null;
     exchangeRate?: any;
@@ -506,6 +531,7 @@ export class BudgetsService {
       perPersonAmount:
         budget.perPersonAmount !== null ? Number(budget.perPersonAmount) : null,
       scope: budget.scope,
+      category: budget.category ?? undefined,
       createdAt: budget.createdAt.toISOString(),
       payments: await Promise.all(
         budget.payments.map((p) => this.formatPayment(p)),

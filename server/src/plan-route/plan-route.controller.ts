@@ -1,6 +1,7 @@
 import { Controller, Get, Param, ParseIntPipe, Query } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiBadRequestResponse,
   ApiForbiddenResponse,
   ApiOkResponse,
   ApiOperation,
@@ -21,16 +22,18 @@ export class PlanRouteController {
   @Get()
   @ApiOperation({
     operationId: 'getPlanRoute',
-    summary: 'Get ordered map pins and driving-route legs for a trip day',
+    summary:
+      'Get ordered map pins and driving-route legs for a trip day (by date, or by day number for planning trips)',
   })
   @ApiParam({ name: 'tripId', type: 'integer' })
   @ApiOkResponse({ type: PlanRouteDto })
+  @ApiBadRequestResponse({ description: 'Neither or both of date/day given' })
   @ApiForbiddenResponse({ description: 'Not a member of this trip' })
   getPlanRoute(
     @CurrentUser('sub') userId: number,
     @Param('tripId', ParseIntPipe) tripId: number,
     @Query() query: PlanRouteQueryDto,
   ): Promise<PlanRouteDto> {
-    return this.planRouteService.getPlanRoute(tripId, userId, query.date);
+    return this.planRouteService.getPlanRoute(tripId, userId, query);
   }
 }

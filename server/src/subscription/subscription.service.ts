@@ -39,9 +39,16 @@ import {
 } from '../scan-credit/scan-credit.service';
 import { AppAccountTokenDto } from './dto/app-account-token.dto';
 import { AppleStoreAdapter } from './adapters/apple-store.adapter';
-import { PlayStoreAdapter } from './adapters/play-store.adapter';
+import {
+  PlayStoreAdapter,
+  resolvePlayNotificationType,
+} from './adapters/play-store.adapter';
 import { StoreEventProcessor } from './store-event/store-event.processor';
-import { effectiveSubscriptionStatus } from '../common/subscription-status.util';
+import { StoreKind } from './store-event/store-event.types';
+import {
+  effectiveSubscriptionStatus,
+  isEntitledToPro,
+} from '../common/subscription-status.util';
 
 // Auto-renewing Pro subscription SKUs. Mirrors iOS StoreManager.
 const SUBSCRIPTION_SKUS = new Set<string>([
@@ -50,13 +57,6 @@ const SUBSCRIPTION_SKUS = new Set<string>([
   'pro_yearly',
 ]);
 const PAY_ONCE_SKU = 'pay_once';
-
-// Statuses that still confer a paid entitlement.
-const ENTITLED_STATUSES = new Set<SubscriptionStatus>([
-  SubscriptionStatus.ACTIVE,
-  SubscriptionStatus.GRACE_PERIOD,
-  SubscriptionStatus.BILLING_RETRY,
-]);
 type AppStoreVerificationEnvironment =
   | 'Auto'
   | Environment.SANDBOX
@@ -923,26 +923,51 @@ export class SubscriptionService implements OnModuleInit {
     return true;
   }
 
+  /**
+   * Terminal-success writer for notification branches that never reach
+   * StoreEventProcessor (credit-product refunds, RTDNs with no actionable
+   * purchase info). `store` defaults to 'APPLE' only to preserve existing
+   * Apple call sites, which already own their row via claimNotification()
+   * — every Play call site must pass 'GOOGLE' explicitly so the row is
+   * never left on the schema default for a Play event.
+   */
   private async completeNotification(
     notificationUUID: string | undefined,
     transaction?: JWSTransactionDecodedPayload,
     userId?: number,
+    store: StoreKind = 'APPLE',
+    raw?: unknown,
   ): Promise<void> {
     if (!notificationUUID) return;
-    await this.prisma.storeNotification.update({
+    const transactionId = transaction?.transactionId ?? null;
+    const originalTransactionId = transaction?.originalTransactionId ?? null;
+    const environment = transaction
+      ? transaction.environment === 'Production'
+        ? 'Production'
+        : 'Sandbox'
+      : undefined;
+    await this.prisma.storeNotification.upsert({
       where: { notificationUUID },
-      data: {
+      create: {
+        notificationUUID,
+        store,
+        rawPayload: (raw ?? null) as never,
+        outcome: 'PROCESSED',
+        processedAt: new Date(),
+        userId,
+        transactionId,
+        originalTransactionId,
+        environment: environment ?? null,
+      },
+      update: {
         outcome: 'PROCESSED',
         processedAt: new Date(),
         errorMessage: null,
         userId,
-        transactionId: transaction?.transactionId ?? null,
-        originalTransactionId: transaction?.originalTransactionId ?? null,
-        environment: transaction
-          ? transaction.environment === 'Production'
-            ? 'Production'
-            : 'Sandbox'
-          : undefined,
+        transactionId,
+        originalTransactionId,
+        environment,
+        ...(raw !== undefined ? { rawPayload: raw as never } : {}),
       },
     });
   }
@@ -950,11 +975,20 @@ export class SubscriptionService implements OnModuleInit {
   private async failNotification(
     notificationUUID: string | undefined,
     message: string,
+    store: StoreKind = 'APPLE',
+    raw?: unknown,
   ): Promise<void> {
     if (!notificationUUID) return;
-    await this.prisma.storeNotification.update({
+    await this.prisma.storeNotification.upsert({
       where: { notificationUUID },
-      data: { outcome: 'FAILED', errorMessage: message.slice(0, 255) },
+      create: {
+        notificationUUID,
+        store,
+        rawPayload: (raw ?? null) as never,
+        outcome: 'FAILED',
+        errorMessage: message.slice(0, 255),
+      },
+      update: { outcome: 'FAILED', errorMessage: message.slice(0, 255) },
     });
   }
 
@@ -1124,16 +1158,16 @@ export class SubscriptionService implements OnModuleInit {
 
     // Nothing currently flips subscriptionStatus to EXPIRED once a Google
     // Play renewal lapses (no RTDN/webhook wired — see PR body), so a stored
-    // ACTIVE row can be stale. effectiveSubscriptionStatus is the single
-    // shared guard for that (see its doc comment for why only ACTIVE, never
+    // ACTIVE row can be stale. isEntitledToPro is the single shared guard
+    // for that (see its doc comment for why only ACTIVE, never
     // GRACE_PERIOD/BILLING_RETRY, is collapsed).
-    const effective = effectiveSubscriptionStatus({
+    const entitled = isEntitledToPro({
       subscriptionStatus: resolved.subscriptionStatus,
       subscriptionExpiresAt: resolved.subscriptionExpiresAt ?? null,
     });
 
     if (
-      ENTITLED_STATUSES.has(effective) &&
+      entitled &&
       resolved.subscriptionProductId &&
       SUBSCRIPTION_SKUS.has(resolved.subscriptionProductId)
     ) {
@@ -1205,9 +1239,7 @@ export class SubscriptionService implements OnModuleInit {
 
     const now = new Date();
     let status: SubscriptionStatus;
-    if (verified.revoked) {
-      status = SubscriptionStatus.REVOKED;
-    } else if (verified.active && verified.acknowledged) {
+    if (verified.active && verified.acknowledged) {
       status = SubscriptionStatus.ACTIVE;
     } else if (verified.active && !verified.acknowledged) {
       // The purchase is valid but Google did not accept the acknowledgement
@@ -1220,6 +1252,13 @@ export class SubscriptionService implements OnModuleInit {
         'Purchase verified but could not be acknowledged; please try again',
       );
     } else {
+      // Covers both a plain lapse and `verified.revoked` (subscription
+      // expired after the user cancelled it) — for a subscription that is
+      // the normal end of life, not a refund, so it belongs in EXPIRED, not
+      // REVOKED. REVOKED is reserved for a genuine store-side refund/
+      // chargeback (Apple's revocationDate; Play's voidedPurchaseNotification
+      // handled separately in handlePlayWebhook). See PlayStoreAdapter.toStoreEvent
+      // for why `revoked` can't just be checked here directly.
       status = SubscriptionStatus.EXPIRED;
     }
 
@@ -1346,19 +1385,29 @@ export class SubscriptionService implements OnModuleInit {
    * Handles Google Play Real-Time Developer Notifications (RTDN).
    */
   async handlePlayWebhook(payload: PlayWebhookPayloadDto): Promise<void> {
-    const notification = this.playAdapter.parseDeveloperNotification(payload.message.data);
+    const notification = this.playAdapter.parseDeveloperNotification(
+      payload.message.data,
+    );
     if (!notification) {
       throw new BadRequestException('Invalid or unparsable base64 RTDN data');
     }
 
     if (notification.testNotification) {
-      this.logger.log(`Received Play TEST notification for package ${notification.packageName}`);
+      this.logger.log(
+        `Received Play TEST notification for package ${notification.packageName}`,
+      );
       return;
     }
 
     const eventId = payload.message.messageId;
 
-    // Dedupe check
+    // Dedupe check — read-only. Row creation/ownership belongs to
+    // StoreEventProcessor.persist() (and, for the branches below that never
+    // reach the processor, to completeNotification/failNotification).
+    // Pre-creating the row here would make StoreEventProcessor.process()'s
+    // own dedupe check see it and treat every first attempt as a duplicate,
+    // skipping entitlement.apply() entirely — that was the root cause of
+    // RTDN being acked 200 while subscription_expires_at never advanced.
     const existing = await this.prisma.storeNotification.findUnique({
       where: { notificationUUID: eventId },
       select: { outcome: true },
@@ -1368,33 +1417,10 @@ export class SubscriptionService implements OnModuleInit {
       return;
     }
 
-    if (!existing) {
-      try {
-        await this.prisma.storeNotification.create({
-          data: {
-            notificationUUID: eventId,
-            notificationType: (
-              notification.subscriptionNotification?.notificationType
-              ?? notification.oneTimeProductNotification?.notificationType
-              ?? notification.voidedPurchaseNotification?.refundType
-            )?.toString(),
-            environment: 'Production', // RTDN is practically always prod
-            signedDate: new Date(Number(notification.eventTimeMillis)),
-          },
-        });
-      } catch (error) {
-        if ((error as { code?: string })?.code !== 'P2002') throw error;
-        const raced = await this.prisma.storeNotification.findUnique({
-          where: { notificationUUID: eventId },
-          select: { outcome: true },
-        });
-        if (raced?.outcome === 'PROCESSED') return;
-      }
-    }
-
     // 1. Check if it's a VoidedPurchaseNotification (Refund)
     if (notification.voidedPurchaseNotification) {
-      const isCreditProduct = notification.voidedPurchaseNotification.productType === 1; // 1 = inapp (consumable)
+      const isCreditProduct =
+        notification.voidedPurchaseNotification.productType === 1; // 1 = inapp (consumable)
       const refundEvent = this.playAdapter.createRefundEventFromNotification(
         notification,
         eventId,
@@ -1413,22 +1439,36 @@ export class SubscriptionService implements OnModuleInit {
                 outcome: 'revoked',
                 transactionId: token,
                 originalTransactionId: token,
-                notificationType: notification.voidedPurchaseNotification.refundType,
+                notificationType:
+                  notification.voidedPurchaseNotification.refundType,
                 grantedAmount: result.grantedAmount,
                 clawedBack: result.clawedBack,
                 consumedAtRefund: result.consumedAtRefund,
                 restored: result.restored,
-                reclaimedPct: Math.round((result.clawedBack / (result.grantedAmount || 1)) * 100),
-                consumedPct: Math.round((result.consumedAtRefund / (result.grantedAmount || 1)) * 100),
-                revocationReason: notification.voidedPurchaseNotification.refundType,
+                reclaimedPct: Math.round(
+                  (result.clawedBack / (result.grantedAmount || 1)) * 100,
+                ),
+                consumedPct: Math.round(
+                  (result.consumedAtRefund / (result.grantedAmount || 1)) * 100,
+                ),
+                revocationReason:
+                  notification.voidedPurchaseNotification.refundType,
               },
             });
           }
+          await this.completeNotification(
+            eventId,
+            undefined,
+            result?.userId,
+            'GOOGLE',
+            notification,
+          );
         } else {
-          // Handle subscription refund
+          // Handle subscription refund. storeEventProcessor.process() already
+          // persists its own terminal outcome (with the correct store,
+          // userId, rawPayload) — do not stomp it with a second write below.
           await this.storeEventProcessor.process(refundEvent);
         }
-        await this.completeNotification(eventId);
         return;
       }
     }
@@ -1447,14 +1487,20 @@ export class SubscriptionService implements OnModuleInit {
 
     if (!purchaseToken || !productId) {
       this.logger.warn(`Received Play RTDN with no actionable purchase info`);
-      await this.completeNotification(eventId);
+      await this.completeNotification(
+        eventId,
+        undefined,
+        undefined,
+        'GOOGLE',
+        notification,
+      );
       return;
     }
 
     // 3. Verify the token with Google Play APIs to get current status and linkedPurchaseToken
     const isPayOnce = productId === PAY_ONCE_SKU;
     const isCreditProduct = this.scanCredit.isCreditProduct(productId);
-    const kind = (isPayOnce || isCreditProduct) ? 'product' : 'subscription';
+    const kind = isPayOnce || isCreditProduct ? 'product' : 'subscription';
 
     let verified;
     try {
@@ -1462,27 +1508,39 @@ export class SubscriptionService implements OnModuleInit {
       // This is generally desirable for RTDNs of new purchases.
       verified = await this.playVerifier.verifyAndAcknowledge(
         { productId, purchaseToken, packageName: notification.packageName },
-        kind
+        kind,
       );
     } catch (err) {
       this.logger.error(`Failed to verify Play RTDN token`, err);
-      await this.failNotification(eventId, 'Verification API failed');
+      await this.failNotification(
+        eventId,
+        'Verification API failed',
+        'GOOGLE',
+        notification,
+      );
       throw new ServiceUnavailableException('Play API Verification Failed');
     }
 
-    const linkedPurchaseToken = (verified as any).linkedPurchaseToken as string | undefined; // We'll add this to GooglePlaySubscriptionVerifierService
+    const linkedPurchaseToken = (verified as any).linkedPurchaseToken as
+      | string
+      | undefined; // We'll add this to GooglePlaySubscriptionVerifierService
 
     // Determine status for subscriptions
     let status: SubscriptionStatus | undefined;
     if (kind === 'subscription') {
-      if (verified.revoked) {
-        status = SubscriptionStatus.REVOKED;
-      } else if (verified.active && verified.acknowledged) {
+      if (verified.active && verified.acknowledged) {
         status = SubscriptionStatus.ACTIVE;
       } else if (verified.active && !verified.acknowledged) {
         // We throw so it retries, or we could just skip. Let's throw to retry.
-        throw new ServiceUnavailableException('Purchase verified but unacknowledged');
+        throw new ServiceUnavailableException(
+          'Purchase verified but unacknowledged',
+        );
       } else {
+        // Includes `verified.revoked` (cancelled subscription that has now
+        // expired) — the normal end of life of a cancellation, not a refund.
+        // See the CLIENT_VERIFY branch above / PlayStoreAdapter.toStoreEvent
+        // for the full reasoning; REVOKED stays reserved for a genuine
+        // refund/chargeback signal.
         status = SubscriptionStatus.EXPIRED;
       }
     }
@@ -1497,16 +1555,21 @@ export class SubscriptionService implements OnModuleInit {
         eventId,
         raw: notification,
         linkedPurchaseToken,
-      })
+        notificationType: resolvePlayNotificationType(notification),
+      }),
     );
 
-    // If it's a subscription and it had a linked token, replay orphans for the NEW token 
+    // If it's a subscription and it had a linked token, replay orphans for the NEW token
     // because any verifies that came in for the new token before this RTDN arrived were orphaned
     if (verified.linkedPurchaseToken) {
-        await this.storeEventProcessor.replayOrphans(verified.purchaseToken);
+      await this.storeEventProcessor.replayOrphans(verified.purchaseToken);
     }
 
-    await this.completeNotification(eventId);
+    // storeEventProcessor.process() above already persisted the terminal
+    // outcome (PROCESSED/ORPHANED) with the correct store/userId/rawPayload —
+    // do not stomp it back to PROCESSED here (that was the bug: an ORPHANED
+    // event, or one processed by a concurrent redelivery, would get
+    // overwritten to a false PROCESSED with the transaction ids nulled out).
   }
 
   private mapAppleStatusToSubscriptionStatus(

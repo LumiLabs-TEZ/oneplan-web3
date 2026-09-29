@@ -1,7 +1,11 @@
 import { createPublicKey, KeyObject } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 
@@ -41,10 +45,20 @@ export class WalletTokenService {
         `wallet token key not readable at ${path}; the group wallet is disabled`,
       );
     }
+    // A malformed PEM must disable the wallet, not crash boot.
+    let publicKey: KeyObject | null = null;
+    if (privateKey) {
+      try {
+        publicKey = createPublicKey({ key: privateKey, format: 'pem' });
+      } catch {
+        this.logger.error(
+          `wallet token key at ${path} is not a valid PEM; the group wallet is disabled`,
+        );
+        privateKey = null;
+      }
+    }
     this.privateKey = privateKey;
-    this.publicKey = privateKey
-      ? createPublicKey({ key: privateKey, format: 'pem' })
-      : null;
+    this.publicKey = publicKey;
   }
 
   get isConfigured(): boolean {

@@ -95,7 +95,10 @@ export function computeSettlement(input: SettlementInput): SettlementShare[] {
       spend.shareWithUserIds.length > 0
         ? spend.shareWithUserIds
         : input.memberIds;
-    for (const [userId, amount] of splitEvenly(spend.amountMicro, participants)) {
+    for (const [userId, amount] of splitEvenly(
+      spend.amountMicro,
+      participants,
+    )) {
       shareTotals.set(userId, (shareTotals.get(userId) ?? 0n) + amount);
     }
   }
@@ -103,7 +106,8 @@ export function computeSettlement(input: SettlementInput): SettlementShare[] {
   const nets = input.memberIds.map((userId) => ({
     userId,
     netMicro:
-      (input.depositsByUser.get(userId) ?? 0n) - (shareTotals.get(userId) ?? 0n),
+      (input.depositsByUser.get(userId) ?? 0n) -
+      (shareTotals.get(userId) ?? 0n),
   }));
 
   const totalPositive = nets.reduce(
@@ -233,9 +237,7 @@ export function cashDebtLines(
   const weights: { title: string; weight: bigint }[] = [];
   for (const spend of spends) {
     const participants =
-      spend.shareWithUserIds.length > 0
-        ? spend.shareWithUserIds
-        : memberIds;
+      spend.shareWithUserIds.length > 0 ? spend.shareWithUserIds : memberIds;
     if (!participants.includes(debt.fromUserId)) {
       continue;
     }

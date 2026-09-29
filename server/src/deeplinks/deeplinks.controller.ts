@@ -1,4 +1,11 @@
-import { Controller, Get, Header, Logger, Param } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Header,
+  Headers,
+  Logger,
+  Param,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SkipThrottle } from '@nestjs/throttler';
 import { ApiExcludeController } from '@nestjs/swagger';
@@ -7,39 +14,38 @@ import { FriendsService } from '../friends/friends.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { TripsService } from '../trips/trips.service';
 
-// Default (prod) iOS app ID. Dev overrides via IOS_APP_IDS so that
-// dev-op.oneplan.space associates with the dev bundle (dev.lumilabs.oneplan)
-// instead of the App Store build — otherwise iOS hands dev links to prod.
-const DEFAULT_IOS_APP_IDS = ['GS4TMK323X.lumilabs.oneplan'];
+const APP_ID = 'GS4TMK323X.lumilabs.oneplan';
 // Numeric App ID from App Store Connect. Env override first so dev/prod can
 // diverge; the literal fallback is the live OnePlan app.
 const APP_STORE_ID = process.env.APP_STORE_APP_APPLE_ID?.trim() || '6761648165';
 const APP_STORE_URL = `https://apps.apple.com/app/id${APP_STORE_ID}`;
 
-function buildAasaPayload(appIDs: string[]) {
-  return {
-    applinks: {
-      details: [
-        {
-          appIDs,
-          components: [
-            { '/': '/friend/*', comment: 'Friend invites' },
-            { '/': '/join/*', comment: 'Trip invites' },
-            { '/': '/listing/*', comment: 'Marketplace listings' },
-          ],
-        },
-      ],
-    },
-  };
+const DEFAULT_ANDROID_PACKAGE = 'com.oneplan.android';
+
+function playStoreUrl(packageName: string): string {
+  return `https://play.google.com/store/apps/details?id=${encodeURIComponent(
+    packageName,
+  )}`;
 }
 
-function parseIosAppIds(config: ConfigService): string[] {
-  const ids = (config.get<string>('IOS_APP_IDS') ?? '')
-    .split(',')
-    .map((id) => id.trim())
-    .filter((id) => id.length > 0);
-  return ids.length > 0 ? ids : DEFAULT_IOS_APP_IDS;
+function isAndroidUserAgent(userAgent: string | undefined): boolean {
+  return /android/i.test(userAgent ?? '');
 }
+
+const AASA_PAYLOAD = {
+  applinks: {
+    details: [
+      {
+        appIDs: [APP_ID],
+        components: [
+          { '/': '/friend/*', comment: 'Friend invites' },
+          { '/': '/join/*', comment: 'Trip invites' },
+          { '/': '/listing/*', comment: 'Marketplace listings' },
+        ],
+      },
+    ],
+  },
+};
 
 interface AndroidAppLinkTarget {
   packageName: string;
@@ -92,7 +98,7 @@ function parseAndroidAppLinkTargets(
 
   const legacyPackage =
     config.get<string>('ANDROID_APP_PACKAGE_NAME')?.trim() ||
-    'com.oneplan.android';
+    DEFAULT_ANDROID_PACKAGE;
   const legacyFingerprints = (
     config.get<string>('ANDROID_APP_SHA256_CERT_FINGERPRINTS') ?? ''
   )
@@ -112,8 +118,8 @@ export class DeeplinksController {
   private readonly ogFriendImage: string;
   private readonly ogTripImage: string;
   private readonly androidAppLinkTargets: AndroidAppLinkTarget[];
+  private readonly androidStoreUrl: string;
   private readonly ogListingImage: string;
-  private readonly aasaPayload: ReturnType<typeof buildAasaPayload>;
 
   constructor(
     private readonly tripsService: TripsService,
@@ -125,7 +131,13 @@ export class DeeplinksController {
     // the same hosts so a shared link / scanned QR opens the Android app
     // instead of the browser (matches the iOS Universal Links behavior).
     this.androidAppLinkTargets = parseAndroidAppLinkTargets(config);
-    this.aasaPayload = buildAasaPayload(parseIosAppIds(config));
+    // Install fallback for Android visitors who don't have the app: the
+    // landing page's store button is picked by User-Agent. Same env var the
+    // legacy assetlinks fallback reads, same default package.
+    this.androidStoreUrl = playStoreUrl(
+      config.get<string>('ANDROID_APP_PACKAGE_NAME')?.trim() ||
+        DEFAULT_ANDROID_PACKAGE,
+    );
     const configuredTargets = this.androidAppLinkTargets.filter(
       (target) => target.fingerprints.length > 0,
     );
@@ -152,7 +164,7 @@ export class DeeplinksController {
   @Header('Content-Type', 'application/json')
   @Header('Cache-Control', 'public, max-age=3600')
   getAppleAppSiteAssociation() {
-    return this.aasaPayload;
+    return AASA_PAYLOAD;
   }
 
   /**
@@ -183,10 +195,21 @@ export class DeeplinksController {
       }));
   }
 
+  /**
+   * Android visitors get the Play listing; everyone else (iOS, desktop, crawlers)
+   * gets the App Store, which is also the safe default for an absent UA.
+   */
+  private storeUrlFor(userAgent: string | undefined): string {
+    return isAndroidUserAgent(userAgent) ? this.androidStoreUrl : APP_STORE_URL;
+  }
+
   @Get('friend/:friendCode')
   @Header('Content-Type', 'text/html; charset=utf-8')
+  // The store button below is chosen from the request User-Agent.
+  @Header('Vary', 'User-Agent')
   async friendLanding(
     @Param('friendCode') friendCode: string,
+    @Headers('user-agent') userAgent?: string,
   ): Promise<string> {
     const safeCode = encodeURIComponent(friendCode);
     const customScheme = `oneplan://friend/${safeCode}`;
@@ -209,12 +232,17 @@ export class DeeplinksController {
       description,
       ogImage: this.ogFriendImage,
       openInAppUrl: customScheme,
+      storeUrl: this.storeUrlFor(userAgent),
     });
   }
 
   @Get('join/:inviteCode')
   @Header('Content-Type', 'text/html; charset=utf-8')
-  async joinLanding(@Param('inviteCode') inviteCode: string): Promise<string> {
+  @Header('Vary', 'User-Agent')
+  async joinLanding(
+    @Param('inviteCode') inviteCode: string,
+    @Headers('user-agent') userAgent?: string,
+  ): Promise<string> {
     const safeCode = encodeURIComponent(inviteCode);
     const customScheme = `oneplan://join/${safeCode}`;
 
@@ -234,12 +262,17 @@ export class DeeplinksController {
       description,
       ogImage: this.ogTripImage,
       openInAppUrl: customScheme,
+      storeUrl: this.storeUrlFor(userAgent),
     });
   }
 
   @Get('listing/:id')
   @Header('Content-Type', 'text/html; charset=utf-8')
-  async listingLanding(@Param('id') id: string): Promise<string> {
+  @Header('Vary', 'User-Agent')
+  async listingLanding(
+    @Param('id') id: string,
+    @Headers('user-agent') userAgent?: string,
+  ): Promise<string> {
     const safeId = encodeURIComponent(id);
     const customScheme = `oneplan://listing/${safeId}`;
 
@@ -260,6 +293,7 @@ export class DeeplinksController {
       description,
       ogImage: this.ogListingImage,
       openInAppUrl: customScheme,
+      storeUrl: this.storeUrlFor(userAgent),
     });
   }
 }
@@ -269,10 +303,12 @@ interface LandingParams {
   description: string;
   ogImage: string;
   openInAppUrl: string;
+  /** Platform-specific install link, chosen from the request User-Agent. */
+  storeUrl: string;
 }
 
 function renderLanding(params: LandingParams): string {
-  const { title, description, ogImage, openInAppUrl } = params;
+  const { title, description, ogImage, openInAppUrl, storeUrl } = params;
   const esc = escapeHtml;
   return `<!DOCTYPE html>
 <html lang="en">
@@ -307,7 +343,7 @@ function renderLanding(params: LandingParams): string {
     <h1>${esc(title)}</h1>
     <p>${esc(description)}</p>
     <a class="btn primary" id="openApp" href="${esc(openInAppUrl)}">Open in OnePlan</a>
-    <a class="btn secondary" href="${APP_STORE_URL}">Get the app</a>
+    <a class="btn secondary" href="${esc(storeUrl)}">Get the app</a>
   </main>
   <script>
     // On iOS, tapping "Open in OnePlan" first attempts the custom scheme.

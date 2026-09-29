@@ -100,3 +100,54 @@ export class CreateListingFromPlanResultDto {
   @ApiProperty({ type: 'integer', description: 'Number of images uploaded' })
   imageCount: number;
 }
+
+export class BackfillListingImagesResultDto {
+  @ApiProperty({ type: 'integer' })
+  listingId: number;
+
+  @ApiProperty({
+    type: 'integer',
+    description: 'Items that had fewer than the requested minimum of images',
+  })
+  itemsChecked: number;
+
+  @ApiProperty({
+    type: 'integer',
+    description: 'Items that received new images',
+  })
+  itemsUpdated: number;
+
+  @ApiProperty({ type: 'integer', description: 'Images uploaded in total' })
+  imagesAdded: number;
+
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'Items whose byte-identical duplicate photos were removed (only with dedupe=true)',
+  })
+  itemsDeduped: number;
+
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'Existing images removed by the vision re-check (only with recheck=true)',
+  })
+  imagesRemoved: number;
+}
+
+export class SyncListingImagesResultDto {
+  @ApiProperty({ type: 'integer' })
+  listingId: number;
+
+  @ApiProperty({ type: 'integer' })
+  sourceListingId: number;
+
+  @ApiProperty({ type: 'integer', description: 'Items whose images changed' })
+  itemsUpdated: number;
+
+  @ApiProperty({
+    type: 'integer',
+    description: 'Images the target now carries',
+  })
+  imageCount: number;
+}

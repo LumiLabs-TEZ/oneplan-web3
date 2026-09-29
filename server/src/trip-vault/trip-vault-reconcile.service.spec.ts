@@ -1,4 +1,9 @@
-import { ExpenseCategory, VaultTxKind, VaultTxStatus } from '@prisma/client';
+import {
+  ExpenseCategory,
+  VaultTxKind,
+  VaultTxSource,
+  VaultTxStatus,
+} from '@prisma/client';
 import { Keypair } from '@solana/web3.js';
 
 import { TripVaultReconcileService } from './trip-vault-reconcile.service';
@@ -9,6 +14,7 @@ function row(overrides: Record<string, unknown> = {}) {
     tripVaultId: 1,
     userId: 7,
     kind: VaultTxKind.SPEND,
+    source: VaultTxSource.VAULT,
     status: VaultTxStatus.PENDING,
     amountMicro: 7_660_000n,
     amountVnd: 200_000n,
@@ -47,7 +53,25 @@ function deps(
     .mockResolvedValue([]);
 
   const prisma = {
-    vaultTransaction: { findMany, update: jest.fn() },
+    vaultTransaction: {
+      findMany,
+      update: jest.fn(),
+      // 0 rows for the unsigned-spend sweep; claiming a payout (-> SENDING)
+      // succeeds unless a test says another submit got there first.
+      updateMany: jest
+        .fn()
+        .mockImplementation((args: { data?: { payoutStatus?: string } }) =>
+          Promise.resolve({
+            count: args.data?.payoutStatus === 'SENDING' ? 1 : 0,
+          }),
+        ),
+      groupBy: jest.fn().mockResolvedValue([]),
+    },
+    walletAccount: {
+      findUnique: jest.fn().mockResolvedValue({
+        publicKey: Keypair.generate().publicKey.toBase58(),
+      }),
+    },
     tripVault: {
       findMany: jest.fn().mockResolvedValue([]),
       findUniqueOrThrow: jest.fn().mockResolvedValue({
@@ -62,6 +86,7 @@ function deps(
     isConfigured: true,
     getTokenBalance: jest.fn().mockResolvedValue(0n),
     revertSpend: jest.fn().mockResolvedValue('revert-sig'),
+    refundPersonalSpend: jest.fn().mockResolvedValue('refund-sig'),
     signatureLanded: jest.fn().mockResolvedValue(true),
   };
   const expenses = { createFromVault: jest.fn().mockResolvedValue({ id: 55 }) };
@@ -88,6 +113,88 @@ describe('TripVaultReconcileService', () => {
       expect.objectContaining({ reference: 'vault-tx-1' }),
     );
     expect(report.payoutsSent).toBe(1);
+  });
+
+  // S7: the cron and a live submit must not both pay and both book the expense.
+  it('does not pay a row a live submit has already claimed', async () => {
+    const d = deps({ missingPayout: [row({ payoutStatus: null })] });
+    d.prisma.vaultTransaction.updateMany.mockImplementation(() =>
+      Promise.resolve({ count: 0 }),
+    );
+
+    const report = await build(d).reconcile();
+
+    expect(d.payout.payout).not.toHaveBeenCalled();
+    expect(report.payoutsSent).toBe(0);
+  });
+
+  it('claims the row before paying, and re-claims a claim that went stale', async () => {
+    const d = deps({ missingPayout: [row({ payoutStatus: null })] });
+    d.payout.payout.mockResolvedValue({ outcome: 'SUCCESS' });
+
+    await build(d).reconcile();
+
+    expect(d.prisma.vaultTransaction.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 1,
+        status: VaultTxStatus.PENDING,
+        OR: [
+          { payoutStatus: null },
+          { payoutStatus: 'SENDING', updatedAt: { lt: expect.any(Date) } },
+        ],
+      }),
+      data: { payoutStatus: 'SENDING' },
+    });
+    // The finding query looks for never-started AND stale-SENDING rows.
+    const [{ where }] = d.prisma.vaultTransaction.findMany.mock.calls[1] as [
+      { where: { OR: unknown[] } },
+    ];
+    expect(where.OR).toContainEqual({ payoutStatus: null });
+    expect(where.OR).toContainEqual({
+      payoutStatus: 'SENDING',
+      updatedAt: { lt: expect.any(Date) },
+    });
+  });
+
+  it('never asks the provider about a row still being SENDING', async () => {
+    const d = deps({ pending: [] });
+
+    await build(d).reconcile();
+
+    const [{ where }] = d.prisma.vaultTransaction.findMany.mock.calls[2] as [
+      { where: { AND: unknown[] } },
+    ];
+    expect(where.AND).toContainEqual({
+      payoutStatus: { not: 'SENDING' },
+    });
+  });
+
+  describe('D3: vault crons idle while web3 is off', () => {
+    it.each([
+      ['disabled', { isEnabled: false, isConfigured: true }],
+      ['not configured', { isEnabled: true, isConfigured: false }],
+    ])('does nothing when %s', async (_label, flags) => {
+      const d = deps();
+      Object.assign(d.solana, flags);
+      const service = build(d);
+      const spy = jest.spyOn(service, 'reconcile');
+
+      await service.handleCron();
+
+      expect(spy).not.toHaveBeenCalled();
+      expect(d.prisma.vaultTransaction.findMany).not.toHaveBeenCalled();
+    });
+
+    it('runs when enabled and configured', async () => {
+      const d = deps();
+      Object.assign(d.solana, { isEnabled: true, isConfigured: true });
+      const service = build(d);
+      const spy = jest.spyOn(service, 'reconcile');
+
+      await service.handleCron();
+
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('confirms a pending row once the provider reports SUCCESS', async () => {
@@ -140,6 +247,115 @@ describe('TripVaultReconcileService', () => {
 
     expect(d.solana.revertSpend).toHaveBeenCalled();
     expect(report.reverted).toBe(1);
+  });
+
+  // The USDC left the member's wallet, not the vault, so the vault program's
+  // revert cannot give it back. The receiver sends it back to the member.
+  it('refunds a failed personal spend to the member rather than reverting the vault', async () => {
+    const d = deps({
+      toRevert: [
+        row({ status: VaultTxStatus.FAILED, source: VaultTxSource.PERSONAL }),
+      ],
+    });
+
+    const report = await build(d).reconcile();
+
+    expect(d.solana.refundPersonalSpend).toHaveBeenCalledWith(
+      expect.anything(),
+      7_660_000n,
+    );
+    expect(d.solana.revertSpend).not.toHaveBeenCalled();
+    expect(report.reverted).toBe(1);
+  });
+
+  it('leaves a failed personal spend alone when the member has no wallet', async () => {
+    const d = deps({
+      toRevert: [
+        row({ status: VaultTxStatus.FAILED, source: VaultTxSource.PERSONAL }),
+      ],
+    });
+    d.prisma.walletAccount.findUnique.mockResolvedValue(null);
+
+    const report = await build(d).reconcile();
+
+    expect(d.solana.refundPersonalSpend).not.toHaveBeenCalled();
+    expect(d.prisma.vaultTransaction.update).not.toHaveBeenCalled();
+    expect(report.reverted).toBe(0);
+  });
+
+  // A cancelled proposal carries the cancel transaction's signature, but no
+  // USDC ever left the vault; asking the program to give it back failed on
+  // chain every five minutes and took the rest of the job down with it.
+  it('never reverts a cancelled proposal', async () => {
+    const d = deps();
+
+    await build(d).reconcile();
+
+    const [, , , revertQuery] = d.prisma.vaultTransaction.findMany.mock
+      .calls as [{ where: { failureCode: { notIn: string[] } } }][];
+    expect(revertQuery[0].where.failureCode.notIn).toEqual(
+      expect.arrayContaining(['cancelled', 'REVERTED', 'abandoned']),
+    );
+  });
+
+  it('keeps going when one revert fails on chain', async () => {
+    const d = deps({
+      toRevert: [
+        row({ id: 1, status: VaultTxStatus.FAILED }),
+        row({ id: 2, status: VaultTxStatus.FAILED }),
+      ],
+    });
+    d.solana.revertSpend
+      .mockRejectedValueOnce(new Error('Simulation failed'))
+      .mockResolvedValueOnce('revert-sig');
+    d.prisma.tripVault.findMany.mockResolvedValue([
+      { id: 1, tripId: 42, usdcAta: Keypair.generate().publicKey.toBase58() },
+    ]);
+
+    const report = await build(d).reconcile();
+
+    expect(report.reverted).toBe(1);
+    // The drift check after it still ran.
+    expect(d.prisma.vaultTransaction.groupBy).toHaveBeenCalled();
+  });
+
+  it('marks a spend the client never signed as abandoned', async () => {
+    const d = deps();
+    d.prisma.vaultTransaction.updateMany.mockResolvedValue({ count: 1 });
+
+    const report = await build(d).reconcile();
+
+    expect(d.prisma.vaultTransaction.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          kind: VaultTxKind.SPEND,
+          status: VaultTxStatus.PENDING,
+          signature: null,
+          proposalPda: null,
+        }),
+        data: { status: VaultTxStatus.FAILED, failureCode: 'abandoned' },
+      }),
+    );
+    expect(report.abandoned).toBe(1);
+  });
+
+  it('measures drift against vault money only', async () => {
+    const d = deps();
+    d.prisma.tripVault.findMany.mockResolvedValue([
+      {
+        id: 1,
+        tripId: 42,
+        usdcAta: Keypair.generate().publicKey.toBase58(),
+      },
+    ]);
+
+    await build(d).reconcile();
+
+    expect(d.prisma.vaultTransaction.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ source: VaultTxSource.VAULT }),
+      }),
+    );
   });
 
   it('flags a row stuck PENDING for over thirty minutes', async () => {

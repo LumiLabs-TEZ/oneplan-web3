@@ -10,6 +10,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import {
   ActivityAction,
+  ContentLocale,
   Currency,
   InviteStatus,
   ListingTag,
@@ -21,7 +22,14 @@ import { randomBytes } from 'crypto';
 import { nanoid } from 'nanoid';
 
 const LISTING_PUBLIC_ID_LENGTH = 12;
+import { ClsService } from 'nestjs-cls';
+import { CONTENT_LOCALE_CLS_KEY } from '../common/locale/content-locale';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  availableLocales,
+  pickItemText,
+  pickListingText,
+} from './listing-text';
 import { StorageService } from '../storage/storage.service';
 import { TripActivityService } from '../trip-activity/trip-activity.service';
 import { TripsService } from '../trips/trips.service';
@@ -54,6 +62,11 @@ import { AcquisitionItemDto } from './dto/acquisition-item.dto';
 import { PurchaseMarketplaceListingDto } from './dto/purchase-marketplace-listing.dto';
 import { MarketplacePurchaseVerifierService } from './marketplace-purchase-verifier.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import {
+  AcquirableListing,
+  MarketplaceAcquisitionService,
+} from './acquisition/marketplace-acquisition.service';
+import { MissionsService } from '../missions/missions.service';
 
 type ListingRatingStats = { avg: number | null; count: number };
 const EMPTY_RATING_STATS: ListingRatingStats = { avg: null, count: 0 };
@@ -83,17 +96,27 @@ function assertCoordinatePatch(
   );
 }
 
+const LISTING_TRANSLATIONS_SELECT = {
+  select: { locale: true, name: true, description: true },
+} as const;
+
+const ITEM_TRANSLATIONS_SELECT = {
+  select: { locale: true, title: true, description: true },
+} as const;
+
 const LISTING_DETAIL_INCLUDE = {
   createdBy: { select: { displayName: true, avatarUrl: true } },
   city: { select: { id: true, name: true } },
   state: { select: { id: true, name: true } },
   country: { select: { id: true, name: true } },
+  translations: LISTING_TRANSLATIONS_SELECT,
   items: {
     orderBy: [
       { dayNumber: Prisma.SortOrder.asc },
       { sortOrder: Prisma.SortOrder.asc },
       { id: Prisma.SortOrder.asc },
     ],
+    include: { translations: ITEM_TRANSLATIONS_SELECT },
   },
   _count: { select: { acquisitions: true } },
 } satisfies Prisma.MarketplaceListingInclude;
@@ -103,6 +126,7 @@ const LISTING_FEED_INCLUDE = {
   city: { select: { name: true } },
   state: { select: { name: true } },
   country: { select: { name: true } },
+  translations: LISTING_TRANSLATIONS_SELECT,
   _count: { select: { acquisitions: true, items: true } },
 } satisfies Prisma.MarketplaceListingInclude;
 
@@ -153,7 +177,66 @@ export class MarketplaceService {
     private readonly config: ConfigService,
     private readonly purchaseVerifier: MarketplacePurchaseVerifierService,
     private readonly notificationsService: NotificationsService,
+    private readonly acquisition: MarketplaceAcquisitionService,
+    private readonly missions: MissionsService,
+    private readonly cls: ClsService,
   ) {}
+
+  /**
+   * Content locale of the current request (from `Accept-Language`), or null
+   * when absent/unsupported. Null means "serve base text". Only PUBLIC read
+   * paths pass this into the formatters — creator/admin paths always get the
+   * base row so dashboards show what was actually written.
+   */
+  private requestLocale(): ContentLocale | null {
+    return this.cls.get<ContentLocale | null>(CONTENT_LOCALE_CLS_KEY) ?? null;
+  }
+
+  /**
+   * Restrict the feed to listings readable in `locale`: authored in that
+   * language or carrying a translation for it. Null locale (missing /
+   * unsupported Accept-Language) disables the filter.
+   */
+  private localizedListingWhere(
+    locale: ContentLocale | null,
+  ): Prisma.MarketplaceListingWhereInput | null {
+    if (!locale) return null;
+    return {
+      OR: [{ sourceLocale: locale }, { translations: { some: { locale } } }],
+    };
+  }
+
+  // Runs the destination cascade (most-specific scope first) and returns the
+  // matched scope plus its candidates. `null` scope means no destination
+  // filter was requested.
+  private async resolveFeedCandidates(
+    where: Prisma.MarketplaceListingWhereInput,
+    cascade: Array<{
+      scope: MarketplaceFeedMatchedScope;
+      clause: Prisma.MarketplaceListingWhereInput;
+    }>,
+  ): Promise<{
+    scope: MarketplaceFeedMatchedScope | null;
+    candidates: Array<{ id: number; price: Prisma.Decimal; createdAt: Date }>;
+  }> {
+    if (cascade.length === 0) {
+      const candidates = await this.prisma.marketplaceListing.findMany({
+        where,
+        select: { id: true, price: true, createdAt: true },
+      });
+      return { scope: null, candidates };
+    }
+    for (const level of cascade) {
+      const candidates = await this.prisma.marketplaceListing.findMany({
+        where: { ...where, ...level.clause },
+        select: { id: true, price: true, createdAt: true },
+      });
+      if (candidates.length > 0) {
+        return { scope: level.scope, candidates };
+      }
+    }
+    return { scope: MarketplaceFeedMatchedScope.NONE, candidates: [] };
+  }
 
   async listMarketplaceFeed(
     query: ListMarketplaceFeedQueryDto,
@@ -161,6 +244,7 @@ export class MarketplaceService {
   ): Promise<MarketplaceFeedDto> {
     const normalizedTake = this.normalizeMarketplaceFeedTake(query.take);
     const tab = query.tab ?? MarketplaceFeedTab.TRENDING;
+    const locale = this.requestLocale();
 
     const baseWhere: Prisma.MarketplaceListingWhereInput = {
       ...PUBLIC_LISTING_WHERE,
@@ -207,34 +291,23 @@ export class MarketplaceService {
       });
     }
 
-    let matchedDestinationScope: MarketplaceFeedMatchedScope | null = null;
-    let matchedCandidates: Array<{
-      id: number;
-      price: Prisma.Decimal;
-      createdAt: Date;
-    }> = [];
+    const languageWhere = this.localizedListingWhere(locale);
+    const scopedWhere = languageWhere
+      ? { ...baseWhere, ...languageWhere }
+      : baseWhere;
 
-    if (cascade.length === 0) {
-      matchedDestinationScope = null;
-      matchedCandidates = await this.prisma.marketplaceListing.findMany({
-        where: baseWhere,
-        select: { id: true, price: true, createdAt: true },
-      });
-    } else {
-      for (const level of cascade) {
-        const candidates = await this.prisma.marketplaceListing.findMany({
-          where: { ...baseWhere, ...level.clause },
-          select: { id: true, price: true, createdAt: true },
-        });
-        if (candidates.length > 0) {
-          matchedDestinationScope = level.scope;
-          matchedCandidates = candidates;
-          break;
-        }
-      }
-      if (matchedDestinationScope === null) {
-        matchedDestinationScope = MarketplaceFeedMatchedScope.NONE;
-      }
+    let { scope: matchedDestinationScope, candidates: matchedCandidates } =
+      await this.resolveFeedCandidates(scopedWhere, cascade);
+
+    // Language is a hard filter until it would leave nothing at all; then the
+    // feed falls back to all languages so the market never goes dark.
+    if (
+      languageWhere &&
+      (matchedDestinationScope === MarketplaceFeedMatchedScope.NONE ||
+        matchedCandidates.length === 0)
+    ) {
+      ({ scope: matchedDestinationScope, candidates: matchedCandidates } =
+        await this.resolveFeedCandidates(baseWhere, cascade));
     }
 
     if (
@@ -245,7 +318,7 @@ export class MarketplaceService {
       // cascade — it must survive the no-match early return too.
       const [destinationNames, featured] = await Promise.all([
         this.loadGlobalDestinationNames(),
-        this.fetchFeaturedFeedItems(userId),
+        this.fetchFeaturedFeedItems(userId, languageWhere),
       ]);
       return {
         items: [],
@@ -281,7 +354,7 @@ export class MarketplaceService {
         }),
         this.fetchRatingStatsByListing(topIds),
         this.loadGlobalDestinationNames(),
-        this.fetchFeaturedFeedItems(userId),
+        this.fetchFeaturedFeedItems(userId, languageWhere),
       ]);
     const listingById = new Map(fullListings.map((l) => [l.id, l]));
 
@@ -294,7 +367,12 @@ export class MarketplaceService {
             ? (listing as any).acquisitions.length > 0
             : false;
           const stats = statsByListing.get(listing.id) ?? EMPTY_RATING_STATS;
-          return this.formatMarketplaceFeedItem(listing, acquired, stats);
+          return this.formatMarketplaceFeedItem(
+            listing,
+            acquired,
+            stats,
+            locale,
+          );
         }),
     );
 
@@ -307,9 +385,12 @@ export class MarketplaceService {
   }
 
   // Ordered featured listings in feed-item shape, with the caller's
-  // acquired flag hydrated like the main feed items.
+  // acquired flag hydrated like the main feed items. When a content locale is
+  // active, only listings readable in it are returned — unless that would
+  // empty the shelf, in which case it falls back to every featured listing.
   private async fetchFeaturedFeedItems(
     userId?: number,
+    languageWhere?: Prisma.MarketplaceListingWhereInput | null,
   ): Promise<MarketplaceFeedItemDto[]> {
     const include = userId
       ? {
@@ -322,24 +403,35 @@ export class MarketplaceService {
         }
       : LISTING_FEED_INCLUDE;
 
-    const listings = await this.prisma.marketplaceListing.findMany({
-      where: FEATURED_LISTING_WHERE,
-      include,
-      orderBy: FEATURED_ORDER_BY,
-    });
+    const loadListings = (where: Prisma.MarketplaceListingWhereInput) =>
+      this.prisma.marketplaceListing.findMany({
+        where,
+        include,
+        orderBy: FEATURED_ORDER_BY,
+      });
+
+    let listings = await loadListings(
+      languageWhere
+        ? { ...FEATURED_LISTING_WHERE, ...languageWhere }
+        : FEATURED_LISTING_WHERE,
+    );
+    if (listings.length === 0 && languageWhere) {
+      listings = await loadListings(FEATURED_LISTING_WHERE);
+    }
     if (listings.length === 0) return [];
 
     const statsByListing = await this.fetchRatingStatsByListing(
       listings.map((l) => l.id),
     );
 
+    const locale = this.requestLocale();
     return Promise.all(
       listings.map((listing) => {
         const acquired = Array.isArray((listing as any).acquisitions)
           ? (listing as any).acquisitions.length > 0
           : false;
         const stats = statsByListing.get(listing.id) ?? EMPTY_RATING_STATS;
-        return this.formatMarketplaceFeedItem(listing, acquired, stats);
+        return this.formatMarketplaceFeedItem(listing, acquired, stats, locale);
       }),
     );
   }
@@ -359,9 +451,14 @@ export class MarketplaceService {
 
     const itemsByListing = new Map<number, MarketItemDto[]>();
     if (listingIds.length > 0) {
+      const locale = this.requestLocale();
       const rawItems = await this.prisma.tripPlanMarketItem.findMany({
         where: { listingId: { in: listingIds } },
         orderBy: [{ dayNumber: 'asc' }, { sortOrder: 'asc' }, { id: 'asc' }],
+        include: {
+          translations: ITEM_TRANSLATIONS_SELECT,
+          listing: { select: { sourceLocale: true } },
+        },
       });
       // Group in iteration order so the query's ordering is preserved,
       // then keep only the first 3 per listing.
@@ -377,7 +474,14 @@ export class MarketplaceService {
       for (const [listingId, items] of grouped) {
         itemsByListing.set(
           listingId,
-          await Promise.all(items.map((item) => this.formatItem(item))),
+          await Promise.all(
+            items.map((item) =>
+              this.formatItem(item, {
+                sourceLocale: item.listing.sourceLocale,
+                locale,
+              }),
+            ),
+          ),
         );
       }
     }
@@ -403,6 +507,9 @@ export class MarketplaceService {
   async createListing(
     userId: number,
     dto: CreateMarketplaceListingDto,
+    // Language of the submitted text. Defaults to the request's
+    // Accept-Language; callers that know better (trip-generator) pass it.
+    sourceLocale?: ContentLocale,
   ): Promise<MarketplaceListingDto> {
     let currency = dto.currency;
     if (!currency) {
@@ -433,6 +540,8 @@ export class MarketplaceService {
           currency,
           durationDays: dto.durationDays,
           tags: dto.tags,
+          sourceLocale:
+            sourceLocale ?? this.requestLocale() ?? ContentLocale.vi,
           status: MarketplaceListingStatus.PENDING_REVIEW,
         },
         include: LISTING_DETAIL_INCLUDE,
@@ -485,6 +594,7 @@ export class MarketplaceService {
           currency,
           durationDays: dto.durationDays ?? 1,
           tags: dto.tags ?? [],
+          sourceLocale: this.requestLocale() ?? ContentLocale.vi,
           status: MarketplaceListingStatus.DRAFT,
         },
         include: LISTING_DETAIL_INCLUDE,
@@ -581,9 +691,14 @@ export class MarketplaceService {
     const statsByListing = await this.fetchRatingStatsByListing(
       listings.map((l) => l.id),
     );
+    const locale = this.requestLocale();
     const listingDtos = await Promise.all(
       listings.map((l) =>
-        this.formatListing(l, statsByListing.get(l.id) ?? EMPTY_RATING_STATS),
+        this.formatListing(
+          l,
+          statsByListing.get(l.id) ?? EMPTY_RATING_STATS,
+          locale,
+        ),
       ),
     );
     const avatarUrl = await this.resolveMediaUrlOrPassThrough(user.avatarUrl);
@@ -649,7 +764,12 @@ export class MarketplaceService {
     }
 
     const stats = await this.fetchRatingStatsForListing(listing.id);
-    return this.formatListing(listing, stats);
+    // Edit workspace shows the creator their own (base) text.
+    return this.formatListing(
+      listing,
+      stats,
+      isEditContext ? null : this.requestLocale(),
+    );
   }
 
   /**
@@ -674,6 +794,9 @@ export class MarketplaceService {
       where,
       select: {
         name: true,
+        description: true,
+        sourceLocale: true,
+        translations: LISTING_TRANSLATIONS_SELECT,
         durationDays: true,
         status: true,
         deletedAt: true,
@@ -690,7 +813,7 @@ export class MarketplaceService {
     }
 
     return {
-      name: listing.name,
+      name: pickListingText(listing, this.requestLocale()).name,
       creatorName: listing.createdBy.displayName,
       durationDays: listing.durationDays,
     };
@@ -745,6 +868,13 @@ export class MarketplaceService {
         // Leaving APPROVED always drops the featured slot.
         data.featuredAt = null;
         data.featuredOrder = null;
+      }
+      // Base text changed → existing translations are stale. Drop them; the
+      // admin regenerates during review.
+      if (dto.name !== undefined || dto.description !== undefined) {
+        await tx.marketplaceListingTranslation.deleteMany({
+          where: { listingId },
+        });
       }
       return tx.marketplaceListing.update({
         where: { id: listingId },
@@ -843,6 +973,12 @@ export class MarketplaceService {
     });
     if (!listing) {
       throw new NotFoundException('Listing not found');
+    }
+
+    if (status === MarketplaceListingStatus.APPROVED) {
+      // upload_plan (1/month, deduped per listing) pays on admin approval —
+      // idempotent, so approve → return-to-review → approve can't double-pay.
+      void this.missions.onListingApproved(listing.createdById, listing.id);
     }
 
     if (
@@ -1011,6 +1147,7 @@ export class MarketplaceService {
         },
       });
       await this.flipStatusIfApproved(tx, listingId);
+      await this.invalidateListingTranslations(tx, listingId);
       return created;
     });
 
@@ -1049,6 +1186,12 @@ export class MarketplaceService {
         data,
       });
       await this.flipStatusIfApproved(tx, listingId);
+      if (dto.title !== undefined || dto.description !== undefined) {
+        await tx.tripPlanMarketItemTranslation.deleteMany({
+          where: { itemId },
+        });
+        await this.invalidateListingTranslations(tx, listingId);
+      }
       return updated;
     });
 
@@ -1066,6 +1209,7 @@ export class MarketplaceService {
     await this.prisma.$transaction(async (tx) => {
       await tx.tripPlanMarketItem.delete({ where: { id: itemId } });
       await this.flipStatusIfApproved(tx, listingId);
+      await this.invalidateListingTranslations(tx, listingId);
     });
   }
 
@@ -1214,7 +1358,7 @@ export class MarketplaceService {
 
     const { tripId, tripName, createdItemIds } = await this.prisma.$transaction(
       async (tx) => {
-        // Prefer existing acquisition — policy #1: what you bought is what you keep.
+        // Prefer the buyer's acquisition — what you bought is what you keep.
         let acquisition = await tx.marketplaceAcquisition.findUnique({
           where: { userId_listingId: { userId, listingId } },
           include: {
@@ -1229,64 +1373,17 @@ export class MarketplaceService {
         });
 
         if (!acquisition) {
-          // First-time acquisition: require the listing to be publicly available.
-          const listing = await tx.marketplaceListing.findUnique({
-            where: { id: listingId },
-            include: {
-              createdBy: { select: { displayName: true, avatarUrl: true } },
-              items: {
-                orderBy: [
-                  { dayNumber: Prisma.SortOrder.asc },
-                  { sortOrder: Prisma.SortOrder.asc },
-                  { id: Prisma.SortOrder.asc },
-                ],
-              },
-            },
-          });
-          if (
-            !listing ||
-            listing.deletedAt !== null ||
-            listing.status !== MarketplaceListingStatus.APPROVED
-          ) {
-            throw new NotFoundException('Listing not found');
-          }
-
-          const created = await tx.marketplaceAcquisition.create({
-            data: {
-              userId,
-              listingId,
-              snapshotName: listing.name,
-              snapshotDescription: listing.description,
-              snapshotCoverImageUrl: listing.coverImageUrl,
-              snapshotPrice: listing.price,
-              snapshotCurrency: listing.currency,
-              snapshotDurationDays: listing.durationDays,
-              snapshotTags: listing.tags,
-              snapshotCityId: listing.cityId,
-              snapshotStateId: listing.stateId,
-              snapshotCountryId: listing.countryId,
-              snapshotCreatorName: listing.createdBy.displayName,
-              snapshotCreatorAvatarUrl: listing.createdBy.avatarUrl,
-            },
-          });
-          if (listing.items.length > 0) {
-            await tx.acquisitionItem.createMany({
-              data: listing.items.map((mi) => ({
-                acquisitionId: created.id,
-                dayNumber: mi.dayNumber,
-                title: mi.title,
-                description: mi.description,
-                location: mi.location,
-                latitude: mi.latitude,
-                longitude: mi.longitude,
-                address: mi.address,
-                startTime: mi.startTime,
-                category: mi.category,
-                imageUrls: mi.imageUrls,
-                sortOrder: mi.sortOrder,
-              })),
-            });
-          }
+          // First-time acquisition: snapshot the listing (in the requester's
+          // locale) via the shared acquisition primitive. The APPROVED check
+          // lives in getApprovedListingForAcquisition.
+          const listing =
+            await this.getApprovedListingForAcquisition(listingId);
+          const created = await this.createAcquisitionSnapshot(
+            tx,
+            userId,
+            listingId,
+            listing,
+          );
           acquisition = await tx.marketplaceAcquisition.findUniqueOrThrow({
             where: { id: created.id },
             include: {
@@ -1299,6 +1396,34 @@ export class MarketplaceService {
               },
             },
           });
+        } else {
+          // The frozen snapshot may predate the admin's latest edits. Refresh
+          // it in place from the current approved listing; a missing/rejected/
+          // deleted listing keeps the frozen copy (same as before).
+          const listing =
+            await this.findApprovedListingForAcquisition(listingId);
+          if (
+            listing &&
+            (await this.acquisition.refreshAcquisitionSnapshotIfStale(
+              tx,
+              acquisition,
+              listing,
+              this.requestLocale(),
+            ))
+          ) {
+            acquisition = await tx.marketplaceAcquisition.findUniqueOrThrow({
+              where: { id: acquisition.id },
+              include: {
+                items: {
+                  orderBy: [
+                    { dayNumber: Prisma.SortOrder.asc },
+                    { sortOrder: Prisma.SortOrder.asc },
+                    { id: Prisma.SortOrder.asc },
+                  ],
+                },
+              },
+            });
+          }
         }
 
         const trip = await tx.trip.create({
@@ -1364,6 +1489,9 @@ export class MarketplaceService {
       undefined,
       { name: tripName },
     );
+    // Listing-created trips count for first_trip/streak like any other
+    // creation path (no startDate at this point).
+    void this.missions.onTripCreated(userId, tripId, null);
 
     if (createdItemIds.length > 0) {
       this.activityService.log(
@@ -1373,6 +1501,9 @@ export class MarketplaceService {
         createdItemIds[0],
         { title: `Applied marketplace listing #${listingId}` },
       );
+      // "New trip" from a listing is a plan apply too — same apply_plan
+      // mission as applying into an existing trip (plan-items).
+      void this.missions.onPlanApplied(userId);
     }
 
     return this.tripsService.findTripDetail(tripId, userId);
@@ -1431,6 +1562,10 @@ export class MarketplaceService {
       select: { rating: true },
     });
 
+    // rate_plan (3/week, deduped per listing so re-rating never re-pays).
+    // Eligibility (acquired + ended trip) was already enforced above.
+    void this.missions.onListingRated(userId, listingId);
+
     const stats = await this.fetchRatingStatsForListing(listingId);
 
     return {
@@ -1442,95 +1577,34 @@ export class MarketplaceService {
 
   // ── Private helpers ────────────────────────────────────────────────
 
-  private async getApprovedListingForAcquisition(listingId: number) {
-    const listing = await this.prisma.marketplaceListing.findUnique({
-      where: { id: listingId },
-      include: {
-        createdBy: { select: { displayName: true, avatarUrl: true } },
-        items: {
-          orderBy: [
-            { dayNumber: Prisma.SortOrder.asc },
-            { sortOrder: Prisma.SortOrder.asc },
-            { id: Prisma.SortOrder.asc },
-          ],
-        },
-      },
-    });
-
-    if (
-      !listing ||
-      listing.deletedAt !== null ||
-      listing.status !== MarketplaceListingStatus.APPROVED
-    ) {
-      throw new NotFoundException('Listing not found');
-    }
-
-    return listing;
+  // Acquisition lookup/snapshot live in MarketplaceAcquisitionService (shared
+  // with MissionsModule for the market_unlock redemption).
+  private getApprovedListingForAcquisition(listingId: number) {
+    return this.acquisition.getApprovedListingForAcquisition(listingId);
   }
 
-  private async createAcquisitionSnapshot(
+  private findApprovedListingForAcquisition(listingId: number) {
+    return this.acquisition.findApprovedListingForAcquisition(listingId);
+  }
+
+  private createAcquisitionSnapshot(
     tx: Prisma.TransactionClient,
     userId: number,
     listingId: number,
-    listing: Awaited<
-      ReturnType<MarketplaceService['getApprovedListingForAcquisition']>
-    >,
+    listing: AcquirableListing,
     payment?: {
       transactionId: string | null;
       paidAt: Date | null;
     },
   ) {
-    const created = await tx.marketplaceAcquisition.create({
-      data: {
-        userId,
-        listingId,
-        snapshotName: listing.name,
-        snapshotDescription: listing.description,
-        snapshotCoverImageUrl: listing.coverImageUrl,
-        snapshotPrice: listing.price,
-        snapshotCurrency: listing.currency,
-        snapshotDurationDays: listing.durationDays,
-        snapshotTags: listing.tags,
-        snapshotCityId: listing.cityId,
-        snapshotStateId: listing.stateId,
-        snapshotCountryId: listing.countryId,
-        snapshotCreatorName: listing.createdBy.displayName,
-        snapshotCreatorAvatarUrl: listing.createdBy.avatarUrl,
-      },
-    });
-
-    if (listing.items.length > 0) {
-      await tx.acquisitionItem.createMany({
-        data: listing.items.map((mi) => ({
-          acquisitionId: created.id,
-          dayNumber: mi.dayNumber,
-          title: mi.title,
-          description: mi.description,
-          location: mi.location,
-          latitude: mi.latitude,
-          longitude: mi.longitude,
-          address: mi.address,
-          startTime: mi.startTime,
-          category: mi.category,
-          imageUrls: mi.imageUrls,
-          sortOrder: mi.sortOrder,
-        })),
-      });
-    }
-
-    if (payment) {
-      await tx.marketplacePayment.create({
-        data: {
-          acquisitionId: created.id,
-          amount: listing.price,
-          currency: listing.currency,
-          transactionId: payment.transactionId,
-          paidAt: payment.paidAt,
-        },
-      });
-    }
-
-    return created;
+    return this.acquisition.createAcquisitionSnapshot(
+      tx,
+      userId,
+      listingId,
+      listing,
+      payment,
+      this.requestLocale(),
+    );
   }
 
   private normalizeMarketplaceFeedTake(take?: number): number {
@@ -1555,11 +1629,30 @@ export class MarketplaceService {
     });
   }
 
+  // Item add/edit/remove makes the listing-level translation set incomplete
+  // (a locale would be reported as available while an item has no row), so
+  // the whole listing is marked untranslated and regenerated by the admin.
+  private async invalidateListingTranslations(
+    tx: Prisma.TransactionClient,
+    listingId: number,
+  ): Promise<void> {
+    await tx.marketplaceListingTranslation.deleteMany({
+      where: { listingId },
+    });
+  }
+
   private async formatMarketplaceFeedItem(
     listing: {
       id: number;
       createdById: number;
       name: string;
+      description: string | null;
+      sourceLocale: ContentLocale;
+      translations?: Array<{
+        locale: ContentLocale;
+        name: string;
+        description: string | null;
+      }>;
       createdBy: { displayName: string; avatarUrl: string | null };
       coverImageUrl: string | null;
       price: Prisma.Decimal;
@@ -1574,6 +1667,7 @@ export class MarketplaceService {
     },
     acquired: boolean = false,
     stats: ListingRatingStats = EMPTY_RATING_STATS,
+    locale: ContentLocale | null = null,
   ): Promise<MarketplaceFeedItemDto> {
     const [coverImageUrl, creatorAvatarUrl] = await Promise.all([
       this.resolveMediaUrlOrPassThrough(listing.coverImageUrl),
@@ -1583,7 +1677,7 @@ export class MarketplaceService {
     return {
       id: listing.id,
       createdById: listing.createdById,
-      name: listing.name,
+      name: pickListingText(listing, locale).name,
       creatorName: listing.createdBy.displayName,
       creatorAvatarUrl,
       coverImageUrl,
@@ -1747,6 +1841,12 @@ export class MarketplaceService {
       createdBy: { displayName: string; avatarUrl: string | null };
       name: string;
       description: string | null;
+      sourceLocale: ContentLocale;
+      translations?: Array<{
+        locale: ContentLocale;
+        name: string;
+        description: string | null;
+      }>;
       coverImageUrl: string | null;
       playProductId: string | null;
       city: { id: number; name: string } | null;
@@ -1762,12 +1862,16 @@ export class MarketplaceService {
       _count: { acquisitions: number };
     },
     stats: ListingRatingStats = EMPTY_RATING_STATS,
+    // null → base text. Only public read paths pass the request locale.
+    locale: ContentLocale | null = null,
   ): Promise<MarketplaceListingDto> {
+    const textCtx = { sourceLocale: listing.sourceLocale, locale };
     const [coverImageUrl, creatorAvatarUrl, items] = await Promise.all([
       this.resolveMediaUrlOrPassThrough(listing.coverImageUrl),
       this.resolveMediaUrlOrPassThrough(listing.createdBy.avatarUrl),
-      Promise.all(listing.items.map((item) => this.formatItem(item))),
+      Promise.all(listing.items.map((item) => this.formatItem(item, textCtx))),
     ]);
+    const text = pickListingText(listing, locale);
 
     return {
       id: listing.id,
@@ -1776,8 +1880,10 @@ export class MarketplaceService {
       createdById: listing.createdById,
       creatorName: listing.createdBy.displayName,
       creatorAvatarUrl,
-      name: listing.name,
-      description: listing.description,
+      name: text.name,
+      description: text.description,
+      sourceLocale: listing.sourceLocale,
+      availableLocales: availableLocales(listing),
       coverImageUrl,
       cityId: listing.city?.id ?? null,
       stateId: listing.state?.id ?? null,
@@ -1799,34 +1905,46 @@ export class MarketplaceService {
     };
   }
 
-  private async formatItem(item: {
-    id: number;
-    listingId: number;
-    dayNumber: number;
-    title: string;
-    description: string | null;
-    location: string | null;
-    latitude: number | null;
-    longitude: number | null;
-    address: string | null;
-    startTime: string | null;
-    category: any;
-    imageUrls: string[];
-    sortOrder: number;
-    createdAt: Date;
-  }): Promise<MarketItemDto> {
+  private async formatItem(
+    item: {
+      id: number;
+      listingId: number;
+      dayNumber: number;
+      title: string;
+      description: string | null;
+      translations?: Array<{
+        locale: ContentLocale;
+        title: string;
+        description: string | null;
+      }>;
+      location: string | null;
+      latitude: number | null;
+      longitude: number | null;
+      address: string | null;
+      startTime: string | null;
+      category: any;
+      imageUrls: string[];
+      sortOrder: number;
+      createdAt: Date;
+    },
+    // Omitted → base text (creator item CRUD responses).
+    textCtx?: { sourceLocale: ContentLocale; locale: ContentLocale | null },
+  ): Promise<MarketItemDto> {
     const imageUrls = await Promise.all(
       item.imageUrls.map((imageUrl) =>
         this.resolveRequiredMediaUrlOrPassThrough(imageUrl),
       ),
     );
+    const text = textCtx
+      ? pickItemText(item, textCtx.sourceLocale, textCtx.locale)
+      : { title: item.title, description: item.description };
 
     return {
       id: item.id,
       listingId: item.listingId,
       dayNumber: item.dayNumber,
-      title: item.title,
-      description: item.description,
+      title: text.title,
+      description: text.description,
       location: item.location,
       latitude: item.latitude,
       longitude: item.longitude,

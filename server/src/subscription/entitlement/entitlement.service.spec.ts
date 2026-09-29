@@ -98,6 +98,29 @@ describe('EntitlementService', () => {
       expect(scanCredit.reconcileProGrants).not.toHaveBeenCalled();
       expect(tx.user.update).not.toHaveBeenCalled();
     });
+
+    // Fail-closed on removal: an event that doesn't know the subscription's
+    // state must never be able to downgrade a paying user.
+    describe('refuses to write an under-specified event', () => {
+      it('does NOT downgrade to NONE when status is missing', async () => {
+        await service.apply(subEvent({ status: undefined }));
+        expect(tx.user.update).not.toHaveBeenCalled();
+        expect(tx.subscriptionTransaction.upsert).not.toHaveBeenCalled();
+        expect(scanCredit.reconcileProGrants).not.toHaveBeenCalled();
+      });
+
+      it('does NOT blank subscriptionProductId when productId is empty', async () => {
+        await service.apply(subEvent({ productId: '' }));
+        expect(tx.user.update).not.toHaveBeenCalled();
+        expect(scanCredit.reconcileProGrants).not.toHaveBeenCalled();
+      });
+
+      it('resolves without throwing so one bad event cannot break a batch', async () => {
+        await expect(
+          service.apply(subEvent({ status: undefined })),
+        ).resolves.toBeUndefined();
+      });
+    });
   });
 
   describe('ONE_TIME_PURCHASE', () => {

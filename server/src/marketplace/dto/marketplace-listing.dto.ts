@@ -1,5 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Currency, ListingTag, MarketplaceListingStatus } from '@prisma/client';
+import {
+  ContentLocale,
+  Currency,
+  ListingTag,
+  MarketplaceListingStatus,
+} from '@prisma/client';
 import { MarketItemDto } from './market-item.dto';
 
 export class MarketplaceListingDto {
@@ -32,6 +37,23 @@ export class MarketplaceListingDto {
 
   @ApiPropertyOptional()
   description: string | null;
+
+  @ApiProperty({
+    enum: ContentLocale,
+    enumName: 'ContentLocale',
+    description:
+      'Language of the stored base text. `name`/`description`/item text are served in the Accept-Language locale when a translation exists, else in this language.',
+  })
+  sourceLocale: ContentLocale;
+
+  @ApiProperty({
+    enum: ContentLocale,
+    enumName: 'ContentLocale',
+    isArray: true,
+    description:
+      'Locales this listing can be served in (source + translations).',
+  })
+  availableLocales: ContentLocale[];
 
   @ApiPropertyOptional()
   coverImageUrl: string | null;

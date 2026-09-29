@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import {
   ActivityAction,
+  ContentLocale,
   Currency,
   InviteStatus,
   MarketplaceListingStatus,
@@ -17,6 +18,7 @@ import { StorageService } from '../storage/storage.service';
 import { TripActivityService } from '../trip-activity/trip-activity.service';
 import { TripsService } from '../trips/trips.service';
 import { MarketplaceService } from './marketplace.service';
+import { MarketplaceAcquisitionService } from './acquisition/marketplace-acquisition.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { MarketplaceFeedMatchedScope } from './dto/marketplace-feed-matched-scope.enum';
 import { MarketplaceFeedTab } from './dto/marketplace-feed-tab.enum';
@@ -24,6 +26,8 @@ import { SortDirection } from './dto/sort-direction.enum';
 
 describe('MarketplaceService', () => {
   let service: MarketplaceService;
+  let clsMock: { get: jest.Mock };
+  let missions: Record<string, jest.Mock>;
   let prisma: any;
   let storageService: Pick<
     StorageService,
@@ -112,14 +116,18 @@ describe('MarketplaceService', () => {
         findUnique: jest.fn(),
         findUniqueOrThrow: jest.fn(),
         groupBy: jest.fn().mockResolvedValue([]),
+        updateMany: jest.fn(),
       },
       acquisitionItem: {
         createMany: jest.fn(),
+        deleteMany: jest.fn(),
         findMany: jest.fn().mockResolvedValue([]),
       },
       marketplacePayment: {
         create: jest.fn(),
       },
+      marketplaceListingTranslation: { deleteMany: jest.fn() },
+      tripPlanMarketItemTranslation: { deleteMany: jest.fn() },
       marketplaceRating: {
         groupBy: jest.fn().mockResolvedValue([]),
         aggregate: jest
@@ -159,6 +167,13 @@ describe('MarketplaceService', () => {
       sendListingStatusPush: jest.fn().mockResolvedValue(undefined),
     };
 
+    clsMock = { get: jest.fn().mockReturnValue(null) };
+    missions = {
+      onListingApproved: jest.fn(),
+      onListingRated: jest.fn(),
+      onTripCreated: jest.fn(),
+      onPlanApplied: jest.fn(),
+    };
     service = new (MarketplaceService as any)(
       prisma as PrismaService,
       storageService as StorageService,
@@ -167,6 +182,11 @@ describe('MarketplaceService', () => {
       configService as ConfigService,
       purchaseVerifier,
       notificationsService as NotificationsService,
+      // Real acquisition service over the same prisma mock — the snapshot
+      // logic under test lives there now.
+      new MarketplaceAcquisitionService(prisma as PrismaService),
+      missions as any,
+      clsMock,
     );
   });
 
@@ -272,6 +292,145 @@ describe('MarketplaceService', () => {
     expect(result.items.map((i) => i.id)).toEqual([502, 503, 501]);
   });
 
+  // ── Feed language filtering ────────────────────────────────────────
+
+  describe('feed language filtering', () => {
+    const enClause = {
+      OR: [
+        { sourceLocale: ContentLocale.en },
+        { translations: { some: { locale: ContentLocale.en } } },
+      ],
+    };
+
+    it('filters candidates to the request locale (source or translation)', async () => {
+      clsMock.get.mockReturnValue(ContentLocale.en);
+      arrangeFeedCalls({
+        candidatesByLevel: { none: [candidateOf(1, '1000', new Date())] },
+        fullListings: [buildListing({ id: 1 })],
+      });
+
+      await service.listMarketplaceFeed({});
+
+      const candidateCall = (
+        prisma.marketplaceListing.findMany as jest.Mock
+      ).mock.calls.find((c) => c[0]?.select?.price !== undefined);
+      expect(candidateCall[0].where).toEqual(expect.objectContaining(enClause));
+    });
+
+    it('does not filter when the request has no supported locale', async () => {
+      clsMock.get.mockReturnValue(null);
+      arrangeFeedCalls({
+        candidatesByLevel: { none: [candidateOf(1, '1000', new Date())] },
+        fullListings: [buildListing({ id: 1 })],
+      });
+
+      await service.listMarketplaceFeed({});
+
+      const candidateCall = (
+        prisma.marketplaceListing.findMany as jest.Mock
+      ).mock.calls.find((c) => c[0]?.select?.price !== undefined);
+      expect(candidateCall[0].where).not.toHaveProperty('OR');
+    });
+
+    it('falls back to every language when the localized feed would be empty', async () => {
+      clsMock.get.mockReturnValue(ContentLocale.en);
+
+      const candidateWheres: any[] = [];
+      (prisma.marketplaceListing.findMany as jest.Mock).mockImplementation(
+        (args: any) => {
+          const where = args?.where ?? {};
+          if (args?.select?.price !== undefined) {
+            candidateWheres.push(where);
+            // First pass (localized) finds nothing; the unfiltered retry wins.
+            return Promise.resolve(
+              candidateWheres.length === 1
+                ? []
+                : [candidateOf(1, '1000', new Date())],
+            );
+          }
+          if (args?.include && where?.id?.in) {
+            return Promise.resolve([buildListing({ id: 1 })]);
+          }
+          return Promise.resolve([]);
+        },
+      );
+
+      const result = await service.listMarketplaceFeed({});
+
+      expect(candidateWheres).toHaveLength(2);
+      expect(candidateWheres[0]).toEqual(expect.objectContaining(enClause));
+      expect(candidateWheres[1]).not.toHaveProperty('OR');
+      expect(result.items.map((i) => i.id)).toEqual([1]);
+    });
+
+    it('falls back to every language per destination scope', async () => {
+      clsMock.get.mockReturnValue(ContentLocale.vi);
+
+      const cityWheres: any[] = [];
+      (prisma.marketplaceListing.findMany as jest.Mock).mockImplementation(
+        (args: any) => {
+          const where = args?.where ?? {};
+          if (args?.select?.price !== undefined && where.cityId !== undefined) {
+            cityWheres.push(where);
+            return Promise.resolve(
+              cityWheres.length === 1
+                ? []
+                : [candidateOf(9, '900', new Date())],
+            );
+          }
+          if (args?.select?.price !== undefined) return Promise.resolve([]);
+          if (args?.include && where?.id?.in) {
+            return Promise.resolve([buildListing({ id: 9 })]);
+          }
+          return Promise.resolve([]);
+        },
+      );
+
+      const result = await service.listMarketplaceFeed({ cityId: 77 });
+
+      expect(cityWheres).toHaveLength(2);
+      expect(result.matchedDestinationScope).toBe(
+        MarketplaceFeedMatchedScope.CITY,
+      );
+      expect(result.items.map((i) => i.id)).toEqual([9]);
+    });
+
+    it('localizes featured and falls back when no featured matches', async () => {
+      clsMock.get.mockReturnValue(ContentLocale.en);
+
+      const featuredWheres: any[] = [];
+      (prisma.marketplaceListing.findMany as jest.Mock).mockImplementation(
+        (args: any) => {
+          const where = args?.where ?? {};
+          if (where.featuredAt !== undefined) {
+            featuredWheres.push(where);
+            return Promise.resolve(
+              featuredWheres.length === 1
+                ? []
+                : [
+                    buildListing({
+                      id: 7,
+                      createdById: 99,
+                      sourceLocale: ContentLocale.en,
+                      translations: [],
+                    }),
+                  ],
+            );
+          }
+          if (args?.select?.price !== undefined) return Promise.resolve([]);
+          return Promise.resolve([]);
+        },
+      );
+
+      const result = await service.listMarketplaceFeed({});
+
+      expect(featuredWheres).toHaveLength(2);
+      expect(featuredWheres[0]).toEqual(expect.objectContaining(enClause));
+      expect(featuredWheres[1]).not.toHaveProperty('OR');
+      expect(result.featured.map((f) => f.id)).toEqual([7]);
+    });
+  });
+
   // ── applyForListing ────────────────────────────────────────────────
 
   const approvedListing = (overrides: Partial<any> = {}) => ({
@@ -298,6 +457,7 @@ describe('MarketplaceService', () => {
     updatedAt: new Date('2026-03-27T00:00:00.000Z'),
     _count: { acquisitions: 0 },
     playProductId: null,
+    translations: [],
     items: [
       {
         id: 100,
@@ -314,6 +474,8 @@ describe('MarketplaceService', () => {
         imageUrls: [],
         sortOrder: 0,
         createdAt: new Date('2026-03-27T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-27T00:00:00.000Z'),
+        translations: [],
       },
     ],
     ...overrides,
@@ -682,6 +844,43 @@ describe('MarketplaceService', () => {
     expect(updateArgs.data.playProductId).toBe('marketplace.sapa.2d1n');
   });
 
+  it.each([
+    [{}, undefined, undefined],
+    [{ cityId: 1, stateId: 2 }, { connect: { id: 1 } }, { connect: { id: 2 } }],
+    [
+      { cityId: null, stateId: 2 },
+      { disconnect: true },
+      { connect: { id: 2 } },
+    ],
+    [
+      { cityId: null, stateId: null, countryId: 3 },
+      { disconnect: true },
+      { disconnect: true },
+    ],
+  ])(
+    'updateListing preserves omission and disconnects explicit null: %j',
+    async (body, city, state) => {
+      const destinationPrisma = prisma as PrismaService;
+      (
+        destinationPrisma.marketplaceListing.findUnique as jest.Mock
+      ).mockResolvedValue({
+        createdById: 5,
+        deletedAt: null,
+      });
+      (
+        destinationPrisma.marketplaceListing.findUniqueOrThrow as jest.Mock
+      ).mockResolvedValue({ status: MarketplaceListingStatus.PENDING_REVIEW });
+      (
+        destinationPrisma.marketplaceListing.update as jest.Mock
+      ).mockResolvedValue(approvedListing());
+      await service.updateListing(1, 5, body);
+      const { data } = jest.mocked(destinationPrisma.marketplaceListing.update)
+        .mock.calls[0][0];
+      expect(data.city).toEqual(city);
+      expect(data.state).toEqual(state);
+    },
+  );
+
   // ── deleteListing is soft ──────────────────────────────────────────
 
   it('deleteListing soft-deletes (sets deletedAt)', async () => {
@@ -804,7 +1003,8 @@ describe('MarketplaceService', () => {
       snapshotCountryId: 7,
       snapshotCreatorName: 'Creator',
       snapshotCreatorAvatarUrl: null,
-      acquiredAt: new Date(),
+      acquiredAt: new Date('2026-01-01T00:00:00.000Z'),
+      snapshotSourceUpdatedAt: new Date('2026-01-01T00:00:00.000Z'),
       items: [
         {
           id: 500,
@@ -822,6 +1022,8 @@ describe('MarketplaceService', () => {
     (prisma.marketplaceAcquisition.findUnique as jest.Mock).mockResolvedValue(
       existing,
     );
+    // Listing was deleted/rejected after acquisition — keep the frozen copy.
+    (prisma.marketplaceListing.findUnique as jest.Mock).mockResolvedValue(null);
     (prisma.trip.create as jest.Mock).mockResolvedValue({ id: 999 });
     (prisma.tripMember.create as jest.Mock).mockResolvedValue({});
     (prisma.tripPlanItem.create as jest.Mock).mockResolvedValue({ id: 5001 });
@@ -830,8 +1032,11 @@ describe('MarketplaceService', () => {
 
     await service.createTripFromListing(77, 1);
 
-    // Listing should not be re-fetched; existing snapshot is reused.
-    expect(prisma.marketplaceListing.findUnique).not.toHaveBeenCalled();
+    // Listing is probed for drift, but with nothing approved the snapshot is
+    // reused as-is.
+    expect(prisma.marketplaceListing.findUnique).toHaveBeenCalled();
+    expect(prisma.marketplaceAcquisition.updateMany).not.toHaveBeenCalled();
+    expect(prisma.acquisitionItem.deleteMany).not.toHaveBeenCalled();
     expect(prisma.marketplaceAcquisition.create).not.toHaveBeenCalled();
     expect(prisma.tripPlanItem.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -845,6 +1050,183 @@ describe('MarketplaceService', () => {
       undefined,
       { name: 'Bought Plan' },
     );
+    expect(missions.onPlanApplied).toHaveBeenCalledWith(77);
+  });
+
+  it('createTripFromListing refreshes a stale snapshot before building the trip', async () => {
+    const acquiredAt = new Date('2026-01-01T00:00:00.000Z');
+    const existing = {
+      id: 10,
+      userId: 77,
+      listingId: 1,
+      snapshotName: 'Old Plan',
+      snapshotDescription: null,
+      snapshotCoverImageUrl: null,
+      snapshotPrice: new Prisma.Decimal('1000'),
+      snapshotCurrency: Currency.VND,
+      snapshotDurationDays: 3,
+      snapshotTags: [],
+      snapshotCityId: 42,
+      snapshotStateId: 10,
+      snapshotCountryId: 7,
+      snapshotCreatorName: 'Creator',
+      snapshotCreatorAvatarUrl: null,
+      acquiredAt,
+      snapshotSourceUpdatedAt: acquiredAt,
+      items: [
+        {
+          id: 500,
+          dayNumber: 1,
+          title: 'Old item',
+          description: null,
+          location: null,
+          startTime: null,
+          category: null,
+          imageUrls: [],
+          sortOrder: 0,
+        },
+      ],
+    };
+    const refreshedAt = new Date('2026-04-01T00:00:00.000Z');
+    (prisma.marketplaceAcquisition.findUnique as jest.Mock).mockResolvedValue(
+      existing,
+    );
+    (
+      prisma.marketplaceAcquisition.findUniqueOrThrow as jest.Mock
+    ).mockResolvedValue({
+      ...existing,
+      snapshotName: 'New Plan',
+      snapshotSourceUpdatedAt: refreshedAt,
+      items: [
+        {
+          id: 600,
+          dayNumber: 1,
+          title: 'New item',
+          description: null,
+          location: null,
+          startTime: null,
+          category: null,
+          imageUrls: [],
+          sortOrder: 0,
+        },
+      ],
+    });
+    (prisma.marketplaceListing.findUnique as jest.Mock).mockResolvedValue(
+      approvedListing({
+        updatedAt: refreshedAt,
+        items: [
+          {
+            id: 100,
+            listingId: 1,
+            dayNumber: 1,
+            title: 'New item',
+            description: null,
+            location: null,
+            latitude: null,
+            longitude: null,
+            address: null,
+            startTime: null,
+            category: null,
+            imageUrls: [],
+            sortOrder: 0,
+            createdAt: acquiredAt,
+            updatedAt: refreshedAt,
+            translations: [],
+          },
+        ],
+      }),
+    );
+    (prisma.marketplaceAcquisition.updateMany as jest.Mock).mockResolvedValue({
+      count: 1,
+    });
+    (prisma.trip.create as jest.Mock).mockResolvedValue({ id: 999 });
+    (prisma.tripMember.create as jest.Mock).mockResolvedValue({});
+    (prisma.tripPlanItem.create as jest.Mock).mockResolvedValue({ id: 5001 });
+    (prisma.tripPlanItemMember.create as jest.Mock).mockResolvedValue({});
+    (tripsService.findTripDetail as jest.Mock).mockResolvedValue({ id: 999 });
+
+    await service.createTripFromListing(77, 1);
+
+    expect(prisma.marketplaceAcquisition.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 10 }),
+      }),
+    );
+    expect(prisma.acquisitionItem.deleteMany).toHaveBeenCalledWith({
+      where: { acquisitionId: 10 },
+    });
+    expect(prisma.acquisitionItem.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ title: 'New item' })],
+    });
+    expect(prisma.tripPlanItem.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ title: 'New item' }),
+      }),
+    );
+    expect(activityService.log).toHaveBeenCalledWith(
+      999,
+      77,
+      ActivityAction.TRIP_CREATED,
+      undefined,
+      { name: 'New Plan' },
+    );
+  });
+
+  it('createTripFromListing keeps the snapshot when the listing is neither newer nor approved', async () => {
+    const existing = {
+      id: 10,
+      userId: 77,
+      listingId: 1,
+      snapshotName: 'Bought Plan',
+      snapshotDescription: null,
+      snapshotCoverImageUrl: null,
+      snapshotPrice: new Prisma.Decimal('1000'),
+      snapshotCurrency: Currency.VND,
+      snapshotDurationDays: 3,
+      snapshotTags: [],
+      snapshotCityId: 42,
+      snapshotStateId: 10,
+      snapshotCountryId: 7,
+      snapshotCreatorName: 'Creator',
+      snapshotCreatorAvatarUrl: null,
+      acquiredAt: new Date('2026-04-01T00:00:00.000Z'),
+      snapshotSourceUpdatedAt: new Date('2026-04-01T00:00:00.000Z'),
+      items: [
+        {
+          id: 500,
+          dayNumber: 1,
+          title: 'Snapshot item',
+          description: null,
+          location: null,
+          startTime: null,
+          category: null,
+          imageUrls: [],
+          sortOrder: 0,
+        },
+      ],
+    };
+    (prisma.marketplaceAcquisition.findUnique as jest.Mock).mockResolvedValue(
+      existing,
+    );
+    // Older approved content: the version gate must skip the refresh.
+    (prisma.marketplaceListing.findUnique as jest.Mock).mockResolvedValue(
+      approvedListing({
+        status: MarketplaceListingStatus.APPROVED,
+        updatedAt: new Date('2025-12-01T00:00:00.000Z'),
+        items: [],
+      }),
+    );
+    (prisma.trip.create as jest.Mock).mockResolvedValue({ id: 999 });
+    (prisma.tripMember.create as jest.Mock).mockResolvedValue({});
+    (prisma.tripPlanItem.create as jest.Mock).mockResolvedValue({ id: 5001 });
+    (prisma.tripPlanItemMember.create as jest.Mock).mockResolvedValue({});
+    (tripsService.findTripDetail as jest.Mock).mockResolvedValue({ id: 999 });
+
+    await service.createTripFromListing(77, 1);
+
+    expect(prisma.marketplaceAcquisition.updateMany).not.toHaveBeenCalled();
+    expect(prisma.acquisitionItem.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.marketplaceAcquisition.create).not.toHaveBeenCalled();
   });
 
   it('createTripFromListing creates fresh snapshot when no acquisition exists', async () => {
@@ -1226,6 +1608,8 @@ describe('MarketplaceService', () => {
     ) => ({
       id,
       listingId,
+      listing: { sourceLocale: 'vi' },
+      translations: [],
       dayNumber,
       title: `Item ${id}`,
       description: null,
@@ -1263,10 +1647,12 @@ describe('MarketplaceService', () => {
 
       expect(service.listMarketplaceFeed).toHaveBeenCalledWith({}, undefined);
       expect(prisma.tripPlanMarketItem.findMany).toHaveBeenCalledTimes(1);
-      expect(prisma.tripPlanMarketItem.findMany).toHaveBeenCalledWith({
-        where: { listingId: { in: [1, 2, 3] } },
-        orderBy: [{ dayNumber: 'asc' }, { sortOrder: 'asc' }, { id: 'asc' }],
-      });
+      expect(prisma.tripPlanMarketItem.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { listingId: { in: [1, 2, 3] } },
+          orderBy: [{ dayNumber: 'asc' }, { sortOrder: 'asc' }, { id: 'asc' }],
+        }),
+      );
 
       expect(result.items[0].items.map((i) => i.id)).toEqual([11, 12, 13]);
       expect(result.items[1].items).toEqual([]);
@@ -1298,4 +1684,135 @@ describe('MarketplaceService', () => {
   // silence unused import warnings
   void InviteStatus;
   void ForbiddenException;
+
+  // ── Localization (Accept-Language → translations) ─────────────────
+
+  describe('localization', () => {
+    const translated = (overrides: Partial<any> = {}) =>
+      approvedListing({
+        ...overrides,
+        sourceLocale: 'vi',
+        translations: [
+          {
+            locale: 'en',
+            name: 'Da Lat Trip EN',
+            description: null,
+            updatedAt: new Date('2026-03-27T00:00:00.000Z'),
+          },
+        ],
+        items: [
+          {
+            id: 100,
+            listingId: 1,
+            dayNumber: 1,
+            title: 'Cà phê',
+            description: 'x',
+            location: null,
+            latitude: null,
+            longitude: null,
+            address: null,
+            startTime: '08:00',
+            category: null,
+            imageUrls: [],
+            sortOrder: 0,
+            createdAt: new Date('2026-03-27T00:00:00.000Z'),
+            updatedAt: new Date('2026-03-27T00:00:00.000Z'),
+            translations: [
+              {
+                locale: 'en',
+                title: 'Coffee',
+                description: null,
+                updatedAt: new Date('2026-03-27T00:00:00.000Z'),
+              },
+            ],
+          },
+        ],
+      });
+
+    it('getListing serves the translation for the request locale with per-field fallback', async () => {
+      clsMock.get.mockReturnValue('en');
+      (prisma.marketplaceListing.findUnique as jest.Mock).mockResolvedValue(
+        translated(),
+      );
+      const dto = await service.getListing(1, 77);
+      expect(dto.name).toBe('Da Lat Trip EN');
+      expect(dto.description).toBe('desc');
+      expect(dto.items[0].title).toBe('Coffee');
+      expect(dto.items[0].description).toBe('x');
+      expect(dto.sourceLocale).toBe('vi');
+      expect(dto.availableLocales).toEqual(['vi', 'en']);
+    });
+
+    it('getListing serves base text when no header / source locale / no row', async () => {
+      (prisma.marketplaceListing.findUnique as jest.Mock).mockResolvedValue(
+        translated(),
+      );
+      clsMock.get.mockReturnValue(null);
+      expect((await service.getListing(1, 77)).name).toBe('Da Lat Trip');
+      clsMock.get.mockReturnValue('vi');
+      expect((await service.getListing(1, 77)).name).toBe('Da Lat Trip');
+      clsMock.get.mockReturnValue('en');
+      (prisma.marketplaceListing.findUnique as jest.Mock).mockResolvedValue(
+        approvedListing({ sourceLocale: 'vi', translations: [] }),
+      );
+      expect((await service.getListing(1, 77)).name).toBe('Da Lat Trip');
+    });
+
+    it('creator edit context and admin/my-listings always get base text', async () => {
+      clsMock.get.mockReturnValue('en');
+      (prisma.marketplaceListing.findUnique as jest.Mock).mockResolvedValue(
+        translated({ createdById: 5 }),
+      );
+      expect((await service.getListing(1, 5, 'edit')).name).toBe('Da Lat Trip');
+      (prisma.marketplaceListing.findMany as jest.Mock).mockResolvedValue([
+        translated(),
+      ]);
+      expect((await service.listMyListings(5))[0].name).toBe('Da Lat Trip');
+      expect(
+        (await service.adminListListings(MarketplaceListingStatus.APPROVED))[0]
+          .name,
+      ).toBe('Da Lat Trip');
+    });
+
+    it('acquisition snapshot is frozen in the requester locale', async () => {
+      clsMock.get.mockReturnValue('en');
+      (prisma.marketplaceListing.findUnique as jest.Mock).mockResolvedValue(
+        translated(),
+      );
+      (prisma.marketplaceAcquisition.create as jest.Mock).mockResolvedValue({
+        id: 20,
+        userId: 77,
+        listingId: 1,
+        acquiredAt: new Date(),
+      });
+      await service.applyForListing(77, 1);
+      expect(prisma.marketplaceAcquisition.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            snapshotName: 'Da Lat Trip EN',
+            snapshotDescription: 'desc',
+          }),
+        }),
+      );
+      expect(prisma.acquisitionItem.createMany).toHaveBeenCalledWith({
+        data: [expect.objectContaining({ title: 'Coffee', description: 'x' })],
+      });
+    });
+
+    it('updateListing name/description edit drops stale translations', async () => {
+      (prisma.marketplaceListing.findUnique as jest.Mock).mockResolvedValue(
+        approvedListing({ createdById: 5 }),
+      );
+      (
+        prisma.marketplaceListing.findUniqueOrThrow as jest.Mock
+      ).mockResolvedValue({ status: MarketplaceListingStatus.PENDING_REVIEW });
+      (prisma.marketplaceListing.update as jest.Mock).mockResolvedValue(
+        approvedListing(),
+      );
+      await service.updateListing(1, 5, { name: 'New' } as any);
+      expect(
+        prisma.marketplaceListingTranslation.deleteMany,
+      ).toHaveBeenCalledWith({ where: { listingId: 1 } });
+    });
+  });
 });

@@ -79,6 +79,42 @@ describe('NotificationsService (router)', () => {
     await service.sendTripInvitePush(42, 'I', 'T', 'CODE', [42, 99]);
     expect(prisma.deviceToken.findMany).not.toHaveBeenCalled();
   });
+
+  it('sendTripStartedPush targets the given members with a trip_started payload', async () => {
+    prisma.deviceToken.findMany.mockResolvedValue([
+      { token: 'ios1', platform: 'ios', user: { locale: 'EN' } },
+    ]);
+    await service.sendTripStartedPush(7, 'Da Lat', [1, 2]);
+    expect(prisma.deviceToken.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: { in: [1, 2] } } }),
+    );
+    expect(apns.sendBatch).toHaveBeenCalledWith(
+      ['ios1'],
+      expect.objectContaining({
+        type: 'trip_started',
+        title: 'Da Lat',
+        data: { tripId: '7' },
+      }),
+    );
+  });
+
+  it('sendTripAutoStartBlockedPush targets only the creator', async () => {
+    prisma.deviceToken.findMany.mockResolvedValue([
+      { token: 'ios1', platform: 'ios', user: { locale: 'VN' } },
+    ]);
+    await service.sendTripAutoStartBlockedPush(1, 7, 'Da Lat', ['Ann']);
+    expect(prisma.deviceToken.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: 1 } }),
+    );
+    expect(apns.sendBatch).toHaveBeenCalledWith(
+      ['ios1'],
+      expect.objectContaining({
+        type: 'trip_auto_start_blocked',
+        body: expect.stringContaining('Ann'),
+        data: { tripId: '7' },
+      }),
+    );
+  });
 });
 
 // Admin push: token resolution + result accounting live in the service; the

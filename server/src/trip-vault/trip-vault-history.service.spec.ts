@@ -1,4 +1,4 @@
-import { VaultTxKind } from '@prisma/client';
+import { VaultTxKind, VaultTxSource } from '@prisma/client';
 
 import { TripVaultHistoryService } from './trip-vault-history.service';
 
@@ -39,15 +39,20 @@ describe('TripVaultHistoryService.getHistory forUserId', () => {
     overrides: Partial<{
       id: number;
       kind: VaultTxKind;
+      source: VaultTxSource;
       userId: number | null;
       shareWithUserIds: number[];
       expenseName: string;
+      signature: string | null;
+      failureCode: string | null;
+      status: string;
     }>,
   ) {
     return {
       id: overrides.id ?? 1,
       kind: overrides.kind ?? VaultTxKind.SPEND,
-      status: 'CONFIRMED',
+      source: overrides.source ?? VaultTxSource.VAULT,
+      status: overrides.status ?? 'CONFIRMED',
       proposalPda: null,
       approvedAt: null,
       userId: overrides.userId ?? null,
@@ -59,7 +64,9 @@ describe('TripVaultHistoryService.getHistory forUserId', () => {
       amountVnd: 20_000n,
       expenseName: overrides.expenseName ?? 'Item',
       expenseCategory: 'FOOD',
-      signature: null,
+      signature:
+        overrides.signature === undefined ? 'sig' : overrides.signature,
+      failureCode: overrides.failureCode ?? null,
       createdAt: new Date('2026-08-19T00:00:00.000Z'),
       expense: null,
     };
@@ -127,6 +134,64 @@ describe('TripVaultHistoryService.getHistory forUserId', () => {
 
     const history = await service.getHistory(TRIP_ID, BORON);
     expect(history.map((e) => e.id)).toEqual([]);
+  });
+
+  it('names the payer only when the money came from their own wallet', async () => {
+    const { service } = build([
+      row({
+        id: 1,
+        kind: VaultTxKind.SPEND,
+        userId: HUY,
+        shareWithUserIds: [],
+      }),
+      row({
+        id: 2,
+        kind: VaultTxKind.SPEND,
+        source: VaultTxSource.PERSONAL,
+        userId: HUY,
+        shareWithUserIds: [],
+      }),
+    ]);
+
+    const history = await service.getHistory(TRIP_ID);
+    expect(history.find((e) => e.id === 1)!.paidBy).toBeNull();
+    expect(history.find((e) => e.id === 2)!.paidBy).toEqual(
+      expect.objectContaining({ userId: HUY }),
+    );
+  });
+
+  it('shows the payer their own personal spend even when not in the split', async () => {
+    const { service } = build([
+      row({
+        id: 1,
+        kind: VaultTxKind.SPEND,
+        source: VaultTxSource.PERSONAL,
+        userId: BORON,
+        shareWithUserIds: [HUY],
+        expenseName: 'Coffee',
+      }),
+    ]);
+
+    const history = await service.getHistory(TRIP_ID, BORON);
+    expect(history.map((e) => e.id)).toEqual([1]);
+  });
+
+  // Written before the client signs, so a wallet error leaves it behind with
+  // nothing on chain. It used to render as money spent.
+  it('hides a spend that never reached the chain', async () => {
+    const { service } = build([
+      row({ id: 1, status: 'PENDING', signature: null }),
+      row({
+        id: 2,
+        status: 'FAILED',
+        signature: null,
+        failureCode: 'abandoned',
+      }),
+      row({ id: 3, status: 'CONFIRMED', signature: 'sig' }),
+    ]);
+
+    const history = await service.getHistory(TRIP_ID);
+    expect(history.map((e) => e.id)).toEqual([3]);
   });
 
   it('without forUserId returns the full ledger', async () => {

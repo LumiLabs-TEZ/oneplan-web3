@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Currency, PlanScope } from '@prisma/client';
+import { Currency, ExpenseCategory, PlanScope } from '@prisma/client';
 import { BudgetPaymentDto } from './budget-payment.dto';
 
 export class BudgetDto {
@@ -20,6 +20,9 @@ export class BudgetDto {
 
   @ApiProperty({ enum: PlanScope, enumName: 'PlanScope' })
   scope: PlanScope;
+
+  @ApiPropertyOptional({ enum: ExpenseCategory, enumName: 'ExpenseCategory' })
+  category?: ExpenseCategory;
 
   @ApiProperty()
   createdAt: string;

@@ -33,7 +33,10 @@ export async function resolveAmounts(
       originalCurrency,
       tripCurrency,
     );
-    const converted = originalAmount.mul(rate);
+    // Round to the Decimal(18,2) column precision here so the in-memory value
+    // matches what Postgres persists — share math downstream relies on
+    // sum(shares) === amount holding exactly.
+    const converted = originalAmount.mul(rate).toDecimalPlaces(2);
     return {
       amount: converted,
       originalAmount,

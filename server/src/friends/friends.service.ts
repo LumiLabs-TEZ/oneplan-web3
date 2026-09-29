@@ -20,6 +20,7 @@ import { FriendProfileDto } from './dto/friend-profile.dto';
 import { FriendRequestDto } from './dto/friend-request.dto';
 import { FriendDto } from './dto/friend.dto';
 import { PublicFriendPreviewDto } from './dto/public-friend-preview.dto';
+import { isEntitledToPro } from '../common/subscription-status.util';
 
 @Injectable()
 export class FriendsService {
@@ -29,14 +30,6 @@ export class FriendsService {
     private readonly friendsHandler: FriendsHandler,
     private readonly storageService: StorageService,
   ) {}
-
-  private isUserPro(status: SubscriptionStatus | null): boolean {
-    const proStatuses: SubscriptionStatus[] = [
-      SubscriptionStatus.ACTIVE,
-      SubscriptionStatus.GRACE_PERIOD,
-    ];
-    return status !== null && proStatuses.includes(status);
-  }
 
   private async resolveAvatarUrl(value: string | null): Promise<string | null> {
     if (!value) return null;
@@ -169,7 +162,9 @@ export class FriendsService {
         id: number;
         displayName: string;
         avatarUrl: string | null;
-        subscriptionStatus: SubscriptionStatus | null;
+        subscriptionStatus: SubscriptionStatus;
+        subscriptionExpiresAt: Date | null;
+        createdAt: Date;
       };
     };
 
@@ -193,6 +188,8 @@ export class FriendsService {
               displayName: true,
               avatarUrl: true,
               subscriptionStatus: true,
+              subscriptionExpiresAt: true,
+              createdAt: true,
             },
           },
         },
@@ -216,7 +213,8 @@ export class FriendsService {
         id: request.sender.id,
         displayName: request.sender.displayName,
         avatarUrl: await this.resolveAvatarUrl(request.sender.avatarUrl),
-        isPro: this.isUserPro(request.sender.subscriptionStatus),
+        isPro: isEntitledToPro(request.sender),
+        memberSince: request.sender.createdAt.toISOString(),
       },
       mutualFriendCount: await this.getMutualFriendCount(
         senderId,
@@ -247,6 +245,8 @@ export class FriendsService {
             displayName: true,
             avatarUrl: true,
             subscriptionStatus: true,
+            subscriptionExpiresAt: true,
+            createdAt: true,
           },
         },
       },
@@ -260,7 +260,8 @@ export class FriendsService {
           id: req.sender.id,
           displayName: req.sender.displayName,
           avatarUrl: await this.resolveAvatarUrl(req.sender.avatarUrl),
-          isPro: this.isUserPro(req.sender.subscriptionStatus),
+          isPro: isEntitledToPro(req.sender),
+          memberSince: req.sender.createdAt.toISOString(),
         },
         mutualFriendCount: await this.getMutualFriendCount(
           userId,
@@ -372,6 +373,7 @@ export class FriendsService {
             displayName: true,
             avatarUrl: true,
             subscriptionStatus: true,
+            subscriptionExpiresAt: true,
           },
         },
         userB: {
@@ -380,6 +382,8 @@ export class FriendsService {
             displayName: true,
             avatarUrl: true,
             subscriptionStatus: true,
+            subscriptionExpiresAt: true,
+            createdAt: true,
           },
         },
       },
@@ -395,7 +399,7 @@ export class FriendsService {
             id: friend.id,
             displayName: friend.displayName,
             avatarUrl: await this.resolveAvatarUrl(friend.avatarUrl),
-            isPro: this.isUserPro(friend.subscriptionStatus),
+            isPro: isEntitledToPro(friend),
           },
           mutualFriendCount: await this.getMutualFriendCount(userId, friend.id),
           createdAt: f.createdAt.toISOString(),
@@ -417,6 +421,7 @@ export class FriendsService {
         friendCode: true,
         createdAt: true,
         subscriptionStatus: true,
+        subscriptionExpiresAt: true,
       },
     });
 
@@ -435,6 +440,7 @@ export class FriendsService {
             displayName: true,
             avatarUrl: true,
             subscriptionStatus: true,
+            subscriptionExpiresAt: true,
           },
         },
         userB: {
@@ -443,6 +449,8 @@ export class FriendsService {
             displayName: true,
             avatarUrl: true,
             subscriptionStatus: true,
+            subscriptionExpiresAt: true,
+            createdAt: true,
           },
         },
       },
@@ -509,7 +517,7 @@ export class FriendsService {
       avatarUrl: resolvedTargetAvatar,
       friendCode: targetUser.friendCode,
       memberSince: targetUser.createdAt.toISOString(),
-      isPro: this.isUserPro(targetUser.subscriptionStatus),
+      isPro: isEntitledToPro(targetUser),
       tripCount,
       cityCount,
       friendCount: friendships.length,
@@ -522,7 +530,7 @@ export class FriendsService {
         avatarUrl: resolvedFriendAvatars[index],
         friendCount: friendCounts.get(u.id) ?? 0,
         mutualFriendCount: mutualCounts.get(u.id) ?? 0,
-        isPro: this.isUserPro(u.subscriptionStatus),
+        isPro: isEntitledToPro(u),
       })),
     };
   }

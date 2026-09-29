@@ -20,8 +20,16 @@ export interface VerifiedGooglePlaySubscription {
   expiresAt: Date | null;
   startedAt: Date | null;
   /**
-   * True if Google reported the purchase as cancelled/revoked/refunded so the
-   * caller can downgrade the entitlement instead of granting Pro.
+   * True if the caller should downgrade the entitlement instead of granting
+   * Pro. Its EXACT meaning differs by `kind`:
+   *  - kind: 'product'      -> Google reported the (one-time) purchase as
+   *    genuinely refunded/revoked (`purchaseState === 1`).
+   *  - kind: 'subscription' -> the subscription has expired AND was
+   *    cancelled by the user (`expired && cancelledInPast`) — the normal end
+   *    of life of any cancelled subscription. This is NOT a refund signal;
+   *    a real subscription refund is a separate voidedPurchaseNotification
+   *    RTDN, handled independently of this field. Do not treat `revoked`
+   *    as "refunded" for a subscription — see PlayStoreAdapter.toStoreEvent.
    */
   revoked: boolean;
   /**
@@ -109,7 +117,16 @@ export class GooglePlaySubscriptionVerifierService {
       kind: 'subscription',
       productId: dto.productId,
       purchaseToken: dto.purchaseToken,
-      orderId: sub.orderId ?? dto.orderId ?? null,
+      // Do NOT fall back to dto.orderId here. The client (Play Billing
+      // Library) reports the BASE order id without the "..N" renewal suffix
+      // — only the Android Publisher REST API (sub.orderId, fetched above)
+      // returns the per-cycle suffixed form. Falling back to dto.orderId
+      // would hand PlayStoreAdapter a constant id across renewals again,
+      // silently reintroducing the single-grant-per-subscription bug. If
+      // sub.orderId is ever absent, leave this null so
+      // PlayStoreAdapter.cyclePeriodId falls through to its
+      // purchaseToken+expiry fallback, which IS per-cycle.
+      orderId: sub.orderId ?? null,
       active,
       acknowledged,
       expiresAt,

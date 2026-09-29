@@ -81,6 +81,11 @@ export async function lookupApplePlaces(
   query: string,
   limit = 6,
 ): Promise<ApplePlace[]> {
+  // Same host as image search: when DDG is unreachable/blocking this IP,
+  // every lookup would burn two 15s timeouts before the Nominatim fallback
+  // (one Ubud plan spent 50 minutes resolving places). Skip straight to the
+  // fallback while the cooldown is open.
+  if (ddgIsBlocked()) return [];
   try {
     const vqd = await fetchDdgVqd(
       `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iaxm=maps`,
@@ -96,7 +101,15 @@ export async function lookupApplePlaces(
       .slice(0, limit)
       .map(toApplePlace)
       .filter((p): p is ApplePlace => p !== null);
-  } catch {
+  } catch (e) {
+    if (
+      e instanceof TypeError ||
+      /fetch failed|aborted|ECONNRESET|ENOTFOUND|ETIMEDOUT/i.test(
+        (e as Error).message ?? '',
+      )
+    ) {
+      markDdgBlocked();
+    }
     return [];
   }
 }
@@ -472,15 +485,68 @@ function titleFromUrl(url: string): string {
   }
 }
 
-export async function ddgImageUrls(query: string): Promise<ImageResult[]> {
+// DuckDuckGo refuses bursts: with several plan items searched concurrently
+// it answers the vqd page with a bot challenge and `i.js` with 403 after the
+// first couple of queries (reproduced 2026-09 on the Singapore listing: 17 of
+// 19 items came back with zero photos). Image searches are therefore
+// serialized through one queue with a minimum gap, and a refusal is retried
+// with backoff instead of silently yielding an empty listing.
+const DDG_MIN_GAP_MS = 1200;
+const DDG_RETRY_DELAYS_MS = [2500, 6000];
+// Once a query has exhausted its retries the IP is blocked for a while; stop
+// paying ~10s of retries per query and let the other providers carry the
+// listing until the cooldown ends.
+const DDG_COOLDOWN_MS = 10 * 60_000;
+
+let ddgQueue: Promise<unknown> = Promise.resolve();
+let ddgLastAt = 0;
+let ddgBlockedUntil = 0;
+
+export function ddgIsBlocked(now = Date.now()): boolean {
+  return now < ddgBlockedUntil;
+}
+
+export function markDdgBlocked(): void {
+  ddgBlockedUntil = Date.now() + DDG_COOLDOWN_MS;
+}
+
+// Test hook.
+export function resetDdgState(): void {
+  ddgBlockedUntil = 0;
+  ddgLastAt = 0;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// Run `fn` after every earlier DDG call has finished and at least
+// DDG_MIN_GAP_MS since the previous one started.
+export function ddgSerialized<T>(fn: () => Promise<T>): Promise<T> {
+  const run = ddgQueue.then(async () => {
+    const wait = ddgLastAt + DDG_MIN_GAP_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    ddgLastAt = Date.now();
+    return fn();
+  });
+  ddgQueue = run.catch(() => undefined);
+  return run;
+}
+
+class DdgRefusedError extends Error {}
+
+async function ddgImageUrlsOnce(query: string): Promise<ImageResult[]> {
   const vqd = await fetchDdgVqd(
     `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`,
   );
-  if (!vqd) return [];
+  if (!vqd) throw new DdgRefusedError('no vqd (bot challenge)');
   const js = await fetchWithTimeout(
     `https://duckduckgo.com/i.js?l=us-en&o=json&q=${encodeURIComponent(query)}&vqd=${vqd}&f=,,,&p=1`,
     { headers: { 'User-Agent': UA, Referer: 'https://duckduckgo.com/' } },
   );
+  if (js.status === 403 || js.status === 429) {
+    throw new DdgRefusedError(`i.js ${js.status}`);
+  }
   if (!js.ok) return [];
   const data = (await js.json()) as {
     results?: {
@@ -500,14 +566,68 @@ export async function ddgImageUrls(query: string): Promise<ImageResult[]> {
     }));
 }
 
-export async function bingImageUrls(query: string): Promise<ImageResult[]> {
-  const r = await fetchWithTimeout(
-    `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2&first=1`,
-    { headers: { 'User-Agent': UA } },
-  );
-  const html = (await r.text()).replace(/&quot;/g, '"');
+export async function ddgImageUrls(
+  query: string,
+  onRefused?: (attempt: number, reason: string) => void,
+): Promise<ImageResult[]> {
+  if (ddgIsBlocked()) {
+    onRefused?.(0, 'skipped: cooldown after earlier refusals');
+    return [];
+  }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await ddgSerialized(() => ddgImageUrlsOnce(query));
+    } catch (e) {
+      // A network-level failure (DNS, connection refused, 15s abort) means
+      // DDG is unreachable from this host: retrying per query would cost the
+      // whole timeout budget 3x per item (Bangkok #174 took 8 minutes that
+      // way). Treat it like a refusal so the cooldown kicks in.
+      const network =
+        e instanceof TypeError ||
+        /fetch failed|aborted|ECONNRESET|ENOTFOUND|ETIMEDOUT/i.test(
+          (e as Error).message ?? '',
+        );
+      if (!(e instanceof DdgRefusedError) && !network) throw e;
+      onRefused?.(attempt + 1, (e as Error).message.slice(0, 60));
+      if (network) {
+        markDdgBlocked();
+        return [];
+      }
+      const delay = DDG_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) {
+        markDdgBlocked();
+        return [];
+      }
+      await sleep(delay);
+    }
+  }
+}
+
+// Bing's result grid carries one JSON blob per image in the anchor's `m`
+// attribute: `murl` (full-size image), `purl` (page) and `t` (page title).
+// The title is what lets the relevance gate judge the photo; earlier this
+// parser kept only `murl` and derived a "title" from the filename, which the
+// gate almost always rated `unverified`, so the Bing fallback never produced
+// a photo. Exported for tests.
+export function parseBingImageResults(rawHtml: string): ImageResult[] {
+  const html = rawHtml.replace(/&quot;/g, '"').replace(/&amp;/g, '&');
   const seen = new Set<string>();
   const out: ImageResult[] = [];
+  for (const m of html.matchAll(/ m="(\{.*?\})"/g)) {
+    let parsed: { murl?: string; t?: string; purl?: string };
+    try {
+      parsed = JSON.parse(m[1]) as typeof parsed;
+    } catch {
+      continue;
+    }
+    const url = parsed.murl;
+    if (!url || !/^https?:\/\//.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    const title = (parsed.t ?? '').trim() || titleFromUrl(url);
+    out.push({ url, title });
+  }
+  if (out.length > 0) return out;
+  // Markup changed: fall back to the bare murl scan so we still get URLs.
   for (const m of html.matchAll(/"murl":"(https?:\/\/[^"]+?)"/g)) {
     const url = m[1];
     if (seen.has(url)) continue;
@@ -515,6 +635,126 @@ export async function bingImageUrls(query: string): Promise<ImageResult[]> {
     out.push({ url, title: titleFromUrl(url) });
   }
   return out;
+}
+
+export async function bingImageUrls(query: string): Promise<ImageResult[]> {
+  const r = await fetchWithTimeout(
+    `https://www.bing.com/images/search?q=${encodeURIComponent(query)}&form=HDRSC2&first=1`,
+    { headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.8' } },
+  );
+  return parseBingImageResults(await r.text());
+}
+
+// Wikimedia Commons: free, keyless, stable, and every file is titled with
+// what it shows ("Maxwell Food Centre, 2024 (02).jpg"), which is exactly what
+// the relevance gate needs. Weak on hawker dishes, strong on venues and
+// landmarks. Commons asks for an identifying User-Agent.
+const WIKIMEDIA_UA =
+  'OnePlanTripGenerator/1.0 (https://oneplan.space)';
+const WIKIMEDIA_THUMB_WIDTH = 1600;
+
+interface CommonsPage {
+  title?: string;
+  imageinfo?: {
+    url?: string;
+    thumburl?: string;
+    width?: number;
+    height?: number;
+    mime?: string;
+  }[];
+}
+
+export function parseWikimediaResults(data: {
+  query?: { pages?: Record<string, CommonsPage> };
+}): ImageResult[] {
+  const pages = Object.values(data.query?.pages ?? {});
+  const out: ImageResult[] = [];
+  for (const p of pages) {
+    const info = p.imageinfo?.[0];
+    if (!info) continue;
+    const mime = (info.mime ?? '').toLowerCase();
+    if (!/^image\/(jpeg|png|webp)$/.test(mime)) continue;
+    const url = info.thumburl || info.url;
+    if (!url) continue;
+    const title = (p.title ?? '')
+      .replace(/^File:/, '')
+      .replace(/\.[a-z0-9]+$/i, '')
+      .replace(/[_]/g, ' ');
+    out.push({ url, title, width: info.width, height: info.height });
+  }
+  return out;
+}
+
+// Commons search is AND-of-all-terms, so the long "<venue> <City, District,
+// Country>" query that suits web search finds nothing there. Keep the venue
+// plus the first destination segment ("Satay by the Bay Singapore").
+export function compactCommonsQuery(query: string): string {
+  return query.split(',')[0].replace(/["]/g, '').trim();
+}
+
+export async function wikimediaImageUrls(
+  query: string,
+  limit = 12,
+): Promise<ImageResult[]> {
+  const params = new URLSearchParams({
+    action: 'query',
+    generator: 'search',
+    gsrsearch: compactCommonsQuery(query),
+    gsrnamespace: '6',
+    gsrlimit: String(limit),
+    prop: 'imageinfo',
+    iiprop: 'url|size|mime',
+    iiurlwidth: String(WIKIMEDIA_THUMB_WIDTH),
+    format: 'json',
+  });
+  const r = await fetchWithTimeout(
+    `https://commons.wikimedia.org/w/api.php?${params.toString()}`,
+    { headers: { 'User-Agent': WIKIMEDIA_UA } },
+  );
+  if (!r.ok) return [];
+  return parseWikimediaResults(
+    (await r.json()) as Parameters<typeof parseWikimediaResults>[0],
+  );
+}
+
+// Google Custom Search JSON API (image mode). Optional: only used when
+// GOOGLE_CSE_KEY + GOOGLE_CSE_CX are set. Pricing as published on
+// developers.google.com/custom-search/v1/overview (checked 2026-09-22):
+// 100 queries/day free, then $5 per 1000, max 10k/day.
+export async function googleCseImageUrls(
+  query: string,
+): Promise<ImageResult[]> {
+  const key = process.env.GOOGLE_CSE_KEY;
+  const cx = process.env.GOOGLE_CSE_CX;
+  if (!key || !cx) return [];
+  const params = new URLSearchParams({
+    key,
+    cx,
+    q: query,
+    searchType: 'image',
+    num: '10',
+    imgSize: 'large',
+    safe: 'active',
+  });
+  const r = await fetchWithTimeout(
+    `https://www.googleapis.com/customsearch/v1?${params.toString()}`,
+  );
+  if (!r.ok) return [];
+  const data = (await r.json()) as {
+    items?: {
+      link?: string;
+      title?: string;
+      image?: { width?: number; height?: number };
+    }[];
+  };
+  return (data.items ?? [])
+    .filter((x) => x.link)
+    .map((x) => ({
+      url: x.link as string,
+      title: x.title ?? '',
+      width: x.image?.width,
+      height: x.image?.height,
+    }));
 }
 
 export interface DownloadedImage {
@@ -572,6 +812,19 @@ const MIN_SOURCE_WIDTH = 640;
 const MIN_SOURCE_HEIGHT = 480;
 const MIN_IMAGE_BYTES = 25 * 1024;
 
+// Stock-photo hosts: every result is a watermarked comp image, rejected by
+// the vision review 100% of the time. Skip them before download.
+const STOCK_HOSTS =
+  /(^|\.)(alamy|dreamstime|istockphoto|shutterstock|gettyimages|123rf|depositphotos|adobe|stock\.adobe|bigstockphoto|canstockphoto|vectorstock|freepik|pond5|agefotostock|colourbox)\.com$/i;
+
+export function isStockHost(url: string): boolean {
+  try {
+    return STOCK_HOSTS.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function acceptableSize(r: ImageResult): boolean {
   if (r.width && r.width < MIN_SOURCE_WIDTH) return false;
   if (r.height && r.height < MIN_SOURCE_HEIGHT) return false;
@@ -590,27 +843,69 @@ function acceptableSize(r: ImageResult): boolean {
 // `used` (optional) is shared across the items of one listing: URLs and
 // content hashes already picked are skipped, so two plans at the same venue
 // get DIFFERENT photos instead of the same top results.
+export interface CollectImagesStats {
+  wikimediaResults: number;
+  googleResults: number;
+  ddgResults: number;
+  bingResults: number;
+  candidates: number;
+  ddgRefusals: string[];
+  errors: string[];
+}
+
 export async function collectImages(
   query: string,
   max = 5,
   accept: (r: ImageResult) => boolean = () => true,
   used?: UsedImages,
+  stats?: CollectImagesStats,
 ): Promise<CollectedImage[]> {
+  // Provider order: the reliable, titled sources first (Commons, then Google
+  // when a key is configured), the scrape-based ones after. DDG rate-limits
+  // datacenter IPs after a few dozen queries and Bing serves decoy results to
+  // cookie-less clients, so neither may be the only thing a listing relies on.
   let results: ImageResult[] = [];
   try {
-    results = await ddgImageUrls(query);
-  } catch {
-    // fall through to Bing
+    const wiki = await wikimediaImageUrls(query);
+    if (stats) stats.wikimediaResults += wiki.length;
+    results = results.concat(wiki);
+  } catch (e) {
+    stats?.errors.push(`wikimedia: ${(e as Error).message.slice(0, 80)}`);
+  }
+  if (results.length < max * 2) {
+    try {
+      const google = await googleCseImageUrls(query);
+      if (stats) stats.googleResults += google.length;
+      results = results.concat(google);
+    } catch (e) {
+      stats?.errors.push(`google: ${(e as Error).message.slice(0, 80)}`);
+    }
   }
   if (results.length < max * 3) {
     try {
-      results = results.concat(await bingImageUrls(query));
-    } catch {
-      // keep whatever DDG returned
+      const ddg = await ddgImageUrls(query, (attempt, reason) =>
+        stats?.ddgRefusals.push(`#${attempt} ${reason}`),
+      );
+      if (stats) stats.ddgResults += ddg.length;
+      results = results.concat(ddg);
+    } catch (e) {
+      stats?.errors.push(`ddg: ${(e as Error).message.slice(0, 80)}`);
+    }
+  }
+  if (results.length < max * 3) {
+    try {
+      const bing = await bingImageUrls(query);
+      if (stats) stats.bingResults += bing.length;
+      results = results.concat(bing);
+    } catch (e) {
+      stats?.errors.push(`bing: ${(e as Error).message.slice(0, 80)}`);
     }
   }
 
-  const candidates = results.filter((r) => acceptableSize(r) && accept(r));
+  const candidates = results.filter(
+    (r) => !isStockHost(r.url) && acceptableSize(r) && accept(r),
+  );
+  if (stats) stats.candidates += candidates.length;
 
   const seen = new Set<string>();
   const images: CollectedImage[] = [];

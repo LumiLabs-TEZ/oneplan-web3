@@ -1,8 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Currency, PlanScope } from '@prisma/client';
+import { Currency, ExpenseCategory, PlanScope } from '@prisma/client';
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsDefined,
   IsEnum,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
@@ -33,6 +36,27 @@ export class CreateBudgetDto {
   @IsOptional()
   @IsEnum(PlanScope)
   scope?: PlanScope;
+
+  @ApiPropertyOptional({
+    enum: ExpenseCategory,
+    enumName: 'ExpenseCategory',
+    description: 'Optional category, mirroring Expense.category.',
+  })
+  @IsOptional()
+  @IsEnum(ExpenseCategory)
+  category?: ExpenseCategory;
+
+  @ApiPropertyOptional({
+    type: [Number],
+    description:
+      'Contributor member user IDs for GROUP budgets. When omitted the budget is fanned out to every accepted trip member. Not allowed for PERSONAL budgets.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  userIds?: number[];
 
   @ApiPropertyOptional({
     type: 'number',

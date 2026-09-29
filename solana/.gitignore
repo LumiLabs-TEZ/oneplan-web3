@@ -6,3 +6,12 @@ node_modules
 test-ledger
 .yarn
 .surfpool
+
+# Keypairs / wallets: never commit key material
+*-keypair.json
+*keypair*.json
+id.json
+*.pem
+.env
+.env.*
+!.env.example

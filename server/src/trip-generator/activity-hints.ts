@@ -105,7 +105,7 @@ export const ACTIVITY_CLASSES: readonly ActivityClass[] = [
     // "ăn". 'bánh' is deliberately absent - it belongs to the cafe class
     // (bánh ngọt), which is checked right after this one.
     detect: vi(
-      'ăn|bữa|quán|food|lunch|dinner|breakfast|street food|hải sản|seafood|buffet|lẩu|nướng|bbq|' +
+      'ăn|bữa|quán ăn|quán cơm|quán nhậu|food|lunch|dinner|breakfast|street food|hải sản|seafood|buffet|lẩu|nướng|bbq|' +
         'phở|bún|cơm|xôi|cháo|mì|hủ tiếu|nem|chả|đặc sản|ẩm thực|nhà hàng|vịt quay|heo quay|restaurants?',
     ),
     hint: 'food dishes',
@@ -210,9 +210,9 @@ export const ACTIVITY_CLASSES: readonly ActivityClass[] = [
   {
     id: 'nightlife',
     detect: vi(
-      'bars?|pubs?|clubs?|rooftop|đêm|nightlife|night markets?|chợ đêm|shows?|trình diễn|biểu diễn|ánh sáng',
+      'bars?|pubs?|(?<!beach )clubs?|rooftop|đêm|nightlife|night markets?|chợ đêm|shows?|trình diễn|biểu diễn|ánh sáng',
     ),
-    hint: 'night light show',
+    hint: 'nightlife bar night scene',
     require: [
       'bar',
       'bars',
@@ -387,6 +387,42 @@ export const ACTIVITY_CLASSES: readonly ActivityClass[] = [
     forbid: [...MEAL_WORDS],
     fallback: 'spa relaxing',
   },
+  // Walking a district (Chinatown, the old quarter, a bar street): the photo
+  // should show the streets and shophouses, not one dish. Sits before 'photo'
+  // and after every venue-specific class so "khám phá chợ đêm" still lands in
+  // nightlife and "khám phá ẩm thực" (a food tour) stays with food.
+  {
+    id: 'explore',
+    detect: vi(
+      'khám phá|dạo|đi dạo|tản bộ|explore|stroll|wander|walk(ing)? tour|walk around|khu phố|phố cổ|old (town|quarter)|chinatown|little india|kampong',
+    ),
+    hint: 'street scenery',
+    require: [
+      'street',
+      'streets',
+      'pho',
+      'khu',
+      'district',
+      'quarter',
+      'chinatown',
+      'old town',
+      'pho co',
+      'alley',
+      'hem',
+      'shophouse',
+      'shophouses',
+      'architecture',
+      'kien truc',
+      'view',
+      'skyline',
+      'walk',
+      'walking',
+      'dao',
+      'tham quan',
+    ],
+    forbid: [...STAY_WORDS],
+    fallback: 'street scenery',
+  },
   {
     id: 'photo',
     detect: vi(
@@ -454,6 +490,19 @@ export function classifyActivity(text: string): ActivityClass | null {
     if (c.detect.test(text)) return c;
   }
   return null;
+}
+
+// The plan NAME says what the traveler does ("Khám phá khu phố Tàu"); the
+// description often mentions everything else there is at the place (the food
+// stalls of Chinatown), which used to drag a sightseeing stop into the food
+// class and get every street photo rejected for "not showing dishes". Classify
+// on the name first and only fall back to the description when the name is
+// silent.
+export function classifyActivityForItem(
+  name: string,
+  description?: string,
+): ActivityClass | null {
+  return classifyActivity(name) ?? classifyActivity(description ?? '');
 }
 
 export function activityClassById(id: string): ActivityClass | null {

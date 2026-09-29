@@ -6,10 +6,22 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiTags,
+} from '@nestjs/swagger';
+import { VaultTxSource } from '@prisma/client';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { TripVaultService } from './trip-vault.service';
+import { Web3EnabledGuard } from '../solana/web3-enabled.guard';
+import {
+  DEFAULT_DAILY_LIMIT_MICRO,
+  DEFAULT_THRESHOLD_MICRO,
+  TripVaultService,
+} from './trip-vault.service';
 import { TripVaultPayService } from './trip-vault-pay.service';
 import { TripVaultHistoryService } from './trip-vault-history.service';
 import { TripVaultSettlementService } from './trip-vault-settlement.service';
@@ -34,13 +46,12 @@ import {
   VaultHistoryEntryDto,
   VaultTransactionDetailDto,
 } from './dto/vault-history.dto';
-import {
-  ConfirmCashDebtDto,
-  SettlementPreviewDto,
-} from './dto/settlement.dto';
+import { ConfirmCashDebtDto, SettlementPreviewDto } from './dto/settlement.dto';
 import { UpdateVaultSpendDto } from './dto/update-vault-spend.dto';
 
 @ApiTags('trip-vault')
+@ApiBearerAuth()
+@UseGuards(Web3EnabledGuard)
 @ApiParam({ name: 'tripId', type: 'integer' })
 @Controller('trips/:tripId/vault')
 export class TripVaultController {
@@ -69,6 +80,7 @@ export class TripVaultController {
     @Body() dto: LinkWalletDto,
     @CurrentUser('sub') userId: number,
   ): Promise<LinkWalletResponseDto> {
+    await this.vaultService.assertMember(tripId, userId);
     const wallet = await this.vaultService.linkWallet(userId, dto.publicKey);
     try {
       await this.vaultService.syncMembers(tripId);
@@ -91,11 +103,17 @@ export class TripVaultController {
     @Body() dto: CreateVaultDto,
     @CurrentUser('sub') userId: number,
   ): Promise<VaultCreatedDto> {
+    // Choosing custom spend limits is a trip-configuration decision, so only
+    // the host may do it explicitly (a member's first payment still creates a
+    // vault implicitly, with the fixed defaults, via ensureDefaultVault).
+    await this.vaultService.assertHost(tripId, userId);
     const vault = await this.vaultService.createVault(
       tripId,
       userId,
-      BigInt(dto.thresholdMicro ?? '3000000'),
-      BigInt(dto.dailyLimitMicro ?? '100000000'),
+      dto.thresholdMicro ? BigInt(dto.thresholdMicro) : DEFAULT_THRESHOLD_MICRO,
+      dto.dailyLimitMicro
+        ? BigInt(dto.dailyLimitMicro)
+        : DEFAULT_DAILY_LIMIT_MICRO,
     );
     // Members are synced here rather than left to a separate call: a vault
     // nobody can approve against is not usable, and forgetting the second step
@@ -132,7 +150,9 @@ export class TripVaultController {
   })
   async getBalance(
     @Param('tripId', ParseIntPipe) tripId: number,
+    @CurrentUser('sub') userId: number,
   ): Promise<VaultBalanceDto> {
+    await this.vaultService.assertMember(tripId, userId);
     const vault = await this.vaultService.requireVault(tripId);
     const accounts = await this.vaultService.getBalance(tripId);
     return {
@@ -153,7 +173,11 @@ export class TripVaultController {
   })
   async syncMembers(
     @Param('tripId', ParseIntPipe) tripId: number,
+    @CurrentUser('sub') userId: number,
   ): Promise<SyncMembersResultDto> {
+    // Self-sync already happens on wallet link (linkWallet above); this manual
+    // re-sync is a host/admin action.
+    await this.vaultService.assertHost(tripId, userId);
     return { added: await this.vaultService.syncMembers(tripId) };
   }
 
@@ -167,6 +191,7 @@ export class TripVaultController {
     @Body() dto: DepositRequestDto,
     @CurrentUser('sub') userId: number,
   ): Promise<UnsignedTxDto> {
+    await this.vaultService.assertMember(tripId, userId);
     const base64Tx = await this.vaultService.buildDepositTx(
       tripId,
       userId,
@@ -185,12 +210,14 @@ export class TripVaultController {
     @Body() dto: SubmitDepositDto,
     @CurrentUser('sub') userId: number,
   ): Promise<DepositResultDto> {
+    await this.vaultService.assertMember(tripId, userId);
+    // dto.amountMicro is deliberately not passed on: the credited amount is
+    // decoded from the signed transaction itself (audit S1).
     return {
       signature: await this.vaultService.submitDeposit(
         tripId,
         userId,
         dto.signedTx,
-        BigInt(dto.amountMicro),
       ),
     };
   }
@@ -202,7 +229,9 @@ export class TripVaultController {
   })
   async getHistory(
     @Param('tripId', ParseIntPipe) tripId: number,
+    @CurrentUser('sub') userId: number,
   ): Promise<VaultHistoryEntryDto[]> {
+    await this.vaultService.assertMember(tripId, userId);
     return this.historyService.getHistory(tripId);
   }
 
@@ -217,6 +246,7 @@ export class TripVaultController {
     @Param('vaultTransactionId', ParseIntPipe) vaultTransactionId: number,
     @CurrentUser('sub') userId: number,
   ): Promise<VaultTransactionDetailDto> {
+    await this.vaultService.assertMember(tripId, userId);
     return this.historyService.getTransactionDetail(
       tripId,
       vaultTransactionId,
@@ -236,6 +266,7 @@ export class TripVaultController {
     @CurrentUser('sub') userId: number,
     @Body() dto: UpdateVaultSpendDto,
   ): Promise<VaultTransactionDetailDto> {
+    await this.vaultService.assertMember(tripId, userId);
     await this.payService.updateSpendMetadata(
       tripId,
       vaultTransactionId,
@@ -257,7 +288,9 @@ export class TripVaultController {
   async lookupRecipient(
     @Param('tripId', ParseIntPipe) tripId: number,
     @Body() dto: LookupRecipientDto,
+    @CurrentUser('sub') userId: number,
   ): Promise<RecipientDto> {
+    await this.vaultService.assertMember(tripId, userId);
     const found = await this.payService.lookupRecipient(dto.qrPayload);
     return {
       recipientName: found.recipientName,
@@ -278,11 +311,13 @@ export class TripVaultController {
     @Body() dto: PayQuoteRequestDto,
     @CurrentUser('sub') userId: number,
   ): Promise<PayQuoteDto> {
+    await this.vaultService.assertMember(tripId, userId);
     const quote = await this.payService.quote(
       tripId,
       userId,
       dto.qrPayload,
       dto.amountVnd ? BigInt(dto.amountVnd) : undefined,
+      dto.source ?? VaultTxSource.VAULT,
     );
     return {
       recipientName: quote.recipientName,
@@ -293,6 +328,7 @@ export class TripVaultController {
       feeMicro: quote.feeMicro.toString(),
       rate: quote.rate,
       needsApproval: quote.needsApproval,
+      source: quote.source,
     };
   }
 
@@ -306,12 +342,14 @@ export class TripVaultController {
     @Body() dto: PreparePaymentDto,
     @CurrentUser('sub') userId: number,
   ): Promise<PreparePaymentResponseDto> {
+    await this.vaultService.assertMember(tripId, userId);
     return this.payService.preparePayment(tripId, userId, {
       qrPayload: dto.qrPayload,
       amountVnd: dto.amountVnd ? BigInt(dto.amountVnd) : undefined,
       name: dto.name,
       category: dto.category,
       shareWithUserIds: dto.shareWithUserIds,
+      source: dto.source ?? VaultTxSource.VAULT,
     });
   }
 
@@ -325,11 +363,14 @@ export class TripVaultController {
     @Param('tripId', ParseIntPipe) tripId: number,
     @Param('vaultTransactionId', ParseIntPipe) vaultTransactionId: number,
     @Body() dto: SubmitSignedDto,
+    @CurrentUser('sub') userId: number,
   ): Promise<SubmitResultDto> {
+    await this.vaultService.assertMember(tripId, userId);
     const record = await this.payService.submitPayment(
       vaultTransactionId,
       dto.signedTx,
       tripId,
+      userId,
     );
     return { status: record.status };
   }
@@ -345,6 +386,7 @@ export class TripVaultController {
     @Param('vaultTransactionId', ParseIntPipe) vaultTransactionId: number,
     @CurrentUser('sub') userId: number,
   ): Promise<UnsignedTxDto> {
+    await this.vaultService.assertMember(tripId, userId);
     return {
       base64Tx: await this.payService.buildApprovalTx(
         vaultTransactionId,
@@ -365,6 +407,7 @@ export class TripVaultController {
     @Param('vaultTransactionId', ParseIntPipe) vaultTransactionId: number,
     @CurrentUser('sub') userId: number,
   ): Promise<UnsignedTxDto> {
+    await this.vaultService.assertMember(tripId, userId);
     return {
       base64Tx: await this.payService.buildCancelTx(
         vaultTransactionId,
@@ -384,11 +427,34 @@ export class TripVaultController {
     @Param('tripId', ParseIntPipe) tripId: number,
     @Param('vaultTransactionId', ParseIntPipe) vaultTransactionId: number,
     @Body() dto: SubmitSignedDto,
+    @CurrentUser('sub') userId: number,
   ): Promise<{ status: string }> {
+    await this.vaultService.assertMember(tripId, userId);
     const record = await this.payService.submitCancel(
       vaultTransactionId,
       dto.signedTx,
       tripId,
+      userId,
+    );
+    return { status: record.status };
+  }
+
+  @ApiParam({ name: 'vaultTransactionId', type: 'integer' })
+  @Post('pay/:vaultTransactionId/abandon')
+  @ApiOperation({
+    summary: 'Retire a payment the client could not sign',
+    operationId: 'abandonVaultPayment',
+  })
+  async abandonPayment(
+    @Param('tripId', ParseIntPipe) tripId: number,
+    @Param('vaultTransactionId', ParseIntPipe) vaultTransactionId: number,
+    @CurrentUser('sub') userId: number,
+  ): Promise<SubmitResultDto> {
+    await this.vaultService.assertMember(tripId, userId);
+    const record = await this.payService.abandonPayment(
+      vaultTransactionId,
+      tripId,
+      userId,
     );
     return { status: record.status };
   }
@@ -402,6 +468,7 @@ export class TripVaultController {
     @Param('tripId', ParseIntPipe) tripId: number,
     @CurrentUser('sub') userId: number,
   ): Promise<SettlementPreviewDto> {
+    await this.vaultService.assertMember(tripId, userId);
     return this.settlementService.preview(tripId, userId);
   }
 
@@ -415,6 +482,7 @@ export class TripVaultController {
     @Body() dto: ConfirmCashDebtDto,
     @CurrentUser('sub') userId: number,
   ): Promise<void> {
+    await this.vaultService.assertMember(tripId, userId);
     await this.settlementService.confirmCashDebt(
       tripId,
       dto.fromUserId,

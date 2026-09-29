@@ -7,6 +7,10 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { AppLaunchDto } from './dto/app-launch.dto';
+import {
+  RewardedAdGrantRequestDto,
+  RewardedAdGrantResponseDto,
+} from './dto/rewarded-ad.dto';
 import { ScanCreditBalanceDto } from './dto/scan-credit-balance.dto';
 import { ScanCreditService } from './scan-credit.service';
 
@@ -33,6 +37,30 @@ export class ScanCreditController {
       dto.appVersion,
     );
     return {
+      available: balance.available,
+      nextProGrantAt: balance.nextProGrantAt
+        ? balance.nextProGrantAt.toISOString()
+        : null,
+    };
+  }
+
+  @Post('rewarded-ad')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'grantRewardedAdCredit',
+    summary:
+      'Grants +1 scan credit after a completed rewarded ad view. Idempotent on adKey; capped at 3 grants per UTC day. granted=false with remainingToday=0 means the daily cap is exhausted.',
+  })
+  @ApiOkResponse({ type: RewardedAdGrantResponseDto })
+  async rewardedAd(
+    @CurrentUser('sub') userId: number,
+    @Body() dto: RewardedAdGrantRequestDto,
+  ): Promise<RewardedAdGrantResponseDto> {
+    const result = await this.scanCredit.grantRewardedAd(userId, dto.adKey);
+    const balance = await this.scanCredit.getBalance(userId);
+    return {
+      granted: result.granted,
+      remainingToday: result.remainingToday,
       available: balance.available,
       nextProGrantAt: balance.nextProGrantAt
         ? balance.nextProGrantAt.toISOString()

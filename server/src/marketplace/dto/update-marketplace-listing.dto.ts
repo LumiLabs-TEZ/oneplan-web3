@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayMinSize,
   IsEnum,
@@ -34,15 +34,15 @@ export class UpdateMarketplaceListingDto {
   @MaxLength(2048)
   coverImageUrl?: string;
 
-  @ApiPropertyOptional({ type: 'integer' })
+  @ApiPropertyOptional({ type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
-  cityId?: number;
+  cityId?: number | null;
 
-  @ApiPropertyOptional({ type: 'integer' })
+  @ApiPropertyOptional({ type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
-  stateId?: number;
+  stateId?: number | null;
 
   @ApiPropertyOptional({ type: 'integer' })
   @IsOptional()

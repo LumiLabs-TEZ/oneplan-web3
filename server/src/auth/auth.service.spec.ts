@@ -17,7 +17,6 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { ScanCreditService } from '../scan-credit/scan-credit.service';
-import { DeletedUsersService } from '../deleted-users/deleted-users.service';
 import { AppleAuthService } from './apple-auth.service';
 import { GoogleAuthService } from './google-auth.service';
 import { JwtTokenService } from './jwt.service';
@@ -123,10 +122,6 @@ describe('AuthService.socialLogin', () => {
         },
         { provide: AnalyticsService, useValue: analytics },
         { provide: ScanCreditService, useValue: scanCredit },
-        {
-          provide: DeletedUsersService,
-          useValue: { archiveUser: jest.fn().mockResolvedValue(undefined) },
-        },
       ],
     }).compile();
 

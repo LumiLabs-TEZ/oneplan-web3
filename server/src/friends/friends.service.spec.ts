@@ -96,6 +96,7 @@ describe('FriendsService', () => {
           displayName: 'Alice',
           avatarUrl: null,
           subscriptionStatus: null,
+          createdAt: new Date('2025-03-01T00:00:00.000Z'),
         },
       });
       (prisma.$queryRaw as jest.Mock).mockResolvedValue([{ count: BigInt(0) }]);
@@ -191,6 +192,7 @@ describe('FriendsService', () => {
           displayName: 'Someone',
           avatarUrl: null,
           subscriptionStatus: null,
+          createdAt: new Date('2025-03-01T00:00:00.000Z'),
         },
       });
       (prisma.$queryRaw as jest.Mock).mockResolvedValue([{ count: BigInt(0) }]);
@@ -351,6 +353,7 @@ describe('FriendsService', () => {
           displayName: 'Alice',
           avatarUrl: null,
           subscriptionStatus: null,
+          createdAt: new Date('2025-03-01T00:00:00.000Z'),
         },
       });
       (prisma.$queryRaw as jest.Mock).mockResolvedValue([{ count: BigInt(0) }]);
@@ -726,6 +729,7 @@ describe('FriendsService', () => {
             id: 5,
             displayName: 'Eve',
             avatarUrl: 'eve.jpg',
+            createdAt: new Date('2024-11-05T00:00:00.000Z'),
           },
         },
       ]);
@@ -736,7 +740,13 @@ describe('FriendsService', () => {
       expect(result).toEqual([
         {
           id: 1,
-          sender: { id: 5, displayName: 'Eve', avatarUrl: null, isPro: false },
+          sender: {
+            id: 5,
+            displayName: 'Eve',
+            avatarUrl: null,
+            isPro: false,
+            memberSince: '2024-11-05T00:00:00.000Z',
+          },
           mutualFriendCount: 3,
           createdAt: '2026-04-01T10:00:00.000Z',
         },

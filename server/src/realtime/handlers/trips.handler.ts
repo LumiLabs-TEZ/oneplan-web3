@@ -25,6 +25,14 @@ export class TripsHandler {
     return this.connectionService.filterOnlineUserIds(userIds);
   }
 
+  sendTripStarted(tripId: number): void {
+    this.connectionService.broadcastToRoom(
+      tripId,
+      REALTIME_EVENTS.TRIP_STARTED,
+      { tripId },
+    );
+  }
+
   sendTripEnded(tripId: number): void {
     this.connectionService.broadcastToRoom(tripId, REALTIME_EVENTS.TRIP_ENDED, {
       tripId,
@@ -142,10 +150,7 @@ export class TripsHandler {
   }
 
   /** Member announced leave; host refreshes and opens confirm sheet. */
-  sendVaultLeaveRequested(
-    tripId: number,
-    payload: { userId: number },
-  ): void {
+  sendVaultLeaveRequested(tripId: number, payload: { userId: number }): void {
     this.connectionService.broadcastToRoom(
       tripId,
       REALTIME_EVENTS.VAULT_LEAVE_REQUESTED,

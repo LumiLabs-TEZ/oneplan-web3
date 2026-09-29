@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Post,
+  Query,
+  Res,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiCreatedResponse,
@@ -7,6 +16,7 @@ import {
   ApiOperation,
   ApiParam,
   ApiProduces,
+  ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 import type { FastifyReply } from 'fastify';
@@ -14,7 +24,9 @@ import archiver from 'archiver';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { GenerateTripPlanDto } from './dto/generate-trip-plan.dto';
 import {
+  BackfillListingImagesResultDto,
   CreateListingFromPlanResultDto,
+  SyncListingImagesResultDto,
   GenerateTripPlanResultDto,
 } from './dto/generated-plan.dto';
 import { TripGeneratorService } from './trip-generator.service';
@@ -108,5 +120,74 @@ export class TripGeneratorController {
     @CurrentUser('sub') userId: number,
   ): Promise<CreateListingFromPlanResultDto> {
     return this.tripGenerator.createListing(id, userId);
+  }
+
+  @Post('listings/:listingId/backfill-images')
+  @ApiOperation({
+    operationId: 'backfillListingImages',
+    summary:
+      'Search and attach photos for the items of an existing listing (owned by the current user) that have fewer than `minImages` photos. Use after a create-listing run that came back with too few images. Can take a few minutes.',
+  })
+  @ApiParam({ name: 'listingId', type: 'integer' })
+  @ApiQuery({
+    name: 'minImages',
+    required: false,
+    type: 'integer',
+    description: 'Items with fewer photos than this are refilled (default 1)',
+  })
+  @ApiQuery({
+    name: 'dedupe',
+    required: false,
+    type: 'boolean',
+    description:
+      'Also drop byte-identical duplicate photos within an item before refilling (default false)',
+  })
+  @ApiQuery({
+    name: 'recheck',
+    required: false,
+    type: 'boolean',
+    description:
+      'Re-run the vision review on photos already attached and drop the ones it fails (default false)',
+  })
+  @ApiCreatedResponse({ type: BackfillListingImagesResultDto })
+  @ApiNotFoundResponse({ description: 'Listing not found or not owned' })
+  backfillImages(
+    @Param('listingId', ParseIntPipe) listingId: number,
+    @CurrentUser('sub') userId: number,
+    @Query('minImages') minImages?: string,
+    @Query('dedupe') dedupe?: string,
+    @Query('recheck') recheck?: string,
+  ): Promise<BackfillListingImagesResultDto> {
+    const min = Math.min(Math.max(parseInt(minImages ?? '1', 10) || 1, 1), 5);
+    const flag = (v?: string) => v === 'true' || v === '1';
+    return this.tripGenerator.backfillListingImages(
+      listingId,
+      userId,
+      min,
+      flag(dedupe),
+      flag(recheck),
+    );
+  }
+
+  @Post('listings/:listingId/sync-images-from/:sourceListingId')
+  @ApiOperation({
+    operationId: 'syncListingImagesFrom',
+    summary:
+      'Make a translated twin carry exactly the photos of its source listing (matched by day and position). Shares the storage keys, keeps the listing status. Fails when the two itineraries do not line up.',
+  })
+  @ApiParam({ name: 'listingId', type: 'integer' })
+  @ApiParam({ name: 'sourceListingId', type: 'integer' })
+  @ApiCreatedResponse({ type: SyncListingImagesResultDto })
+  @ApiNotFoundResponse({ description: 'Listing not found or not owned' })
+  syncImagesFrom(
+    @Param('listingId', ParseIntPipe) listingId: number,
+    @Param('sourceListingId', ParseIntPipe) sourceListingId: number,
+    @CurrentUser('sub') userId: number,
+  ): Promise<SyncListingImagesResultDto> {
+    return this.tripGenerator.syncListingImagesFrom(
+      listingId,
+      sourceListingId,
+      userId,
+    );
   }
 }

@@ -1,5 +1,10 @@
 import { EngagementLocale } from '@prisma/client';
-import { PUSH_COPY, pushLocale } from './notifications.copy';
+import {
+  MISSION_PUSH_NAMES,
+  PUSH_COPY,
+  pushLocale,
+} from './notifications.copy';
+import { MISSION_IDS } from '../missions/mission-defs';
 
 describe('notifications.copy', () => {
   describe('pushLocale', () => {
@@ -83,6 +88,57 @@ describe('notifications.copy', () => {
       );
       expect(PUSH_COPY.memberLeft.EN('Trip', 'Ken').body).toBe(
         'Ken has left the trip',
+      );
+    });
+  });
+
+  describe('trip auto-start copy', () => {
+    it('tripStarted uses the trip name as title', () => {
+      expect(PUSH_COPY.tripStarted.EN('Da Lat')).toEqual({
+        title: 'Da Lat',
+        body: 'Your trip has started. Have a great time!',
+      });
+      expect(PUSH_COPY.tripStarted.VN('Da Lat').body).toBe(
+        'Chuyến đi đã bắt đầu. Chúc bạn vui vẻ!',
+      );
+    });
+
+    it('tripAutoStartBlocked lists the conflicting members', () => {
+      expect(
+        PUSH_COPY.tripAutoStartBlocked.EN('Da Lat', ['Ann', 'Bob']),
+      ).toEqual({
+        title: 'Da Lat',
+        body: "Couldn't start automatically: Ann, Bob are still on another trip. Open the trip to start it.",
+      });
+      expect(PUSH_COPY.tripAutoStartBlocked.VN('Da Lat', ['Ann']).body).toBe(
+        'Không thể tự động bắt đầu: Ann vẫn đang trong chuyến đi khác. Mở chuyến đi để bắt đầu.',
+      );
+    });
+  });
+
+  describe('missionCompleted', () => {
+    it('localizes title and interpolates name + reward', () => {
+      expect(
+        PUSH_COPY.missionCompleted.EN('Create your first trip', 10),
+      ).toEqual({
+        title: 'Mission complete! ⚡',
+        body: 'Create your first trip — you earned 10⚡.',
+      });
+      expect(
+        PUSH_COPY.missionCompleted.VN('Tạo chuyến đi đầu tiên', 10),
+      ).toEqual({
+        title: 'Hoàn thành nhiệm vụ! ⚡',
+        body: 'Tạo chuyến đi đầu tiên — bạn nhận được 10⚡.',
+      });
+    });
+
+    it('has a non-empty EN and VN name for every mission', () => {
+      for (const id of MISSION_IDS) {
+        expect(MISSION_PUSH_NAMES[id].EN).toBeTruthy();
+        expect(MISSION_PUSH_NAMES[id].VN).toBeTruthy();
+      }
+      expect(Object.keys(MISSION_PUSH_NAMES).sort()).toEqual(
+        [...MISSION_IDS].sort(),
       );
     });
   });

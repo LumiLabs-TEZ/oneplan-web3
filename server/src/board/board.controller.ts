@@ -32,6 +32,7 @@ import {
   GenerateBoardDescriptionDto,
 } from './dto/generate-board-description.dto';
 import { GenerateTripFromBoardDto } from './dto/generate-trip-from-board.dto';
+import { GenerateTripFromPinsDto } from './dto/generate-trip-from-pins.dto';
 import { TripDto } from '../trips/dto/trip.dto';
 
 @ApiBearerAuth()
@@ -71,6 +72,24 @@ export class BoardController {
     @Body() dto: GenerateBoardDescriptionDto,
   ): Promise<BoardDescriptionDto> {
     return this.boardService.generateDescription(dto);
+  }
+
+  // Static segment declared before the ':boardId' routes so it never reaches
+  // ParseIntPipe.
+  @Post('pins/generate-trip')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    operationId: 'generateTripFromPins',
+    summary:
+      'Arrange inline (unsaved) pins into a new multi-day trip via AI, ' +
+      'without creating a board',
+  })
+  @ApiCreatedResponse({ type: TripDto })
+  generateTripFromPins(
+    @CurrentUser('sub') userId: number,
+    @Body() dto: GenerateTripFromPinsDto,
+  ): Promise<TripDto> {
+    return this.boardService.generateTripFromPins(userId, dto);
   }
 
   @Get(':boardId')

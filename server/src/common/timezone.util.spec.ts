@@ -2,6 +2,7 @@ import {
   parseTimezone,
   isInNotificationWindow,
   localHourInTimezone,
+  localDateInTimezone,
 } from './timezone.util';
 
 describe('timezone.util', () => {
@@ -83,6 +84,24 @@ describe('timezone.util', () => {
     it('falls back to UTC hour on a bad timezone', () => {
       const now = new Date('2026-04-13T02:00:00Z');
       expect(localHourInTimezone('Not/AZone', now)).toBe(2);
+    });
+  });
+
+  describe('localDateInTimezone', () => {
+    it('returns the UTC-midnight Date of the local calendar day', () => {
+      // 2026-09-21 18:00 UTC is already 2026-09-22 in Vietnam
+      const now = new Date('2026-09-21T18:00:00Z');
+      expect(localDateInTimezone('Asia/Ho_Chi_Minh', now)).toEqual(
+        new Date('2026-09-22T00:00:00Z'),
+      );
+    });
+
+    it('rolls back a day for negative offsets', () => {
+      // 2026-09-22 02:00 UTC is still 2026-09-21 in New York
+      const now = new Date('2026-09-22T02:00:00Z');
+      expect(localDateInTimezone('America/New_York', now)).toEqual(
+        new Date('2026-09-21T00:00:00Z'),
+      );
     });
   });
 });

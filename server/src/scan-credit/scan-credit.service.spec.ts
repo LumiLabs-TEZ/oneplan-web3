@@ -4,6 +4,7 @@ import { AnalyticsService } from '../analytics/analytics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { InsufficientScanCreditsException } from './insufficient-scan-credits.exception';
 import { ScanCreditService } from './scan-credit.service';
+import { PlayStoreAdapter } from '../subscription/adapters/play-store.adapter';
 
 const USER_ID = 42;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -18,6 +19,7 @@ describe('ScanCreditService', () => {
     update: jest.Mock;
     updateMany: jest.Mock;
     aggregate: jest.Mock;
+    count: jest.Mock;
   };
   let consumption: {
     findUnique: jest.Mock;
@@ -43,6 +45,7 @@ describe('ScanCreditService', () => {
       update: jest.fn().mockResolvedValue({}),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       aggregate: jest.fn().mockResolvedValue({ _sum: { remaining: 0 } }),
+      count: jest.fn().mockResolvedValue(0),
     };
     consumption = {
       findUnique: jest.fn().mockResolvedValue(null),
@@ -350,6 +353,82 @@ describe('ScanCreditService', () => {
     expect(data[0].periodKey).toHaveLength(144);
   });
 
+  // End-to-end proof of the periodKey fix, through the REAL PlayStoreAdapter:
+  // Google keeps purchaseToken constant across renewals, so a Play Pro
+  // subscriber's cycles must be keyed by the per-cycle orderId, not the
+  // token, or every renewal collapses onto the same SubscriptionTransaction
+  // row and periodKey never advances (the bug this branch fixes).
+  describe('Google Play periodKey (orderId-keyed, via PlayStoreAdapter)', () => {
+    const playAdapter = new PlayStoreAdapter({} as ConfigService);
+    const purchaseToken = 'g'.repeat(144);
+
+    const cycleTxn = (orderId: string) =>
+      playAdapter.toStoreEvent({
+        verified: {
+          kind: 'subscription',
+          productId: 'pro_weekly',
+          purchaseToken,
+          orderId,
+          expiresAt: new Date('2026-08-01T00:00:00.000Z'),
+          startedAt: new Date('2026-07-25T00:00:00.000Z'),
+          revoked: false,
+        },
+        source: 'NOTIFICATION',
+        status: SubscriptionStatus.ACTIVE,
+        isCreditProduct: false,
+        eventId: orderId,
+      });
+
+    it('1 purchase + 3 renewals => 4 grants, all sharing lineId as externalRef', async () => {
+      const cycles = [
+        'GPA.3349-1234-5678-90123..0',
+        'GPA.3349-1234-5678-90123..1',
+        'GPA.3349-1234-5678-90123..2',
+        'GPA.3349-1234-5678-90123..3',
+      ].map(cycleTxn);
+
+      // Sanity: the adapter really produced 4 distinct SubscriptionTransaction
+      // keys sharing one lineId (purchaseToken) — the precondition for
+      // reconcileWithTx to see 4 rows in the first place.
+      expect(new Set(cycles.map((e) => e.transactionId)).size).toBe(4);
+      expect(cycles.every((e) => e.lineId === purchaseToken)).toBe(true);
+
+      mockProTxns({
+        originalTransactionId: purchaseToken,
+        txns: cycles.map((e) => ({
+          transactionId: e.transactionId,
+          productId: 'pro_weekly',
+        })),
+      });
+
+      await service.reconcileProGrants(USER_ID);
+
+      const data = createdGrants();
+      expect(data).toHaveLength(4);
+      expect(data.every((g) => g.externalRef === purchaseToken)).toBe(true);
+      expect(new Set(data.map((g) => g.periodKey)).size).toBe(4);
+    });
+
+    it('replaying the same renewal notification twice still yields exactly one grant for that cycle', async () => {
+      const first = cycleTxn('GPA.3349-1234-5678-90123..1');
+      const redelivered = cycleTxn('GPA.3349-1234-5678-90123..1');
+      expect(first.transactionId).toBe(redelivered.transactionId);
+
+      mockProTxns({
+        originalTransactionId: purchaseToken,
+        txns: [{ transactionId: first.transactionId, productId: 'pro_weekly' }],
+      });
+      // Simulates the FIRST delivery having already been reconciled.
+      grant.findMany.mockResolvedValueOnce([
+        { periodKey: first.transactionId },
+      ]);
+
+      await service.reconcileProGrants(USER_ID);
+
+      expect(grant.createMany).not.toHaveBeenCalled();
+    });
+  });
+
   it('is idempotent — skips transactions already granted', async () => {
     mockProTxns({
       txns: [
@@ -434,6 +513,23 @@ describe('ScanCreditService', () => {
     const bal = await service.getBalance(USER_ID);
 
     expect(bal.nextProGrantAt).toBeNull();
+  });
+
+  it('BILLING_RETRY still surfaces nextProGrantAt (Apple keeps retrying the charge, so a renewal can still land)', async () => {
+    // Regression guard: a prior local ACTIVE_PAID_STATUSES copy omitted
+    // BILLING_RETRY, hiding the next-grant date for a user the rest of the
+    // app (subscription.service resolveTier, auth/friends isPro) already
+    // treats as Pro. Must route through the shared isEntitledToPro predicate.
+    const expiresAt = new Date(Date.now() - 2 * DAY_MS);
+    mockProTxns({
+      txns: [{ transactionId: 'T0', productId: 'pro_monthly' }],
+      status: SubscriptionStatus.BILLING_RETRY,
+      expiresAt,
+    });
+
+    const bal = await service.getBalance(USER_ID);
+
+    expect(bal.nextProGrantAt).toEqual(expiresAt);
   });
 
   it('honors the SCAN_GRANT_PRO_* env override as a per-cycle amount', async () => {
@@ -957,5 +1053,64 @@ describe('ScanCreditService', () => {
 
     expect(grant.create).not.toHaveBeenCalled();
     expect(analyticsMock.track).not.toHaveBeenCalled();
+  });
+
+  // ── rewarded-ad reward (grantRewardedAd) ─────────────────────────────────
+
+  it('grants 1 rewarded-ad credit and reports remainingToday', async () => {
+    const res = await service.grantRewardedAd(USER_ID, 'ad-key-1');
+
+    expect(res).toEqual({ granted: true, remainingToday: 2 });
+    expect(grant.create).toHaveBeenCalledWith({
+      data: {
+        userId: USER_ID,
+        source: 'rewarded_ad',
+        amount: 1,
+        remaining: 1,
+        externalRef: 'ad-key-1',
+      },
+    });
+    expect(analyticsMock.track).toHaveBeenCalledWith(
+      AnalyticsEventName.SCAN_CREDITS_GRANTED,
+      {
+        userId: USER_ID,
+        properties: { source: 'rewarded_ad', amount: 1 },
+      },
+    );
+  });
+
+  it('is idempotent — replaying an adKey reports granted without creating or emitting', async () => {
+    grant.count.mockResolvedValueOnce(1);
+    grant.findFirst.mockResolvedValueOnce({ id: 7 });
+
+    const res = await service.grantRewardedAd(USER_ID, 'ad-key-1');
+
+    expect(res).toEqual({ granted: true, remainingToday: 2 });
+    expect(grant.create).not.toHaveBeenCalled();
+    expect(analyticsMock.track).not.toHaveBeenCalled();
+  });
+
+  it('rejects the 4th grant of the day', async () => {
+    grant.count.mockResolvedValueOnce(3);
+
+    const res = await service.grantRewardedAd(USER_ID, 'ad-key-4');
+
+    expect(res).toEqual({ granted: false, remainingToday: 0 });
+    expect(grant.create).not.toHaveBeenCalled();
+    expect(analyticsMock.track).not.toHaveBeenCalled();
+  });
+
+  it('counts only rewarded_ad grants from the start of the UTC day', async () => {
+    await service.grantRewardedAd(USER_ID, 'ad-key-2');
+
+    const [countArgs] = grant.count.mock.calls[0] as [
+      { where: { source: string; grantedAt: { gte: Date } } },
+    ];
+    const where = countArgs.where;
+    expect(where.source).toBe('rewarded_ad');
+    const gte = where.grantedAt.gte;
+    expect(gte.getUTCHours()).toBe(0);
+    expect(gte.getUTCMinutes()).toBe(0);
+    expect(gte.getUTCSeconds()).toBe(0);
   });
 });

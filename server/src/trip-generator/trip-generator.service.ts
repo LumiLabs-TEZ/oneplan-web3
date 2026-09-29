@@ -1,10 +1,12 @@
+import { createHash } from 'node:crypto';
 import {
   Injectable,
   Logger,
+  BadRequestException,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { Currency, ListingTag } from '@prisma/client';
+import { ContentLocale, Currency, ListingTag } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import {
   GeminiRequestError,
@@ -24,12 +26,13 @@ import {
   GenerateTripPlanResultDto,
   GeneratedTripPlanDto,
 } from './dto/generated-plan.dto';
-import { ActivityClass, classifyActivity } from './activity-hints';
+import { ActivityClass, classifyActivityForItem } from './activity-hints';
 import {
   appleMapsLink,
   appleMapsSearchLink,
   CollectedImage,
   collectImages,
+  CollectImagesStats,
   destinationRelevanceTokens,
   geocodeCity,
   haversineKm,
@@ -42,6 +45,11 @@ import {
   UsedImages,
 } from './place-lookup';
 import { ImageGate, reviewImageTitle } from './image-relevance';
+import { PrismaService } from '../prisma/prisma.service';
+import {
+  BackfillListingImagesResultDto,
+  SyncListingImagesResultDto,
+} from './dto/generated-plan.dto';
 import { reviewImagesWithVision } from './image-vision-review';
 
 // planFor -> the ListingTag used to tag the generated marketplace listing.
@@ -251,6 +259,7 @@ export class TripGeneratorService {
     private readonly locations: LocationsService,
     private readonly marketplace: MarketplaceService,
     private readonly storage: StorageService,
+    private readonly prisma: PrismaService,
   ) {}
 
   /* --------------------------- Generation --------------------------- */
@@ -308,19 +317,30 @@ export class TripGeneratorService {
   }
 
   private buildPrompt(input: GenerateTripPlanDto): string {
-    const { destination, days, budget, planFor, vibe, language, tripName } =
-      input;
+    const {
+      destination,
+      days,
+      budget,
+      planFor,
+      vibe,
+      language,
+      tripName,
+      numberOfPeople,
+    } = input;
     const currency = CURRENCY_DISPLAY_NAMES[input.currency];
     return `You are OnePlan's trip planning engine. Create a complete, realistic trip itinerary.
 
 INPUT
 - Destination: ${destination}
 - Duration: ${days} day(s)
-- Budget per person: ${budget} ${currency} (total for the whole trip)
+- Group size: ${numberOfPeople ? `${numberOfPeople} people` : '(not specified)'}
+- Budget per person: ${budget} ${currency} (total per person for the whole trip)
 - Plan for: ${planFor} (one of Friends, Family, Company trip, Couple, Solo)
 - Desired vibe / special requests: ${vibe ? vibe : '(none, use your judgement)'}
 - Output language: ${language}
 ${tripName ? `- Trip name requested by user: ${tripName} (use it as trip_name)` : ''}
+
+Every INPUT above is a hard constraint from the user. Honor the destination, the exact duration, the group size, the budget, the group type and the vibe together, so the plan reads as if it was made specifically for THIS group, not a generic city guide.
 
 REQUIREMENTS
 1. Target audience is young travelers (18-32): trendy, photogenic, fun places mixed with must-see spots.
@@ -332,6 +352,7 @@ REQUIREMENTS
    - Solo: FLEXIBLE, 5-6 plans/day, mix in sociable spots (free walking tour, food tour, community cafe), safe areas at night. Avoid deserted late-night areas.
    A reader should be able to GUESS the group type from the structure alone.
 1c. STORY RHYTHM: each day has exactly ONE highlight (the "climax" attraction); other plans are warm-up, meals, and wind-down around it. The three meals anchor the day; local specialties must appear at least once per day with the real dish name and venue.
+${numberOfPeople ? `1d. GROUP SIZE = ${numberOfPeople} people. Pick venues that comfortably seat and suit this many: for a large group (5+) prefer spacious restaurants, group-bookable activities and dishes meant to be shared, and mention "for a group of ${numberOfPeople}" in the relevant cost estimates; for 1-2 people prefer intimate, counter-seat or single-table spots. Never send a big group to a tiny 2-seat cafe or a couple to a 20-person banquet hall. Where a per-group price matters (private car, boat, table booking), note both the group total and the per-person share in ${currency}.` : ''}
 2. Use ONLY real, currently operating places that EXIST ON APPLE MAPS and can be found by name. Prefer well-known, established venues over obscure hole-in-the-wall spots that may not be mapped. For each place give its real full street address (street number + street + district + city + country) in Latin script.
 2b. CRITICAL: EVERY place must be physically located IN "${destination}" (the same city). Do NOT include any place in a different city, even if its name references "${destination}" (for example, for a Quang Ngai trip never pick a restaurant named "Quang Ngai" that is actually in Ho Chi Minh City). Beware trendy cafes/studios from Hanoi, Saigon or Da Nang: a stylish venue you remember probably belongs to a BIG city, not to "${destination}"; when in doubt pick a famous local specialty spot instead. Do NOT invent places or guess: if you are not certain a specific venue is real and in "${destination}", choose a different well-known place there that you ARE certain about.
 3. Number of plans per day follows the group-type structure in 1b (meals included). Give each a realistic 24h start time (HH:MM), and leave breathing room: do not pack plans back-to-back with zero buffer.
@@ -666,7 +687,7 @@ Return one item per number with the SAME index, and: name (in ${dto.language}), 
     destination: string,
   ): { gate: ImageGate; activity: ActivityClass | null } {
     const base = p.resolvedName || p.placeName || p.name;
-    const activity = classifyActivity(`${p.name} ${p.description}`);
+    const activity = classifyActivityForItem(p.name, p.description);
     return {
       activity,
       gate: {
@@ -717,6 +738,15 @@ Return one item per number with the SAME index, and: name (in ${dto.language}), 
     const accept = (r: ImageResult) =>
       reviewImageTitle(r.title, gate).verdict === 'pass';
 
+    const stats: CollectImagesStats = {
+      wikimediaResults: 0,
+      googleResults: 0,
+      ddgResults: 0,
+      bingResults: 0,
+      candidates: 0,
+      ddgRefusals: [],
+      errors: [],
+    };
     const collected: CollectedImage[] = [];
     for (const query of this.imageQueries(p, destination, activity)) {
       if (collected.length >= max) break;
@@ -725,10 +755,25 @@ Return one item per number with the SAME index, and: name (in ${dto.language}), 
         max - collected.length,
         accept,
         used,
+        stats,
       );
       collected.push(...batch);
     }
-    if (collected.length === 0) return collected;
+    // Zero photos used to be invisible in the logs, which is how a whole
+    // listing shipped with 3 illustrated items out of 19. Say WHY.
+    const detail =
+      `wikimedia=${stats.wikimediaResults} google=${stats.googleResults} ddg=${stats.ddgResults} bing=${stats.bingResults} candidates=${stats.candidates}` +
+      (stats.ddgRefusals.length
+        ? ` ddgRefused=[${stats.ddgRefusals.join(', ')}]`
+        : '') +
+      (stats.errors.length ? ` errors=[${stats.errors.join('; ')}]` : '');
+    if (collected.length === 0) {
+      this.logger.warn(`No images for "${p.name}" (${detail})`);
+      return collected;
+    }
+    this.logger.log(
+      `Collected ${collected.length} image(s) for "${p.name}" (${detail})`,
+    );
 
     return reviewImagesWithVision(
       this.gemini,
@@ -856,17 +901,23 @@ Return one item per number with the SAME index, and: name (in ${dto.language}), 
     const { plan, input } = this.getStored(id);
 
     const location = await this.resolveListingLocation(input);
-    const listing = await this.marketplace.createListing(userId, {
-      name: plan.tripName.slice(0, 255),
-      description: plan.tripDescription
-        ? plan.tripDescription.slice(0, 500)
-        : undefined,
-      price: this.parseBudgetAmount(input.budget),
-      currency: input.currency,
-      durationDays: plan.days.length,
-      tags: [PLAN_FOR_TO_TAG[input.planFor]],
-      ...location,
-    });
+    const listing = await this.marketplace.createListing(
+      userId,
+      {
+        name: plan.tripName.slice(0, 255),
+        description: plan.tripDescription
+          ? plan.tripDescription.slice(0, 500)
+          : undefined,
+        price: this.parseBudgetAmount(input.budget),
+        currency: input.currency,
+        durationDays: plan.days.length,
+        tags: [PLAN_FOR_TO_TAG[input.planFor]],
+        ...location,
+      },
+      // The generated text is in the requested output language, not the
+      // dashboard's browser language.
+      input.language === 'Tiếng Việt' ? ContentLocale.vi : ContentLocale.en,
+    );
 
     // Flat, ordered list of items (sortOrder is per-day position).
     const items = plan.days.flatMap((day) =>
@@ -954,6 +1005,335 @@ Return one item per number with the SAME index, and: name (in ${dto.language}), 
       publicId: listing.publicId,
       name: listing.name,
       itemCount,
+      imageCount,
+    };
+  }
+
+  // Re-run image collection for the items of an existing listing that ended
+  // up with fewer than `minImages` photos (a search-engine refusal mid-run
+  // leaves the tail of a listing bare). Only touches items below the
+  // threshold, keeps their existing photos, and deliberately does NOT flip an
+  // APPROVED listing back to review: adding photos changes no text.
+  async backfillListingImages(
+    listingId: number,
+    userId: number,
+    minImages = 1,
+    dedupe = false,
+    recheck = false,
+  ): Promise<BackfillListingImagesResultDto> {
+    const listing = await this.marketplace.getListing(
+      listingId,
+      userId,
+      'edit',
+    );
+    const destination = [
+      listing.cityName,
+      listing.stateName,
+      listing.countryName,
+    ]
+      .filter(Boolean)
+      .join(', ');
+    if (!destination) {
+      throw new NotFoundException(
+        'Listing has no location to search images for',
+      );
+    }
+
+    const rows = await this.prisma.tripPlanMarketItem.findMany({
+      where: { listingId },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        location: true,
+        address: true,
+        imageUrls: true,
+      },
+      orderBy: [{ dayNumber: 'asc' }, { sortOrder: 'asc' }],
+    });
+
+    // Seed the dedupe set with the photos the listing already carries, so a
+    // second pass never re-uploads a byte-identical file (the first version of
+    // this endpoint did exactly that on listing #172). Hashing needs the
+    // bytes: fetch each existing image once through its public URL.
+    const used: UsedImages = { urls: new Set(), hashes: new Set() };
+    const hashByKey = new Map<string, string>();
+    const bytesByKey = new Map<
+      string,
+      { buffer: Buffer; contentType: string }
+    >();
+    const publicUrls = new Map<string, string>();
+    for (const item of listing.items) {
+      for (const url of item.imageUrls) {
+        publicUrls.set(this.storage.extractObjectKey(url), url);
+      }
+    }
+    await Promise.all(
+      rows.flatMap((r) =>
+        r.imageUrls.map(async (key) => {
+          const url = publicUrls.get(key);
+          if (!url) return;
+          try {
+            const res = await fetch(url, {
+              signal: AbortSignal.timeout(20_000),
+            });
+            if (!res.ok) return;
+            const buffer = Buffer.from(await res.arrayBuffer());
+            const hash = createHash('md5').update(buffer).digest('hex');
+            hashByKey.set(key, hash);
+            used.hashes.add(hash);
+            bytesByKey.set(key, {
+              buffer,
+              contentType: (res.headers.get('content-type') ?? 'image/jpeg')
+                .split(';')[0]
+                .trim(),
+            });
+          } catch {
+            // unreadable existing image: nothing to dedupe against
+          }
+        }),
+      ),
+    );
+
+    let itemsDeduped = 0;
+    if (dedupe) {
+      for (const row of rows) {
+        const seen = new Set<string>();
+        const kept = row.imageUrls.filter((key) => {
+          const hash = hashByKey.get(key);
+          if (!hash) return true;
+          if (seen.has(hash)) return false;
+          seen.add(hash);
+          return true;
+        });
+        if (kept.length !== row.imageUrls.length) {
+          await this.prisma.tripPlanMarketItem.update({
+            where: { id: row.id },
+            data: { imageUrls: kept },
+          });
+          row.imageUrls = kept;
+          itemsDeduped++;
+        }
+      }
+    }
+
+    // Optional second look at photos that are already attached: the review
+    // can have been skipped when they were added (Gemini 429 -> "keep what the
+    // title gate accepted"), which is how a collage and a watermarked stock
+    // shot reached listing #172. Drops only what the reviewer FAILS; keeps
+    // everything when the review is unavailable.
+    let imagesRemoved = 0;
+    if (recheck) {
+      for (const row of rows) {
+        const existing = row.imageUrls
+          .map((key) => {
+            const b = bytesByKey.get(key);
+            return b
+              ? ({
+                  ...b,
+                  ext: '',
+                  url: key,
+                  title: '',
+                } as CollectedImage)
+              : null;
+          })
+          .filter((x): x is CollectedImage => x !== null);
+        if (existing.length === 0) continue;
+        const plan = {
+          name: row.title,
+          placeName: row.location ?? '',
+          address: row.address ?? '',
+          description: row.description ?? '',
+          imageQuery: '',
+        } as GeneratedTripPlanDto['days'][number]['plans'][number];
+        const { activity } = this.imageGate(plan, destination);
+        const kept = await reviewImagesWithVision(
+          this.gemini,
+          {
+            itemName: row.title,
+            placeName: row.location ?? '',
+            destination,
+            activity,
+          },
+          existing,
+          this.logger,
+          'hard',
+        );
+        const keptKeys = new Set(kept.map((k) => k.url));
+        const next = row.imageUrls.filter(
+          (key) => !bytesByKey.has(key) || keptKeys.has(key),
+        );
+        if (next.length !== row.imageUrls.length) {
+          await this.prisma.tripPlanMarketItem.update({
+            where: { id: row.id },
+            data: { imageUrls: next },
+          });
+          imagesRemoved += row.imageUrls.length - next.length;
+          row.imageUrls = next;
+        }
+      }
+    }
+
+    const targets = rows.filter((r) => r.imageUrls.length < minImages);
+    let itemsUpdated = 0;
+    let imagesAdded = 0;
+    let idx = 0;
+    const worker = async () => {
+      while (idx < targets.length) {
+        const row = targets[idx++];
+        const plan = {
+          name: row.title,
+          placeName: row.location ?? '',
+          address: row.address ?? '',
+          description: row.description ?? '',
+          imageQuery: '',
+        } as GeneratedTripPlanDto['days'][number]['plans'][number];
+        const images = await this.gatherItemImages(
+          plan,
+          destination,
+          MAX_IMAGES_PER_ITEM - row.imageUrls.length,
+          used,
+        );
+        const keys: string[] = [];
+        for (const img of images) {
+          if (row.imageUrls.length + keys.length >= MAX_IMAGES_PER_ITEM) break;
+          if (!LISTING_IMAGE_CONTENT_TYPES.has(img.contentType)) continue;
+          try {
+            keys.push(
+              await this.storage.uploadBuffer(
+                UploadTarget.MARKET_ITEM_IMAGE,
+                listingId,
+                img.buffer,
+                img.contentType,
+              ),
+            );
+          } catch {
+            // skip a bad upload, keep going for the rest
+          }
+        }
+        if (keys.length === 0) continue;
+        await this.prisma.tripPlanMarketItem.update({
+          where: { id: row.id },
+          data: { imageUrls: [...row.imageUrls, ...keys] },
+        });
+        itemsUpdated++;
+        imagesAdded += keys.length;
+      }
+    };
+    await Promise.all(
+      Array.from({ length: IMAGE_CONCURRENCY }, () => worker()),
+    );
+
+    if (!listing.coverImageUrl && imagesAdded > 0) {
+      const first = await this.prisma.tripPlanMarketItem.findFirst({
+        where: { listingId, NOT: { imageUrls: { isEmpty: true } } },
+        orderBy: [{ dayNumber: 'asc' }, { sortOrder: 'asc' }],
+        select: { imageUrls: true },
+      });
+      if (first?.imageUrls[0]) {
+        await this.prisma.marketplaceListing.update({
+          where: { id: listingId },
+          data: { coverImageUrl: first.imageUrls[0] },
+        });
+      }
+    }
+
+    this.logger.log(
+      `Backfilled listing ${listingId}: ${itemsUpdated}/${targets.length} bare item(s) got ${imagesAdded} image(s); ${itemsDeduped} item(s) deduped; ${imagesRemoved} image(s) removed by recheck`,
+    );
+    return {
+      listingId,
+      itemsChecked: targets.length,
+      itemsUpdated,
+      imagesAdded,
+      itemsDeduped,
+      imagesRemoved,
+    };
+  }
+
+  // A translated twin must carry exactly the photos of its source listing:
+  // same itinerary, only the language differs. Items are matched by
+  // (day, position within the day); the storage keys are shared, nothing is
+  // re-uploaded, and the listing status is left untouched. Refuses when the
+  // two itineraries do not line up, so a wrong pairing never scrambles photos.
+  async syncListingImagesFrom(
+    listingId: number,
+    sourceListingId: number,
+    userId: number,
+  ): Promise<SyncListingImagesResultDto> {
+    if (listingId === sourceListingId) {
+      throw new BadRequestException('Source and target are the same listing');
+    }
+    await this.marketplace.getListing(listingId, userId, 'edit');
+    await this.marketplace.getListing(sourceListingId, userId, 'edit');
+
+    const load = (id: number) =>
+      this.prisma.tripPlanMarketItem.findMany({
+        where: { listingId: id },
+        select: { id: true, dayNumber: true, sortOrder: true, imageUrls: true },
+        orderBy: [{ dayNumber: 'asc' }, { sortOrder: 'asc' }],
+      });
+    const [src, dst] = await Promise.all([
+      load(sourceListingId),
+      load(listingId),
+    ]);
+
+    const byDay = <T extends { dayNumber: number }>(rows: T[]) => {
+      const m = new Map<number, T[]>();
+      for (const r of rows)
+        m.set(r.dayNumber, [...(m.get(r.dayNumber) ?? []), r]);
+      return m;
+    };
+    const srcDays = byDay(src);
+    const dstDays = byDay(dst);
+    const shape = (m: Map<number, unknown[]>) =>
+      [...m.entries()].map(([d, rows]) => `${d}:${rows.length}`).join(',');
+    if (shape(srcDays) !== shape(dstDays)) {
+      throw new BadRequestException(
+        `Itineraries do not line up (source days ${shape(srcDays)} vs target ${shape(dstDays)})`,
+      );
+    }
+
+    let itemsUpdated = 0;
+    let imageCount = 0;
+    for (const [day, dstRows] of dstDays) {
+      const srcRows = srcDays.get(day) ?? [];
+      for (let i = 0; i < dstRows.length; i++) {
+        const want = srcRows[i].imageUrls;
+        imageCount += want.length;
+        const have = dstRows[i].imageUrls;
+        if (
+          want.length === have.length &&
+          want.every((k, j) => k === have[j])
+        ) {
+          continue;
+        }
+        await this.prisma.tripPlanMarketItem.update({
+          where: { id: dstRows[i].id },
+          data: { imageUrls: want },
+        });
+        itemsUpdated++;
+      }
+    }
+
+    const source = await this.prisma.marketplaceListing.findUnique({
+      where: { id: sourceListingId },
+      select: { coverImageUrl: true },
+    });
+    if (source?.coverImageUrl) {
+      await this.prisma.marketplaceListing.update({
+        where: { id: listingId },
+        data: { coverImageUrl: source.coverImageUrl },
+      });
+    }
+
+    this.logger.log(
+      `Synced images of listing ${listingId} from ${sourceListingId}: ${itemsUpdated} item(s) updated, ${imageCount} image(s) total`,
+    );
+    return {
+      listingId,
+      sourceListingId,
+      itemsUpdated,
       imageCount,
     };
   }

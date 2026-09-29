@@ -41,9 +41,13 @@ describe('MarketplaceService media URL resolution', () => {
       {
         get: jest.fn((_k: string, d?: unknown) => d ?? 30),
       } as unknown as ConfigService,
+      undefined as any, // purchaseVerifier (unused)
       {
         sendListingStatusPush: jest.fn().mockResolvedValue(undefined),
       } as unknown as NotificationsService,
+      undefined as any, // acquisition (unused)
+      undefined as any, // missions (unused)
+      { get: jest.fn().mockReturnValue(null) } as any, // cls
     );
   });
 

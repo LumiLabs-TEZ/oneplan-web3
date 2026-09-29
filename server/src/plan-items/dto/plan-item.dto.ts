@@ -44,6 +44,12 @@ export class PlanItemDto {
   @ApiPropertyOptional({ type: 'integer' })
   voiceDuration: number | null;
 
+  @ApiProperty({
+    type: [String],
+    description: 'Signed image URLs (max 5)',
+  })
+  imageUrls: string[];
+
   @ApiPropertyOptional({
     type: 'integer',
     description: 'Relative day number (1-based), set during PLANNING status',

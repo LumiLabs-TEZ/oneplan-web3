@@ -156,8 +156,8 @@ export class ConnectionService {
     // An empty room is silence, and silence looked identical to a broken
     // client. Saying how many heard it separates "nobody was listening" from
     // "somebody was and ignored it".
-    this.logger.log(
-      `broadcast ${event} to trip ${tripId}: ${room?.size ?? 0} listener(s)`,
+    this.logger.debug(
+      `broadcast ${event} to trip ${Number(tripId)}: ${room?.size ?? 0} listener(s)`,
     );
     if (!room) return;
     const message = JSON.stringify({ event, data });

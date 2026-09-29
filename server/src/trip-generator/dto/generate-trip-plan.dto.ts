@@ -46,6 +46,20 @@ export class GenerateTripPlanDto {
   @Max(14)
   days: number;
 
+  @ApiPropertyOptional({
+    type: 'integer',
+    minimum: 1,
+    maximum: 50,
+    description:
+      'Number of travelers in the group. Shapes group logistics (table sizes, group-friendly venues, shareable food).',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  numberOfPeople?: number;
+
   @ApiProperty({
     maxLength: 100,
     description: 'Free-text budget per person, e.g. "5.000.000"',

@@ -17,7 +17,12 @@ import {
   SendAdminPushDto,
 } from './dto/send-admin-push.dto';
 import { AdminPushResultDto } from './dto/admin-push-result.dto';
-import { PUSH_COPY, pushLocale } from './notifications.copy';
+import {
+  MISSION_PUSH_NAMES,
+  PUSH_COPY,
+  pushLocale,
+} from './notifications.copy';
+import type { MissionId } from '../missions/mission-defs';
 
 /** A device token paired with its owning user's locale, for locale grouping. */
 type LocaleTokenRow = {
@@ -272,6 +277,44 @@ export class NotificationsService {
     });
   }
 
+  // Cron auto-start: every accepted member gets told the trip is live.
+  async sendTripStartedPush(
+    tripId: number,
+    tripName: string,
+    memberUserIds: number[],
+  ): Promise<void> {
+    const tokens = await this.prisma.deviceToken.findMany({
+      where: { userId: { in: memberUserIds } },
+      select: TOKEN_WITH_LOCALE,
+    });
+    await this.dispatchLocalized(tokens, (locale) => ({
+      ...PushPayloadBuilder.tripStarted({ tripId, tripName }),
+      ...PUSH_COPY.tripStarted[locale](tripName),
+    }));
+  }
+
+  // Cron auto-start refused because a member is on another ongoing trip —
+  // only the creator can resolve it, so only they are told.
+  async sendTripAutoStartBlockedPush(
+    creatorUserId: number,
+    tripId: number,
+    tripName: string,
+    memberNames: string[],
+  ): Promise<void> {
+    const tokens = await this.prisma.deviceToken.findMany({
+      where: { userId: creatorUserId },
+      select: TOKEN_WITH_LOCALE,
+    });
+    await this.dispatchLocalized(tokens, (locale) => ({
+      ...PushPayloadBuilder.tripAutoStartBlocked({
+        tripId,
+        tripName,
+        memberNames,
+      }),
+      ...PUSH_COPY.tripAutoStartBlocked[locale](tripName, memberNames),
+    }));
+  }
+
   async sendPlanReminderPush(
     planItem: {
       id: number;
@@ -311,6 +354,26 @@ export class NotificationsService {
     await this.dispatchLocalized(tokens, (locale) => ({
       ...PushPayloadBuilder.listingStatus({ listingId, listingName, approved }),
       ...PUSH_COPY.listingStatus[locale](listingName, approved),
+    }));
+  }
+
+  // Fires post-commit from MissionsService.award on every real mission
+  // completion (never on idempotent replays or cap hits).
+  async sendMissionCompletedPush(
+    userId: number,
+    missionId: MissionId,
+    rewardAmount: number,
+  ): Promise<void> {
+    const tokens = await this.prisma.deviceToken.findMany({
+      where: { userId },
+      select: TOKEN_WITH_LOCALE,
+    });
+    await this.dispatchLocalized(tokens, (locale) => ({
+      ...PushPayloadBuilder.missionCompleted({ missionId, rewardAmount }),
+      ...PUSH_COPY.missionCompleted[locale](
+        MISSION_PUSH_NAMES[missionId][locale],
+        rewardAmount,
+      ),
     }));
   }
 

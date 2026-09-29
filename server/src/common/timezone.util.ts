@@ -65,6 +65,22 @@ export function localHourInTimezone(
 }
 
 /**
+ * The local calendar date in `timezone` at instant `now`, expressed as a
+ * UTC-midnight Date so it compares directly with `@db.Date` columns
+ * (which Prisma materializes as UTC midnight). Falls back to the UTC date.
+ */
+export function localDateInTimezone(
+  timezone: string,
+  now: Date = new Date(),
+): Date {
+  const offsetMinutes = timezoneOffsetMinutes(timezone, now);
+  const local = new Date(now.getTime() + offsetMinutes * 60 * 1000);
+  return new Date(
+    Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()),
+  );
+}
+
+/**
  * Checks if a plan item's start time is within 45 minutes from now.
  *
  * @param planDate - The calendar date of the plan (UTC midnight)

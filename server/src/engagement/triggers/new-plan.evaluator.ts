@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { EngagementTrigger, MarketplaceListingStatus } from '@prisma/client';
+import {
+  ContentLocale,
+  EngagementLocale,
+  EngagementTrigger,
+  MarketplaceListingStatus,
+} from '@prisma/client';
+import { pickListingText } from '../../marketplace/listing-text';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ENGAGEMENT_PUSH_TYPE } from '../engagement.constants';
 import {
@@ -10,6 +16,12 @@ import {
 } from '../engagement.types';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Push copy locale → marketplace content locale (VN is a country code).
+const CONTENT_LOCALE_FOR: Record<EngagementLocale, ContentLocale> = {
+  [EngagementLocale.EN]: ContentLocale.en,
+  [EngagementLocale.VN]: ContentLocale.vi,
+};
 
 /**
  * Surfaces a fresh, relevant marketplace plan for a user's trip destination
@@ -58,6 +70,11 @@ export class NewPlanEvaluator implements TriggerEvaluator {
       select: {
         id: true,
         name: true,
+        description: true,
+        sourceLocale: true,
+        translations: {
+          select: { locale: true, name: true, description: true },
+        },
         cityId: true,
         city: { select: { name: true } },
       },
@@ -75,7 +92,9 @@ export class NewPlanEvaluator implements TriggerEvaluator {
       dedupeKey: `NEW_PLAN_AVAILABLE:listing:${listing.id}:user:${ctx.userId}`,
       hints: {
         cityName,
-        listingName: listing.name,
+        // Quote the plan name in the language the push copy will be in.
+        listingName: pickListingText(listing, CONTENT_LOCALE_FOR[ctx.locale])
+          .name,
         coarseHint: `listing:${listing.id}`,
       },
       deepLink: {

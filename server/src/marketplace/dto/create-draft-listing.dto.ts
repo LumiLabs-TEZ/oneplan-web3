@@ -19,17 +19,15 @@ export class CreateDraftListingDto {
   @NoProfanity()
   name: string;
 
-  @ApiPropertyOptional({ type: 'integer' })
+  @ApiPropertyOptional({ type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
-  @Min(1)
-  cityId?: number;
+  cityId?: number | null;
 
-  @ApiPropertyOptional({ type: 'integer' })
+  @ApiPropertyOptional({ type: 'integer', nullable: true })
   @IsOptional()
   @IsInt()
-  @Min(1)
-  stateId?: number;
+  stateId?: number | null;
 
   @ApiProperty({ type: 'integer' })
   @IsInt()

@@ -9,6 +9,7 @@ import {
   Currency,
   ExpenseCategory,
   InviteStatus,
+  PlanScope,
   Prisma,
 } from '@prisma/client';
 import { resolveAmounts } from '../common/currency/resolve-amounts';
@@ -19,6 +20,7 @@ import { StorageService } from '../storage/storage.service';
 import { TripActivityService } from '../trip-activity/trip-activity.service';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { ANALYTICS_EVENTS } from '../analytics/constants/events';
+import { MissionsService } from '../missions/missions.service';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { CreateReceiptExpenseDto } from './dto/create-receipt-expense.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
@@ -35,6 +37,11 @@ import {
 } from './dto/expense-breakdown.dto';
 import { ListExpensesQueryDto } from './dto/list-expenses-query.dto';
 import { SettleShareDto } from './dto/settle-share.dto';
+import {
+  TripSettlementSummaryDto,
+  CounterpartySettlementDto,
+  SettleCounterpartyDto,
+} from './dto/trip-settlement.dto';
 
 const EXPENSE_DETAIL_INCLUDE = {
   paidBy: {
@@ -58,6 +65,7 @@ export class ExpensesService {
     private readonly exchangeRatesService: ExchangeRatesService,
     private readonly tripsHandler: TripsHandler,
     private readonly analytics: AnalyticsService,
+    private readonly missions: MissionsService,
   ) {}
 
   async createExpense(
@@ -73,6 +81,17 @@ export class ExpensesService {
         inviteStatus: InviteStatus.ACCEPTED,
         userId: { in: dto.memberIds },
       },
+      // PRODUCT RULE (operator, 2026-08-19): the odd minor unit left over by
+      // splitAmount goes to the FIRST MEMBER OF THE TRIP — the earliest
+      // joiner. `trip_member.id` ascending IS join order, so this orderBy is
+      // the rule, not just a tie-breaker: splitAmount puts the remainder on
+      // shares[0], i.e. whoever is first here.
+      //
+      // Note this is member id, NOT user id. Without the orderBy, Postgres was
+      // free to return any order; it happened to return user-id order, so the
+      // cent landed on the lowest userId purely by accident — stable until a
+      // query plan changed, with no commit to blame. Do not remove this.
+      orderBy: { id: 'asc' },
     });
     const acceptedMemberIds = members.map((m) => m.userId);
     if (acceptedMemberIds.length === 0) {
@@ -93,6 +112,12 @@ export class ExpensesService {
     );
 
     const category = dto.category ?? ExpenseCategory.OTHER;
+    const paidById = await this.resolvePayer(
+      tripId,
+      userId,
+      dto.paidById,
+      dto.paidByGroup,
+    );
     const homeAmountNumber = Number(resolved.amount);
     const shares = this.splitAmount(homeAmountNumber, acceptedMemberIds.length);
 
@@ -100,7 +125,7 @@ export class ExpensesService {
       const created = await tx.expense.create({
         data: {
           tripId,
-          paidById: userId,
+          paidById,
           name: dto.name,
           amount: resolved.amount,
           category,
@@ -144,6 +169,7 @@ export class ExpensesService {
         source: 'manual',
       },
     });
+    void this.missions.onExpenseAdded(userId);
 
     const detail = await this.findExpenseDetail(expense.id);
     if (resolved.isStale) {
@@ -242,12 +268,13 @@ export class ExpensesService {
     }
 
     const category = dto.category ?? ExpenseCategory.FOOD;
+    const paidById = await this.resolvePayer(tripId, userId, dto.paidById);
 
     const expense = await this.prisma.$transaction(async (tx) => {
       const created = await tx.expense.create({
         data: {
           tripId,
-          paidById: userId,
+          paidById,
           name: dto.name,
           amount: resolved.amount,
           category,
@@ -291,6 +318,7 @@ export class ExpensesService {
         source: 'receipt',
       },
     });
+    void this.missions.onExpenseAdded(userId);
 
     const detail = await this.findExpenseDetail(expense.id);
     if (resolved.isStale) {
@@ -378,6 +406,13 @@ export class ExpensesService {
       freshConversionRan = originalChanged;
     }
 
+    // Resolve a payer change (person, or the shared group wallet) up front.
+    const payerChanged =
+      dto.paidByGroup !== undefined || dto.paidById !== undefined;
+    const nextPayerId = payerChanged
+      ? await this.resolvePayer(tripId, userId, dto.paidById, dto.paidByGroup)
+      : undefined;
+
     await this.prisma.$transaction(async (tx) => {
       const existingExpense = await tx.expense.findUniqueOrThrow({
         where: { id: expenseId },
@@ -395,6 +430,12 @@ export class ExpensesService {
       if (dto.note !== undefined) updateData.note = dto.note;
       if (dto.expenseDate !== undefined) {
         updateData.expenseDate = new Date(dto.expenseDate);
+      }
+      if (payerChanged) {
+        updateData.paidBy =
+          nextPayerId === null
+            ? { disconnect: true }
+            : { connect: { id: nextPayerId } };
       }
 
       if (resolved) {
@@ -419,6 +460,10 @@ export class ExpensesService {
             userId: { in: dto.memberIds },
           },
           select: { userId: true },
+          // Same rule as createExpense: remainder goes to the first member of
+          // the trip (earliest joiner). Pinned so it can never depend on
+          // unspecified Postgres row order.
+          orderBy: { id: 'asc' },
         });
         const acceptedMemberIds = Array.from(
           new Set(members.map((member) => member.userId)),
@@ -458,15 +503,39 @@ export class ExpensesService {
             })),
           });
         }
-      }
 
-      if (resolved || dto.memberIds !== undefined) {
+        // Membership was SENT: re-split equally across the participant set.
+        // NB the condition is "memberIds was provided", not "membership
+        // actually changed" — re-sending an identical member list still
+        // flattens an uneven split. No shipping client does that (both Android
+        // and iOS omit memberIds when unchanged: TripCurrencyRules.changedMemberIds
+        // / EditExpenseView.swift), so this is latent, not live.
         const currentShares = await tx.expenseShare.findMany({
           where: { expenseId },
           select: { id: true },
           orderBy: { id: 'asc' },
         });
         const shares = this.splitAmount(nextAmountNumber, currentShares.length);
+
+        for (let i = 0; i < currentShares.length; i++) {
+          await tx.expenseShare.update({
+            where: { id: currentShares[i].id },
+            data: { shareAmount: shares[i] },
+          });
+        }
+      } else if (resolved) {
+        // Amount (or currency) changed but membership didn't: preserve the
+        // existing distribution by scaling every share proportionally to
+        // the new total, instead of flattening it to an equal split. This
+        // matters for receipt-scan expenses, whose per-item shares are
+        // deliberately uneven — an equal re-split here would silently and
+        // irreversibly discard that distribution.
+        const currentShares = await tx.expenseShare.findMany({
+          where: { expenseId },
+          select: { id: true, shareAmount: true },
+          orderBy: { id: 'asc' },
+        });
+        const shares = this.scaleShares(currentShares, nextAmountNumber);
 
         for (let i = 0; i < currentShares.length; i++) {
           await tx.expenseShare.update({
@@ -570,6 +639,12 @@ export class ExpensesService {
         isSettled: dto.isSettled,
       },
     );
+
+    if (dto.isSettled) {
+      // On an ENDED trip this settle may have been the last unsettled share —
+      // trip_settled re-checks the full predicate internally.
+      void this.missions.onTripPossiblySettled(tripId);
+    }
 
     return this.formatShare(updated);
   }
@@ -686,11 +761,261 @@ export class ExpensesService {
       { bulk: true },
     );
     this.tripsHandler.sendTripSettlementUpdated(tripId);
+    void this.missions.onTripPossiblySettled(tripId);
 
     return this.getTripBreakdown(tripId, userId);
   }
 
+  /**
+   * Pairwise, current-user-POV settlement view. An expense share's implicit
+   * counterparty is the expense payer: "receive from X" = X's shares on expenses
+   * the caller paid; "pay X" = the caller's shares on expenses X paid.
+   */
+  async getTripSettlements(
+    tripId: number,
+    userId: number,
+  ): Promise<TripSettlementSummaryDto> {
+    await this.assertMember(tripId, userId);
+
+    const [expenses, groupBudgets] = await Promise.all([
+      this.prisma.expense.findMany({
+        where: { tripId },
+        include: EXPENSE_DETAIL_INCLUDE,
+      }),
+      // GROUP-scope budgets fund the shared wallet; PERSONAL budgets are the
+      // member's own set-aside money and must NOT count as a group deposit.
+      this.prisma.budget.findMany({
+        where: { tripId, scope: PlanScope.GROUP },
+        include: { payments: true },
+      }),
+    ]);
+
+    // One netted row per counterparty: what they owe me (they share expenses I
+    // paid) minus what I owe them (I share expenses they paid).
+    type PersonAcc = {
+      party: { id: number; displayName: string; avatarUrl: string | null };
+      receiveTotal: number;
+      payTotal: number;
+      allSettled: boolean;
+      items: CounterpartySettlementDto['items'];
+    };
+    const perPerson = new Map<number, PersonAcc>();
+    const accFor = (party: {
+      id: number;
+      displayName: string;
+      avatarUrl: string | null;
+    }): PersonAcc => {
+      let acc = perPerson.get(party.id);
+      if (!acc) {
+        acc = {
+          party,
+          receiveTotal: 0,
+          payTotal: 0,
+          allSettled: true,
+          items: [],
+        };
+        perPerson.set(party.id, acc);
+      }
+      return acc;
+    };
+
+    for (const expense of expenses) {
+      const payerId = expense.paidBy?.id ?? null;
+      for (const share of expense.shares) {
+        const amount = Number(share.shareAmount);
+        let acc: PersonAcc | null = null;
+        let owedToYou = false;
+        if (payerId === userId && share.user.id !== userId) {
+          // They owe me for an expense I paid.
+          acc = accFor(share.user);
+          acc.receiveTotal += amount;
+          owedToYou = true;
+        } else if (
+          payerId != null &&
+          payerId !== userId &&
+          share.user.id === userId
+        ) {
+          // I owe the payer for an expense they paid.
+          acc = accFor(expense.paidBy!);
+          acc.payTotal += amount;
+          owedToYou = false;
+        }
+        if (!acc) continue;
+        if (!share.isSettled) acc.allSettled = false;
+        acc.items.push({
+          expenseId: expense.id,
+          expenseName: expense.name,
+          shareAmount: amount,
+          isSettled: share.isSettled,
+          shareId: share.id,
+          owedToYou,
+        });
+      }
+    }
+
+    const personRows: CounterpartySettlementDto[] = Array.from(
+      perPerson.values(),
+    )
+      .map<CounterpartySettlementDto>((acc) => {
+        const net = Math.round((acc.receiveTotal - acc.payTotal) * 100) / 100;
+        return {
+          counterpartyUserId: acc.party.id,
+          displayName: acc.party.displayName,
+          avatarUrl: acc.party.avatarUrl,
+          isGroup: false,
+          direction: net >= 0 ? 'receive' : 'pay',
+          totalAmount: Math.abs(net),
+          isSettled: acc.allSettled,
+          items: acc.items,
+        };
+      })
+      // Unsettled first, then by amount descending.
+      .sort((a, b) => {
+        if (a.isSettled !== b.isSettled) return a.isSettled ? 1 : -1;
+        return b.totalAmount - a.totalAmount;
+      });
+
+    // Synthetic "Group" counterparty: the shared wallet. My position with it is
+    // what I deposited (GROUP budget payments I paid) minus what I consumed of
+    // group-paid expenses (paidBy = null). Positive → the wallet refunds me.
+    const groupItems: CounterpartySettlementDto['items'] = [];
+    for (const expense of expenses) {
+      if (expense.paidBy?.id != null) continue; // person-paid → pairwise above
+      for (const share of expense.shares) {
+        if (share.user.id !== userId) continue;
+        groupItems.push({
+          expenseId: expense.id,
+          expenseName: expense.name,
+          shareAmount: Number(share.shareAmount),
+          isSettled: share.isSettled,
+          shareId: share.id,
+          owedToYou: false, // consumption from the wallet
+        });
+      }
+    }
+    const myGroupConsumption = groupItems.reduce(
+      (sum, i) => sum + i.shareAmount,
+      0,
+    );
+    const myDeposits = groupBudgets.reduce((sum, budget) => {
+      const payment = budget.payments.find(
+        (p) => p.userId === userId && p.isPaid,
+      );
+      return sum + (payment ? Number(payment.amount) : 0);
+    }, 0);
+    const groupNet = Math.round((myDeposits - myGroupConsumption) * 100) / 100;
+
+    const groupRow: CounterpartySettlementDto | null =
+      groupNet !== 0 || groupItems.length > 0
+        ? {
+            counterpartyUserId: 0,
+            displayName: 'Group',
+            avatarUrl: null,
+            isGroup: true,
+            direction: groupNet >= 0 ? 'receive' : 'pay',
+            totalAmount: Math.abs(groupNet),
+            isSettled:
+              groupItems.length > 0
+                ? groupItems.every((i) => i.isSettled)
+                : true,
+            items: groupItems,
+          }
+        : null;
+
+    return {
+      settlements: [...(groupRow ? [groupRow] : []), ...personRows],
+    };
+  }
+
+  /**
+   * Settle every unsettled share between the caller and one counterparty, in a
+   * single direction. Both parties are authorized: 'pay' settles the caller's
+   * own shares; 'receive' settles the counterparty's shares on expenses the
+   * caller paid (creditor confirming receipt).
+   */
+  async settleCounterparty(
+    tripId: number,
+    userId: number,
+    dto: SettleCounterpartyDto,
+  ): Promise<TripSettlementSummaryDto> {
+    await this.assertMember(tripId, userId);
+
+    let where: Prisma.ExpenseShareWhereInput;
+    if (dto.isGroup) {
+      // Group wallet: settle my own shares of group-paid (null-payer) expenses.
+      where = {
+        userId,
+        isSettled: false,
+        expense: { tripId, paidById: null },
+      };
+    } else {
+      // Person rows are netted, so settle BOTH directions with this counterparty:
+      // my shares of their expenses, and their shares of my expenses.
+      where = {
+        isSettled: false,
+        OR: [
+          { userId, expense: { tripId, paidById: dto.counterpartyUserId } },
+          {
+            userId: dto.counterpartyUserId,
+            expense: { tripId, paidById: userId },
+          },
+        ],
+      };
+    }
+
+    await this.prisma.expenseShare.updateMany({
+      where,
+      data: { isSettled: true, settledAt: new Date() },
+    });
+
+    this.activityService.log(
+      tripId,
+      userId,
+      ActivityAction.EXPENSE_SETTLED,
+      undefined,
+      { counterpartyUserId: dto.counterpartyUserId, direction: dto.direction },
+    );
+    this.tripsHandler.sendTripSettlementUpdated(tripId);
+    void this.missions.onTripPossiblySettled(tripId);
+
+    return this.getTripSettlements(tripId, userId);
+  }
+
   // ── Private helpers ──────────────────────────────────────────────
+
+  /// Resolves who the expense is recorded against.
+  ///
+  /// Defaults to the caller, preserving the previous hardcoded behaviour. A
+  /// supplied payer must be an ACCEPTED member of the trip. This throws 400
+  /// rather than 403 on purpose: the caller IS authorised (assertMember already
+  /// ran) — it is the payload that names someone who cannot be the payer.
+  private async resolvePayer(
+    tripId: number,
+    callerId: number,
+    paidById?: number,
+    paidByGroup?: boolean,
+  ): Promise<number | null> {
+    // Explicit "paid by the shared group wallet" — stored as no individual payer.
+    if (paidByGroup === true) {
+      return null;
+    }
+
+    if (paidById === undefined || paidById === callerId) {
+      return callerId;
+    }
+
+    const payer = await this.prisma.tripMember.findUnique({
+      where: { tripId_userId: { tripId, userId: paidById } },
+    });
+
+    if (!payer || payer.inviteStatus !== InviteStatus.ACCEPTED) {
+      throw new BadRequestException(
+        'Payer is not an accepted member of this trip',
+      );
+    }
+
+    return paidById;
+  }
 
   private async assertMember(tripId: number, userId: number): Promise<void> {
     const member = await this.prisma.tripMember.findUnique({
@@ -770,7 +1095,8 @@ export class ExpensesService {
             displayName: expense.paidBy.displayName,
             avatarUrl: await this.resolveAvatarUrl(expense.paidBy.avatarUrl),
           }
-        : { userId: null, displayName: 'Deleted User', avatarUrl: null },
+        : // A null payer means the shared group wallet paid (not a deleted user).
+          { userId: null, displayName: 'Group', avatarUrl: null },
       shares: await Promise.all(
         expense.shares.map((share) => this.formatShare(share)),
       ),
@@ -822,7 +1148,8 @@ export class ExpensesService {
             displayName: expense.paidBy.displayName,
             avatarUrl: await this.resolveAvatarUrl(expense.paidBy.avatarUrl),
           }
-        : { userId: null, displayName: 'Deleted User', avatarUrl: null },
+        : // A null payer means the shared group wallet paid (not a deleted user).
+          { userId: null, displayName: 'Group', avatarUrl: null },
       sharedMembers,
     };
   }
@@ -946,5 +1273,40 @@ export class ExpensesService {
       shares[0] = Math.round((shares[0] + remainder) * 100) / 100;
     }
     return shares;
+  }
+
+  /**
+   * Scales each existing share proportionally to a new total, preserving
+   * the relative distribution instead of re-splitting equally. Rounding
+   * residual goes to shares[0] (lowest id, same convention as
+   * splitAmount's remainder) so shares always sum exactly to newTotal.
+   * Falls back to an equal split if the existing shares sum to 0 (nothing
+   * to scale proportionally from).
+   */
+  private scaleShares(
+    currentShares: Array<{ shareAmount: Prisma.Decimal | number }>,
+    newTotal: number,
+  ): number[] {
+    if (currentShares.length === 0) return [];
+
+    const oldTotal = currentShares.reduce(
+      (sum, share) => sum + Number(share.shareAmount),
+      0,
+    );
+    if (oldTotal <= 0) {
+      return this.splitAmount(newTotal, currentShares.length);
+    }
+
+    const scaled = currentShares.map(
+      (share) =>
+        Math.round((Number(share.shareAmount) / oldTotal) * newTotal * 100) /
+        100,
+    );
+    const scaledSum = Math.round(scaled.reduce((a, b) => a + b, 0) * 100) / 100;
+    const residual = Math.round((newTotal - scaledSum) * 100) / 100;
+    if (residual !== 0) {
+      scaled[0] = Math.round((scaled[0] + residual) * 100) / 100;
+    }
+    return scaled;
   }
 }

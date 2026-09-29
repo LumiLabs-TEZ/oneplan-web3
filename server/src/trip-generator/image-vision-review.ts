@@ -81,12 +81,12 @@ ITEM
 
 Judge every image against these HARD gates. Failing any one gate = FAIL:
 1. PLACE: the image is plausibly this venue, or at least this city/region. A photo that could be anywhere in the world, or that clearly shows a different country or a famous landmark elsewhere, fails.
-2. ACTIVITY: the image shows what the traveler will DO here. Eating -> the food or the dining room. Coffee -> drinks or the cafe space. Sightseeing -> the view. A hotel room attached to a dinner, or a bowl of noodles attached to a coffee stop, fails.
+2. ACTIVITY: the image shows what the traveler will DO here, OR it clearly shows the named venue itself (its storefront, dining hall, stalls, terrace, the attraction it is known for). Eating -> the food, the dining room, or the eatery itself. Coffee -> drinks, the cafe space, or the cafe. Sightseeing -> the view or the site. A bar street shown by day, a food centre shown as its hall, a light-show venue shown before the show all PASS when they are recognisably this venue. What FAILS is a subject that belongs to a different kind of stop: a hotel room attached to a dinner, a bowl of noodles attached to a coffee stop, a generic skyline attached to a restaurant.
 3. USABLE PHOTO: a real photograph. Logos, maps, posters, screenshots, product/equipment catalogue shots, collages with heavy text, watermark-covered stock, and AI-generated fakes all fail.
 4. DIGNITY: no identifiable close-up of a child, nothing sexual, nothing that mocks the place or its people.
 5. NOT A DUPLICATE: if two of these images are the same photo or near-identical crops, PASS only the best one and FAIL the other as "duplicate".
 
-Rules: judge only what you can SEE, never assume the caption is right. When you are unsure whether an image really shows this place or this activity, answer FAIL. Return exactly one result per image, using its 0-based index.`;
+Rules: judge only what you can SEE, never assume the caption is right. When you are unsure whether an image really shows THIS PLACE, answer FAIL. When the place is clearly right but the activity is only implied (the venue rather than the dish), answer PASS. Return exactly one result per image, using its 0-based index.`;
 }
 
 async function thumbnail(img: CollectedImage): Promise<Buffer | null> {
@@ -109,11 +109,30 @@ async function thumbnail(img: CollectedImage): Promise<Buffer | null> {
 // Returns the images the reviewer cleared, in their original order. On any
 // error (quota, timeout, malformed response) it returns `images` unchanged so
 // image collection degrades to the title gate instead of failing the listing.
+// Which FAIL verdicts to act on. `all` is for fresh candidates. `hard` is for
+// photos already on a listing: only the objective gates (junk medium,
+// duplicate, wrong place, dignity) may remove them; the ACTIVITY gate is a
+// judgement call the model does not repeat consistently, and re-judging it
+// strips honest venue photos (Ann Siang Hill by day, listing #172).
+export type VisionFailPolicy = 'all' | 'hard';
+
+const HARD_FAIL =
+  /usable|watermark|collage|logo|screenshot|poster|composite|ai.?generated|duplicate|near.?identical|\bplace\b|dignity|child|sexual/i;
+const ACTIVITY_ONLY = /^activity\b|\bactivity gate\b/i;
+
+function shouldRemove(reason: string, policy: VisionFailPolicy): boolean {
+  if (policy === 'all') return true;
+  if (ACTIVITY_ONLY.test(reason.trim()) && !HARD_FAIL.test(reason))
+    return false;
+  return HARD_FAIL.test(reason);
+}
+
 export async function reviewImagesWithVision(
   gemini: GeminiService,
   ctx: VisionReviewContext,
   images: CollectedImage[],
   logger?: Logger,
+  policy: VisionFailPolicy = 'all',
 ): Promise<CollectedImage[]> {
   if (images.length === 0) return images;
   const batch = images.slice(0, MAX_IMAGES_PER_REVIEW);
@@ -157,9 +176,16 @@ export async function reviewImagesWithVision(
     const target = thumbs[at]?.image;
     if (!target) continue;
     if ((r.verdict ?? '').toUpperCase() === 'FAIL') {
+      const reason = r.reason ?? 'no reason';
+      if (!shouldRemove(reason, policy)) {
+        logger?.log(
+          `Image kept despite soft FAIL for "${ctx.itemName}": ${reason} (${target.url.slice(0, 100)})`,
+        );
+        continue;
+      }
       failed.add(target);
       logger?.log(
-        `Image rejected for "${ctx.itemName}": ${r.reason ?? 'no reason'} (${target.url.slice(0, 100)})`,
+        `Image rejected for "${ctx.itemName}": ${reason} (${target.url.slice(0, 100)})`,
       );
     }
   }

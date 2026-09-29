@@ -145,6 +145,7 @@ describe('SubscriptionService', () => {
         findUnique: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
+        upsert: jest.fn().mockResolvedValue({}),
       },
     };
 
@@ -559,7 +560,12 @@ describe('SubscriptionService', () => {
       expect(result.tier).toBe('pay_once');
     });
 
-    it('marks entitlement REVOKED when Google reports a revoked purchase', async () => {
+    it('marks entitlement EXPIRED (not REVOKED) when Google reports a cancelled-then-lapsed subscription', async () => {
+      // `revoked: true` here means "expired && cancelledInPast" — the
+      // normal end of life of a cancelled subscription, not a refund. A
+      // genuine refund is a separate voidedPurchaseNotification RTDN
+      // (see 'handlePlayWebhook — genuine subscription refund' below) and
+      // must persist REVOKED there; this case must not reuse that status.
       (playVerifier.verifyAndAcknowledge as jest.Mock).mockResolvedValue({
         kind: 'subscription',
         productId: 'pro_monthly',
@@ -576,7 +582,7 @@ describe('SubscriptionService', () => {
         {},
       );
       (prisma.user.findUnique as jest.Mock).mockResolvedValue({
-        subscriptionStatus: SubscriptionStatus.REVOKED,
+        subscriptionStatus: SubscriptionStatus.EXPIRED,
         subscriptionProductId: 'pro_monthly',
         subscriptionExpiresAt: null,
         autoRenewEnabled: false,
@@ -591,11 +597,11 @@ describe('SubscriptionService', () => {
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 1 },
         data: expect.objectContaining({
-          subscriptionStatus: SubscriptionStatus.REVOKED,
+          subscriptionStatus: SubscriptionStatus.EXPIRED,
           autoRenewEnabled: false,
         }),
       });
-      expect(result.status).toBe(SubscriptionStatus.REVOKED);
+      expect(result.status).toBe(SubscriptionStatus.EXPIRED);
     });
 
     it('rejects when the pay_once ledger insert fails with a non-duplicate error (fail-closed)', async () => {
@@ -1678,6 +1684,7 @@ describe('SubscriptionService', () => {
         storeNotification: {
           findUnique: jest.fn(),
           create: jest.fn().mockResolvedValue({ id: 1 }),
+          upsert: jest.fn().mockResolvedValue({ id: 1 }),
           findMany: jest.fn().mockResolvedValue([]),
         },
         subscriptionTransaction: {
@@ -1892,14 +1899,16 @@ describe('SubscriptionService', () => {
 
       expect(prisma.user.update).not.toHaveBeenCalled();
       expect(apiClient.getAllSubscriptionStatuses).not.toHaveBeenCalled();
-      expect(prisma.storeNotification.update).toHaveBeenCalledWith({
-        where: { notificationUUID: 'uuid-unlinked-expired-history' },
-        data: expect.objectContaining({
-          outcome: 'PROCESSED',
-          originalTransactionId: expiredTransaction.originalTransactionId,
-          userId: undefined,
+      expect(prisma.storeNotification.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { notificationUUID: 'uuid-unlinked-expired-history' },
+          update: expect.objectContaining({
+            outcome: 'PROCESSED',
+            originalTransactionId: expiredTransaction.originalTransactionId,
+            userId: undefined,
+          }),
         }),
-      });
+      );
     });
   });
 
@@ -2127,6 +2136,396 @@ describe('SubscriptionService', () => {
     });
   });
 
+  describe('handlePlayWebhook', () => {
+    const encodeRtdn = (notification: Record<string, unknown>) =>
+      Buffer.from(JSON.stringify(notification)).toString('base64');
+
+    const renewalNotification = {
+      version: '1.0',
+      packageName: 'com.oneplan.app',
+      eventTimeMillis: '1753798323000',
+      subscriptionNotification: {
+        version: '1.0',
+        notificationType: 2, // SUBSCRIPTION_RENEWED
+        purchaseToken: 'play-token-renew-1',
+        subscriptionId: 'pro_weekly',
+      },
+    };
+
+    const renewalPayload = {
+      message: {
+        data: encodeRtdn(renewalNotification),
+        messageId: 'rtdn-msg-1',
+        publishTime: '2026-07-29T14:12:03.000Z',
+      },
+      subscription: 'projects/oneplan/subscriptions/rtdn',
+    };
+
+    // Regression test for the incident: RTDN acked 200 but
+    // subscription_expires_at never advanced (store=APPLE, user_id=NULL,
+    // raw_payload empty, outcome falsely PROCESSED). Root cause: the service
+    // pre-created the StoreNotification row itself before calling
+    // storeEventProcessor.process(), which made THAT processor's own dedupe
+    // check see the row and short-circuit as a duplicate before ever calling
+    // EntitlementService.apply(). Uses the REAL StoreEventProcessor +
+    // EntitlementService (only Prisma/ScanCreditService are mocked) so the
+    // full pipeline — dedupe, user resolution, expiry write, ledger write,
+    // scan-credit reconcile, and StoreNotification persistence — is proven
+    // end to end, not just that the right function was called.
+    it('a SUBSCRIPTION_RENEWED RTDN advances expiry, resolves the user, persists store=GOOGLE and the raw payload, and reconciles scan credits', async () => {
+      const newExpiresAt = new Date('2026-08-05T14:12:03.000Z');
+
+      const txUserUpdate = jest.fn().mockResolvedValue({});
+      const txLedgerUpsert = jest.fn().mockResolvedValue({});
+      const entitlementPrisma = {
+        $transaction: jest.fn(async (cb: any) =>
+          cb({
+            $executeRaw: jest.fn().mockResolvedValue(1),
+            subscriptionTransaction: { upsert: txLedgerUpsert },
+            user: { update: txUserUpdate },
+          }),
+        ),
+      } as unknown as PrismaService;
+
+      const processorPrisma = {
+        storeNotification: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          upsert: jest.fn().mockResolvedValue({ id: 1 }),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        subscriptionTransaction: {
+          // Simulates the existing ledger row created by the ORIGINAL Play
+          // purchase's client-verify — this is how the RTDN resolves which
+          // user owns the renewing purchaseToken.
+          findFirst: jest.fn().mockResolvedValue({ userId: 34 }),
+        },
+      } as unknown as PrismaService;
+
+      const realScanCredit = {
+        ...makeScanCreditMock(),
+        isCreditProduct: jest.fn().mockReturnValue(false),
+        reconcileProGrants: jest.fn().mockResolvedValue(undefined),
+      } as unknown as ScanCreditService;
+
+      const entitlement = new EntitlementService(
+        entitlementPrisma,
+        realScanCredit,
+      );
+      const realProcessor = new StoreEventProcessor(
+        processorPrisma,
+        entitlement,
+      );
+
+      const realService = new SubscriptionService(
+        prisma as PrismaService,
+        configService as ConfigService,
+        { track: jest.fn() } as any,
+        playVerifier,
+        realScanCredit,
+        makeAppleAdapterMock(),
+        realProcessor,
+        makePlayAdapterMock(),
+      );
+
+      (prisma.storeNotification.findUnique as jest.Mock).mockResolvedValue(
+        null,
+      );
+      (playVerifier.verifyAndAcknowledge as jest.Mock).mockResolvedValue({
+        kind: 'subscription',
+        productId: 'pro_weekly',
+        purchaseToken: 'play-token-renew-1',
+        active: true,
+        acknowledged: true,
+        expiresAt: newExpiresAt,
+        startedAt: new Date('2026-07-22T14:07:00.000Z'),
+        revoked: false,
+      });
+
+      await realService.handlePlayWebhook(renewalPayload as any);
+
+      // 1. Entitlement actually advanced — the core bug.
+      expect(txUserUpdate).toHaveBeenCalledWith({
+        where: { id: 34 },
+        data: {
+          subscriptionStatus: SubscriptionStatus.ACTIVE,
+          subscriptionProductId: 'pro_weekly',
+          subscriptionExpiresAt: newExpiresAt,
+          originalTransactionId: 'play-token-renew-1',
+        },
+      });
+
+      // 2. The per-cycle scan-credit reconcile — coupled to the same
+      // entitlement.apply() call — now actually runs for Play renewals too.
+      expect(realScanCredit.reconcileProGrants).toHaveBeenCalledWith(34);
+
+      // 3. The StoreNotification row is correct: store=GOOGLE (never the
+      // schema's APPLE default), user resolved, raw payload persisted,
+      // outcome genuinely PROCESSED.
+      expect(processorPrisma.storeNotification.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { notificationUUID: 'rtdn-msg-1' },
+          update: expect.objectContaining({
+            store: 'GOOGLE',
+            userId: 34,
+            outcome: 'PROCESSED',
+            rawPayload: renewalNotification,
+          }),
+        }),
+      );
+
+      // 4. handlePlayWebhook must not perform a second, redundant write on
+      // top of what the processor already persisted (that second write was
+      // the mechanism that stomped ORPHANED/FAILED back to a false
+      // PROCESSED and nulled out the transaction ids).
+      expect(prisma.storeNotification.update).not.toHaveBeenCalled();
+      expect(prisma.storeNotification.upsert).not.toHaveBeenCalled();
+    });
+
+    it('does not stomp an ORPHANED outcome back to PROCESSED when the user cannot be resolved', async () => {
+      scanCreditMock.isCreditProduct.mockReturnValue(false);
+      (prisma.storeNotification.findUnique as jest.Mock).mockResolvedValue(
+        null,
+      );
+      (playVerifier.verifyAndAcknowledge as jest.Mock).mockResolvedValue({
+        kind: 'subscription',
+        productId: 'pro_weekly',
+        purchaseToken: 'play-token-renew-1',
+        active: true,
+        acknowledged: true,
+        expiresAt: new Date('2026-08-05T14:12:03.000Z'),
+        startedAt: new Date('2026-07-22T14:07:00.000Z'),
+        revoked: false,
+      });
+      processorMock.process.mockResolvedValueOnce('ORPHANED');
+
+      await service.handlePlayWebhook(renewalPayload as any);
+
+      expect(processorMock.process).toHaveBeenCalledWith(
+        expect.objectContaining({ store: 'GOOGLE', source: 'NOTIFICATION' }),
+      );
+      // No follow-up write from handlePlayWebhook — the processor already
+      // persisted ORPHANED, and stamping PROCESSED here would silently
+      // strand the event past the point replayOrphans looks for it.
+      expect(prisma.storeNotification.update).not.toHaveBeenCalled();
+      expect(prisma.storeNotification.upsert).not.toHaveBeenCalled();
+    });
+
+    // Regression test for the incident this task fixes: a real Play
+    // subscription cancelled mid-period (type 3 CANCELED) and left to lapse
+    // (type 13 EXPIRED) never persisted a terminal subscriptionStatus. Root
+    // cause: google-play-subscription-verifier's `verified.revoked` (expired
+    // && cancelledInPast) made PlayStoreAdapter classify the event as
+    // 'REFUND', so EntitlementService ran applyRefund() instead of
+    // applySubscriptionState() and silently discarded the status. Uses the
+    // REAL StoreEventProcessor + EntitlementService + PlayStoreAdapter, same
+    // as the renewal test above, so the full pipeline is proven end to end.
+    it('a cancelled-then-expired subscription persists a terminal EXPIRED status instead of silently discarding it as a REFUND', async () => {
+      const pastExpiresAt = new Date('2026-07-30T09:13:41.000Z');
+
+      const txUserUpdate = jest.fn().mockResolvedValue({});
+      const txLedgerUpsert = jest.fn().mockResolvedValue({});
+      const entitlementPrisma = {
+        $transaction: jest.fn(async (cb: any) =>
+          cb({
+            $executeRaw: jest.fn().mockResolvedValue(1),
+            subscriptionTransaction: { upsert: txLedgerUpsert },
+            user: { update: txUserUpdate },
+          }),
+        ),
+      } as unknown as PrismaService;
+
+      const processorPrisma = {
+        storeNotification: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          upsert: jest.fn().mockResolvedValue({ id: 1 }),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        subscriptionTransaction: {
+          findFirst: jest.fn().mockResolvedValue({ userId: 34 }),
+        },
+      } as unknown as PrismaService;
+
+      const realScanCredit = {
+        ...makeScanCreditMock(),
+        isCreditProduct: jest.fn().mockReturnValue(false),
+        reconcileProGrants: jest.fn().mockResolvedValue(undefined),
+        revokePurchase: jest.fn(),
+      } as unknown as ScanCreditService;
+
+      const entitlement = new EntitlementService(
+        entitlementPrisma,
+        realScanCredit,
+      );
+      const realProcessor = new StoreEventProcessor(
+        processorPrisma,
+        entitlement,
+      );
+
+      const realService = new SubscriptionService(
+        prisma as PrismaService,
+        configService as ConfigService,
+        { track: jest.fn() } as any,
+        playVerifier,
+        realScanCredit,
+        makeAppleAdapterMock(),
+        realProcessor,
+        makePlayAdapterMock(),
+      );
+
+      (prisma.storeNotification.findUnique as jest.Mock).mockResolvedValue(
+        null,
+      );
+      (playVerifier.verifyAndAcknowledge as jest.Mock).mockResolvedValue({
+        kind: 'subscription',
+        productId: 'pro_weekly',
+        purchaseToken: 'play-token-renew-1',
+        orderId: 'GPA.3349-1234-5678-90123..3',
+        active: false,
+        acknowledged: true,
+        expiresAt: pastExpiresAt,
+        startedAt: new Date('2026-07-22T14:07:00.000Z'),
+        revoked: true, // expired && cancelledInPast
+      });
+
+      const expiredNotification = {
+        ...renewalNotification,
+        subscriptionNotification: {
+          ...renewalNotification.subscriptionNotification,
+          notificationType: 13, // SUBSCRIPTION_EXPIRED
+        },
+      };
+      const expiredPayload = {
+        message: {
+          data: encodeRtdn(expiredNotification),
+          messageId: 'rtdn-msg-expired',
+          publishTime: '2026-07-30T09:13:44.000Z',
+        },
+        subscription: 'projects/oneplan/subscriptions/rtdn',
+      };
+
+      await realService.handlePlayWebhook(expiredPayload as any);
+
+      // 1. The core bug: the correct terminal status is actually persisted,
+      // not silently dropped.
+      expect(txUserUpdate).toHaveBeenCalledWith({
+        where: { id: 34 },
+        data: {
+          subscriptionStatus: SubscriptionStatus.EXPIRED,
+          subscriptionProductId: 'pro_weekly',
+          subscriptionExpiresAt: pastExpiresAt,
+          originalTransactionId: 'play-token-renew-1',
+        },
+      });
+
+      // 2. It went through the SUBSCRIPTION_STATE branch, not REFUND — the
+      // ledger row was written via upsertLedger, unlike applyRefund which
+      // never touches the ledger.
+      expect(txLedgerUpsert).toHaveBeenCalled();
+
+      // 3. Fail-open is preserved: a normal cancellation must never claw
+      // back the user's scan credits. Only a genuine refund does that.
+      expect(realScanCredit.revokePurchase).not.toHaveBeenCalled();
+
+      expect(processorPrisma.storeNotification.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { notificationUUID: 'rtdn-msg-expired' },
+          update: expect.objectContaining({
+            store: 'GOOGLE',
+            userId: 34,
+            outcome: 'PROCESSED',
+          }),
+        }),
+      );
+    });
+
+    // Companion regression test: the fix must not touch the genuinely
+    // distinct refund path. A real Play subscription refund arrives as its
+    // own voidedPurchaseNotification RTDN (productType 2 = subs) and is
+    // turned into a hardcoded REFUND StoreEvent by
+    // createRefundEventFromNotification — never through PlayStoreAdapter's
+    // v.revoked-derived classification touched by this fix. It must still
+    // revoke credits exactly as before.
+    it('a genuine Play subscription refund (voidedPurchaseNotification) still revokes scan credits', async () => {
+      const processorPrisma = {
+        storeNotification: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          upsert: jest.fn().mockResolvedValue({ id: 1 }),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        subscriptionTransaction: {
+          findFirst: jest.fn().mockResolvedValue({ userId: 34 }),
+        },
+      } as unknown as PrismaService;
+
+      const realScanCredit = {
+        ...makeScanCreditMock(),
+        revokePurchase: jest.fn().mockResolvedValue({
+          userId: 34,
+          productId: 'pro_weekly',
+          grantedAmount: 3,
+          clawedBack: 3,
+          consumedAtRefund: 0,
+          restored: 0,
+          applied: true,
+        }),
+      } as unknown as ScanCreditService;
+
+      const entitlement = new EntitlementService(
+        prisma as PrismaService,
+        realScanCredit,
+      );
+      const realProcessor = new StoreEventProcessor(
+        processorPrisma,
+        entitlement,
+      );
+
+      const realService = new SubscriptionService(
+        prisma as PrismaService,
+        configService as ConfigService,
+        { track: jest.fn() } as any,
+        playVerifier,
+        realScanCredit,
+        makeAppleAdapterMock(),
+        realProcessor,
+        makePlayAdapterMock(),
+      );
+
+      (prisma.storeNotification.findUnique as jest.Mock).mockResolvedValue(
+        null,
+      );
+
+      const voidedNotification = {
+        version: '1.0',
+        packageName: 'com.oneplan.app',
+        eventTimeMillis: '1753798400000',
+        voidedPurchaseNotification: {
+          purchaseToken: 'play-token-refunded-sub',
+          orderId: 'GPA.3349-1234-5678-90123..1',
+          productType: 2, // subs
+          refundType: 1, // user requested
+        },
+      };
+      const voidedPayload = {
+        message: {
+          data: encodeRtdn(voidedNotification),
+          messageId: 'rtdn-msg-voided-sub',
+          publishTime: '2026-07-30T09:13:20.000Z',
+        },
+        subscription: 'projects/oneplan/subscriptions/rtdn',
+      };
+
+      await realService.handlePlayWebhook(voidedPayload as any);
+
+      expect(realScanCredit.revokePurchase).toHaveBeenCalledWith(
+        'play-token-refunded-sub',
+        'play-token-refunded-sub',
+      );
+      // The verifier is never called for a voided-purchase notification —
+      // the token is voided, so Google may 404/return stale data for it.
+      expect(playVerifier.verifyAndAcknowledge).not.toHaveBeenCalled();
+    });
+  });
+
   describe('environment-aware verifier selection', () => {
     it('initializes verifiers for Auto mode', () => {
       service.onModuleInit();
@@ -2283,6 +2682,7 @@ describe('SubscriptionService', () => {
         storeNotification: {
           findUnique: jest.fn(),
           create: jest.fn().mockResolvedValue({ id: 1 }),
+          upsert: jest.fn().mockResolvedValue({ id: 1 }),
           findMany: jest.fn().mockResolvedValue([]),
         },
         subscriptionTransaction: {

@@ -22,11 +22,74 @@ import { AdminOnly } from '../auth/decorators/admin-only.decorator';
 import { MarketplaceListingDto } from './dto/marketplace-listing.dto';
 import { ReorderFeaturedListingsDto } from './dto/reorder-featured-listings.dto';
 import { MarketplaceService } from './marketplace.service';
+import { ListingTranslationsDto } from './dto/listing-translations.dto';
+import {
+  GenerateListingTranslationDto,
+  UpsertListingTranslationDto,
+} from './dto/upsert-listing-translation.dto';
+import { MarketplaceTranslationService } from './translation/marketplace-translation.service';
 
 @ApiTags('Marketplace Admin')
 @Controller('marketplace/admin')
 export class MarketplaceAdminController {
-  constructor(private readonly marketplaceService: MarketplaceService) {}
+  constructor(
+    private readonly marketplaceService: MarketplaceService,
+    private readonly translations: MarketplaceTranslationService,
+  ) {}
+
+  // ── Translations ───────────────────────────────────────────────────
+
+  @Get('listings/:id/translations')
+  @AdminOnly()
+  @ApiOperation({
+    operationId: 'adminGetListingTranslations',
+    summary:
+      'Base text plus every stored translation of a listing and its items.',
+  })
+  @ApiParam({ name: 'id', type: 'integer' })
+  @ApiOkResponse({ type: ListingTranslationsDto })
+  @ApiNotFoundResponse({ description: 'Listing not found' })
+  adminGetListingTranslations(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<ListingTranslationsDto> {
+    return this.translations.getTranslations(id);
+  }
+
+  @Put('listings/:id/translations')
+  @AdminOnly()
+  @ApiOperation({
+    operationId: 'adminUpsertListingTranslation',
+    summary:
+      'Create or replace the translation of a listing (and its items) for one locale. Never changes listing status.',
+  })
+  @ApiParam({ name: 'id', type: 'integer' })
+  @ApiOkResponse({ type: ListingTranslationsDto })
+  @ApiBadRequestResponse({ description: 'Locale equals the source locale' })
+  @ApiNotFoundResponse({ description: 'Listing or item not found' })
+  adminUpsertListingTranslation(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpsertListingTranslationDto,
+  ): Promise<ListingTranslationsDto> {
+    return this.translations.upsertTranslation(id, dto);
+  }
+
+  @Post('listings/:id/translations/generate')
+  @AdminOnly()
+  @ApiOperation({
+    operationId: 'adminGenerateListingTranslation',
+    summary:
+      'Translate the base text into the given locale with Gemini and store it (overwrites an existing translation).',
+  })
+  @ApiParam({ name: 'id', type: 'integer' })
+  @ApiOkResponse({ type: ListingTranslationsDto })
+  @ApiBadRequestResponse({ description: 'Locale equals the source locale' })
+  @ApiNotFoundResponse({ description: 'Listing not found' })
+  adminGenerateListingTranslation(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: GenerateListingTranslationDto,
+  ): Promise<ListingTranslationsDto> {
+    return this.translations.generateTranslation(id, dto.locale);
+  }
 
   @Get('listings')
   @AdminOnly()

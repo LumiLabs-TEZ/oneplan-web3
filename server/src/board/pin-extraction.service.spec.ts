@@ -127,6 +127,7 @@ describe('PinExtractionService', () => {
       scanCredit as unknown as ScanCreditService,
       analytics as unknown as AnalyticsService,
       config as unknown as ConfigService,
+      { onScanFinished: jest.fn() } as any,
     );
   });
 

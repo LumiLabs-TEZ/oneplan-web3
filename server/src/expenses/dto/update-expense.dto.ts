@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayNotEmpty,
+  IsBoolean,
   IsDateString,
   IsDefined,
   IsEnum,
@@ -88,4 +89,23 @@ export class UpdateExpenseDto {
   })
   @IsEnum(Currency)
   originalCurrency?: Currency;
+
+  @ApiPropertyOptional({
+    type: 'integer',
+    description:
+      'Trip member who paid. Must be an accepted member of the trip. Omit to leave the payer unchanged.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  paidById?: number;
+
+  @ApiPropertyOptional({
+    type: 'boolean',
+    description:
+      'When true, the expense is paid by the shared group wallet (paidById cleared to null). Takes precedence over paidById.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  paidByGroup?: boolean;
 }

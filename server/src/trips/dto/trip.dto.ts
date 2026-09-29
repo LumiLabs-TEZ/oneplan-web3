@@ -78,4 +78,11 @@ export class TripDto {
 
   @ApiProperty({ type: [TripMemberDto] })
   members: TripMemberDto[];
+
+  @ApiPropertyOptional({
+    type: 'boolean',
+    description:
+      'Present (and true) only on the immediate response of a currency change whose migration used a stale/fallback exchange rate. Never present on reads.',
+  })
+  rateStale?: boolean;
 }

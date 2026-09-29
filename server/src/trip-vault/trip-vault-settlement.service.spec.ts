@@ -2,7 +2,7 @@ import { Keypair } from '@solana/web3.js';
 import BN from 'bn.js';
 
 import { TripVaultSettlementService } from './trip-vault-settlement.service';
-import { VaultTxKind, VaultTxStatus } from '@prisma/client';
+import { VaultTxKind, VaultTxSource, VaultTxStatus } from '@prisma/client';
 
 const TRIP_ID = 42;
 const SIGNATURE = 'settle-sig';
@@ -34,11 +34,17 @@ function deps() {
     vaultCashSettlement: { findMany: jest.fn().mockResolvedValue([]) },
   };
 
-  const instruction = { keys: [], programId: Keypair.generate().publicKey, data: Buffer.alloc(0) };
+  const instruction = {
+    keys: [],
+    programId: Keypair.generate().publicKey,
+    data: Buffer.alloc(0),
+  };
   const solana = {
     feePayer: { publicKey: Keypair.generate().publicKey },
     usdcMint: Keypair.generate().publicKey,
-    connection: { getAccountInfo: jest.fn().mockResolvedValue({ data: Buffer.alloc(165) }) },
+    connection: {
+      getAccountInfo: jest.fn().mockResolvedValue({ data: Buffer.alloc(165) }),
+    },
     sendAsFeePayer: jest.fn().mockResolvedValue(SIGNATURE),
     closeVault: jest.fn().mockResolvedValue('close-sig'),
     program: {
@@ -216,5 +222,58 @@ describe('TripVaultSettlementService', () => {
 
     expect(result).toEqual({ settled: true, signature: null });
     expect(d.solana.sendAsFeePayer).not.toHaveBeenCalled();
+  });
+
+  describe('a spend paid from a member wallet', () => {
+    function withAnaAndBo(d: ReturnType<typeof deps>) {
+      d.prisma.tripMember.findMany.mockResolvedValue([
+        { userId: 7, user: { displayName: 'Ana', avatarUrl: null } },
+        { userId: 8, user: { displayName: 'Bo', avatarUrl: null } },
+      ]);
+      d.vaultService.getBalance.mockResolvedValue({ balanceMicro: 0n });
+      d.prisma.vaultTransaction.findMany.mockResolvedValue([
+        {
+          kind: VaultTxKind.SPEND,
+          source: VaultTxSource.PERSONAL,
+          userId: 7,
+          amountMicro: 4_000_000n,
+          shareWithUserIds: [],
+          expenseName: 'Dinner',
+        },
+      ]);
+    }
+
+    it('is owed to the payer by the members it was shared with', async () => {
+      const d = deps();
+      withAnaAndBo(d);
+
+      const preview = await build(d).preview(TRIP_ID, 7);
+
+      const ana = preview.payouts.find((p) => p.userId === 7)!;
+      const bo = preview.payouts.find((p) => p.userId === 8)!;
+      expect(ana.netMicro).toBe('2000000');
+      expect(bo.netMicro).toBe('-2000000');
+      expect(preview.cashDebts).toEqual([
+        expect.objectContaining({
+          fromUserId: 8,
+          toUserId: 7,
+          amountMicro: '2000000',
+        }),
+      ]);
+    });
+
+    // Leave pays out vault money only. Fronting a dinner must not block a
+    // member from leaving, nor be paid back out of other people's deposits.
+    it('does not count toward the net the leave flow pays out', async () => {
+      const d = deps();
+      withAnaAndBo(d);
+      d.prisma.tripVault = {
+        findUnique: jest.fn().mockResolvedValue({ id: 1 }),
+      } as never;
+
+      const service = build(d);
+      expect(await service.memberNetMicro(TRIP_ID, 7)).toBe(0n);
+      expect(await service.memberNetMicro(TRIP_ID, 8)).toBe(0n);
+    });
   });
 });

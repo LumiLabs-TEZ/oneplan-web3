@@ -1,4 +1,4 @@
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
@@ -9,33 +9,15 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import multipart from '@fastify/multipart';
 import cors from '@fastify/cors';
 import { AppModule } from './app.module';
-
-/**
- * Keeps a stray rejected promise from taking the API down with it.
- *
- * Node exits the process on an unhandled rejection. That is the right default
- * for a script and the wrong one for a server: a rate-limited background read
- * of a Solana account killed the API for every client, twice, and each device
- * reported itself as offline over something no user had asked for.
- *
- * This logs rather than swallows, and deliberately logs the whole error: an
- * unhandled rejection has no call site in our own stack, so the text is the
- * only thing that says where it came from. Anything that is genuinely ours to
- * handle should still be caught where it happens — this is the floor, not the
- * plan.
- */
-function keepAliveOnUnhandledRejection(): void {
-  process.on('unhandledRejection', (reason) => {
-    const logger = new Logger('UnhandledRejection');
-    logger.error(reason instanceof Error ? reason.stack : String(reason));
-  });
-}
+import { scopeUnhandledRejections } from './solana/unhandled-rejection';
 
 async function bootstrap() {
-  keepAliveOnUnhandledRejection();
+  scopeUnhandledRejections();
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
-    new FastifyAdapter(),
+    // trustProxy: Caddy terminates TLS in front of the container; without it
+    // req.ip is the proxy IP and every visitor shares one throttle bucket.
+    new FastifyAdapter({ trustProxy: true }),
   );
 
   const parseOrigins = (raw: string | undefined): string[] =>
@@ -48,6 +30,7 @@ async function bootstrap() {
     new Set([
       ...parseOrigins(process.env.DASHBOARD_WEB_ORIGINS),
       ...parseOrigins(process.env.ADMIN_WEB_ORIGINS),
+      ...parseOrigins(process.env.TRACTION_WEB_ORIGINS),
     ]),
   );
 

@@ -10,6 +10,7 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
@@ -25,6 +26,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Web3EnabledGuard } from '../solana/web3-enabled.guard';
 import { TripEndConsensusService } from './trip-end-consensus.service';
 import { TripsService } from './trips.service';
 import { CreateTripDto } from './dto/create-trip.dto';
@@ -110,9 +112,10 @@ export class TripsController {
   @ApiOkResponse({ type: InvitePreviewDto })
   @ApiNotFoundResponse({ description: 'Invalid invite code' })
   getInvitePreview(
+    @CurrentUser('sub') userId: number,
     @Param('inviteCode') inviteCode: string,
   ): Promise<InvitePreviewDto> {
-    return this.tripsService.getInvitePreview(inviteCode);
+    return this.tripsService.getInvitePreview(inviteCode, userId);
   }
 
   @Get('invites/pending')
@@ -143,6 +146,7 @@ export class TripsController {
   }
 
   @Post(':id/members/:userId/vault-leave-clear')
+  @UseGuards(Web3EnabledGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     operationId: 'clearVaultLeave',
@@ -161,6 +165,7 @@ export class TripsController {
   }
 
   @Post(':id/vault-leave/announce')
+  @UseGuards(Web3EnabledGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     operationId: 'announceVaultLeave',
@@ -176,6 +181,7 @@ export class TripsController {
   }
 
   @Get(':id/vault-leave/requests')
+  @UseGuards(Web3EnabledGuard)
   @ApiOperation({
     operationId: 'listVaultLeaveRequests',
     summary: 'Host: pending vault leave announcements',
@@ -190,6 +196,7 @@ export class TripsController {
   }
 
   @Post(':id/vault-leave/requests/:userId/confirm')
+  @UseGuards(Web3EnabledGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     operationId: 'confirmVaultLeave',
@@ -208,9 +215,11 @@ export class TripsController {
   }
 
   @Post(':id/end-request')
+  @UseGuards(Web3EnabledGuard)
   @ApiOperation({
     operationId: 'requestTripEnd',
-    summary: 'Creator starts vault end-trip consensus for all members to review',
+    summary:
+      'Creator starts vault end-trip consensus for all members to review',
   })
   @ApiParam({ name: 'id', type: 'integer' })
   @ApiOkResponse({ type: TripEndRequestDto })
@@ -224,6 +233,7 @@ export class TripsController {
   }
 
   @Get(':id/end-request')
+  @UseGuards(Web3EnabledGuard)
   @ApiOperation({
     operationId: 'getTripEndRequest',
     summary: 'Current end-trip consensus request and vote summary',
@@ -239,6 +249,7 @@ export class TripsController {
   }
 
   @Get(':id/end-request/review')
+  @UseGuards(Web3EnabledGuard)
   @ApiOperation({
     operationId: 'getTripEndReview',
     summary: 'Ledger + settlement preview for end-trip Approve/Deny',
@@ -253,6 +264,7 @@ export class TripsController {
   }
 
   @Post(':id/end-request/vote')
+  @UseGuards(Web3EnabledGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     operationId: 'castTripEndVote',

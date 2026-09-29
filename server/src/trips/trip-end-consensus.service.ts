@@ -59,12 +59,16 @@ export class TripEndConsensusService {
       throw new ConflictException('An end request is already pending');
     }
     if (existing?.status === TripEndRequestStatus.APPROVED) {
-      throw new BadRequestException('This trip has already been approved to end');
+      throw new BadRequestException(
+        'This trip has already been approved to end',
+      );
     }
 
     if (existing) {
       await this.prisma.$transaction([
-        this.prisma.tripEndVote.deleteMany({ where: { requestId: existing.id } }),
+        this.prisma.tripEndVote.deleteMany({
+          where: { requestId: existing.id },
+        }),
         this.prisma.tripEndRequest.update({
           where: { id: existing.id },
           data: {
@@ -94,10 +98,7 @@ export class TripEndConsensusService {
     return dto;
   }
 
-  async getRequest(
-    tripId: number,
-    userId: number,
-  ): Promise<TripEndRequestDto> {
+  async getRequest(tripId: number, userId: number): Promise<TripEndRequestDto> {
     await this.assertAcceptedMember(tripId, userId);
     const request = await this.prisma.tripEndRequest.findUnique({
       where: { tripId },
@@ -111,10 +112,7 @@ export class TripEndConsensusService {
     return this.toRequestDto(tripId, userId, request);
   }
 
-  async getReview(
-    tripId: number,
-    userId: number,
-  ): Promise<TripEndReviewDto> {
+  async getReview(tripId: number, userId: number): Promise<TripEndReviewDto> {
     const request = await this.getRequest(tripId, userId);
     const preview = await this.vaultSettlement.preview(tripId, userId);
     const history = await this.vaultHistory.getHistory(tripId, userId);
@@ -141,7 +139,9 @@ export class TripEndConsensusService {
       include: { votes: true },
     });
     if (!request || request.status !== TripEndRequestStatus.PENDING) {
-      throw new BadRequestException('There is no pending end request to vote on');
+      throw new BadRequestException(
+        'There is no pending end request to vote on',
+      );
     }
 
     const existingVote = request.votes.find((vote) => vote.userId === userId);
@@ -194,7 +194,9 @@ export class TripEndConsensusService {
         .filter((vote) => vote.decision === TripEndVoteDecision.APPROVED)
         .map((vote) => vote.userId),
     );
-    const allApproved = members.every((member) => approvedIds.has(member.userId));
+    const allApproved = members.every((member) =>
+      approvedIds.has(member.userId),
+    );
 
     if (!allApproved) {
       const pending = await this.getRequest(tripId, userId);

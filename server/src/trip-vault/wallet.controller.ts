@@ -5,8 +5,10 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBearerAuth,
   ApiCreatedResponse,
   ApiOkResponse,
   ApiOperation,
@@ -14,6 +16,7 @@ import {
 } from '@nestjs/swagger';
 
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { Web3EnabledGuard } from '../solana/web3-enabled.guard';
 import { LinkWalletDto, LinkWalletResponseDto } from './dto/link-wallet.dto';
 import { SubmitSignedDto } from './dto/prepare-payment.dto';
 import { WalletHistoryEntryDto } from './dto/wallet-history.dto';
@@ -36,6 +39,8 @@ import { WalletWithdrawService } from './wallet-withdraw.service';
  * settings ask which trip it belonged to.
  */
 @ApiTags('wallet')
+@ApiBearerAuth()
+@UseGuards(Web3EnabledGuard)
 @Controller('wallet')
 export class WalletController {
   constructor(
@@ -49,7 +54,9 @@ export class WalletController {
     operationId: 'getWallet',
   })
   @ApiOkResponse({ type: WalletBalanceDto })
-  async getWallet(@CurrentUser('sub') userId: number): Promise<WalletBalanceDto> {
+  async getWallet(
+    @CurrentUser('sub') userId: number,
+  ): Promise<WalletBalanceDto> {
     const wallet = await this.vaultService.walletBalance(userId);
     return {
       publicKey: wallet.publicKey ?? '',

@@ -7,11 +7,20 @@ import { TripActivityService } from '../trip-activity/trip-activity.service';
 import { TripsService } from '../trips/trips.service';
 import { BoardService } from './board.service';
 import { AddPinsToBoardDto } from './dto/add-pins-to-board.dto';
+import { TripVibe } from './dto/generate-trip-from-board.dto';
 
-// The two AI-trip collaborators aren't exercised by the dedupe/update suites,
-// so a pair of empty stubs keeps the constructor happy.
+import { AnalyticsService } from '../analytics/analytics.service';
+import { MissionsService } from '../missions/missions.service';
+
+// The AI-trip collaborators aren't exercised by the dedupe/update suites,
+// so empty/fn stubs keep the constructor happy.
 const noTrips = {} as unknown as TripsService;
 const noActivity = {} as unknown as TripActivityService;
+const noAnalytics = { track: jest.fn() } as unknown as AnalyticsService;
+const noMissions = {
+  onBoardCreated: jest.fn(),
+  onTripCreated: jest.fn(),
+} as unknown as MissionsService;
 
 describe('BoardService.addPinsToBoard dedupe', () => {
   let board: { findUnique: jest.Mock; update: jest.Mock };
@@ -59,7 +68,15 @@ describe('BoardService.addPinsToBoard dedupe', () => {
       generateText: jest.fn(),
     } as unknown as GeminiService;
 
-    service = new BoardService(prisma, storage, gemini, noTrips, noActivity);
+    service = new BoardService(
+      prisma,
+      storage,
+      gemini,
+      noTrips,
+      noActivity,
+      noAnalytics,
+      noMissions,
+    );
   });
 
   const dto = (pins: unknown[]): AddPinsToBoardDto =>
@@ -236,7 +253,15 @@ describe('BoardService.updateBoard', () => {
       deleteObject: jest.fn(),
     } as unknown as StorageService;
     const gemini = { generateText: jest.fn() } as unknown as GeminiService;
-    service = new BoardService(prisma, storage, gemini, noTrips, noActivity);
+    service = new BoardService(
+      prisma,
+      storage,
+      gemini,
+      noTrips,
+      noActivity,
+      noAnalytics,
+      noMissions,
+    );
   });
 
   it('throws NotFound when the board does not exist', async () => {
@@ -306,6 +331,8 @@ describe('BoardService.generateTrip', () => {
     sourceUrl: null,
     sourceTimestampSec: null,
     category: null,
+    dayNumber: null,
+    timeOfDayText: null,
     sortOrder: 0,
     createdAt: new Date(),
     ...over,
@@ -368,7 +395,15 @@ describe('BoardService.generateTrip', () => {
     const trips = { getTrip } as unknown as TripsService;
     const activity = { log: jest.fn() } as unknown as TripActivityService;
 
-    const service = new BoardService(prisma, storage, gemini, trips, activity);
+    const service = new BoardService(
+      prisma,
+      storage,
+      gemini,
+      trips,
+      activity,
+      noAnalytics,
+      noMissions,
+    );
     return {
       service,
       prisma,
@@ -705,5 +740,369 @@ describe('BoardService.generateTrip', () => {
       .map((i) => i.title)
       .sort();
     expect(titles).toEqual(['A', 'Keep 1', 'Keep 2', 'Keep 3']);
+  });
+
+  describe('vibes', () => {
+    const promptOf = (m: jest.Mock): string =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      (m.mock.calls[0]?.[0] as Record<string, unknown>).prompt as string;
+
+    it('keeps the "never drop" rule when no vibes are sent', async () => {
+      const pins = [makePin({ id: 1, name: 'A' })];
+      const { service, generateJsonFromText } = build({ pins });
+
+      await service.generateTrip(
+        USER_ID,
+        BOARD_ID,
+        dto({ pinIds: [1], dayCount: 1 }),
+      );
+
+      const prompt = promptOf(generateJsonFromText);
+      expect(prompt).toContain('never invent, drop, merge, or rename');
+      expect(prompt).toContain('Assign every place to exactly one day');
+      expect(prompt).not.toContain('vibes');
+    });
+
+    it('describes the chosen vibes and allows dropping when vibes are sent', async () => {
+      const pins = [makePin({ id: 1, name: 'A' })];
+      const { service, generateJsonFromText } = build({ pins });
+
+      await service.generateTrip(
+        USER_ID,
+        BOARD_ID,
+        dto({
+          pinIds: [1],
+          dayCount: 1,
+          vibes: [TripVibe.FOOD_TOUR, TripVibe.NIGHTLIFE],
+        }),
+      );
+
+      const prompt = promptOf(generateJsonFromText);
+      expect(prompt).toContain('Food tour');
+      expect(prompt).toContain('Nightlife');
+      expect(prompt).toContain('omitting it from "assignments"');
+      expect(prompt).toContain('restaurant, cafe, bar');
+      expect(prompt).not.toContain('never invent, drop, merge');
+      expect(prompt).not.toContain('Assign every place');
+    });
+
+    it('drops pins the model omitted when vibes are sent', async () => {
+      const pins = [
+        makePin({ id: 1, name: 'A' }),
+        makePin({ id: 2, name: 'B' }),
+        makePin({ id: 3, name: 'C' }),
+      ];
+      const { service, planItemCreate } = build({
+        pins,
+        geminiResult: {
+          assignments: [
+            { id: 1, day: 1, startTime: '09:00' },
+            { id: 2, day: 2, startTime: '12:00' },
+          ],
+        },
+      });
+
+      await service.generateTrip(
+        USER_ID,
+        BOARD_ID,
+        dto({ vibes: [TripVibe.FOOD_TOUR] }),
+      );
+
+      const titles = createdItems(planItemCreate).map((i) => i.title);
+      expect(titles.sort()).toEqual(['A', 'B']);
+    });
+
+    it('still round-robin fills omitted pins when no vibes are sent', async () => {
+      const pins = [
+        makePin({ id: 1, name: 'A' }),
+        makePin({ id: 2, name: 'B' }),
+        makePin({ id: 3, name: 'C' }),
+      ];
+      const { service, planItemCreate } = build({
+        pins,
+        geminiResult: {
+          assignments: [
+            { id: 1, day: 1, startTime: '09:00' },
+            { id: 2, day: 2, startTime: '12:00' },
+          ],
+        },
+      });
+
+      await service.generateTrip(USER_ID, BOARD_ID, dto());
+
+      const titles = createdItems(planItemCreate).map((i) => i.title);
+      expect(titles.sort()).toEqual(['A', 'B', 'C']);
+    });
+
+    it('always keeps a hotel even if the model omitted it', async () => {
+      const pins = [
+        makePin({ id: 1, name: 'Ramen', category: 'restaurant' }),
+        makePin({ id: 2, name: 'Museum', category: 'museum' }),
+        makePin({ id: 3, name: 'Hotel', category: 'hotel' }),
+      ];
+      const { service, planItemCreate } = build({
+        pins,
+        geminiResult: {
+          assignments: [{ id: 1, day: 1, startTime: '12:00' }],
+        },
+      });
+
+      await service.generateTrip(
+        USER_ID,
+        BOARD_ID,
+        dto({ vibes: [TripVibe.FOOD_TOUR] }),
+      );
+
+      const items = createdItems(planItemCreate);
+      expect(items.map((i) => i.title).sort()).toEqual(['Hotel', 'Ramen']);
+      expect(items.find((i) => i.title === 'Hotel')?.category).toBe(
+        ExpenseCategory.STAY,
+      );
+    });
+
+    it('falls back to the category filter when the model keeps no pins', async () => {
+      const pins = [
+        makePin({ id: 1, name: 'Ramen', category: 'restaurant' }),
+        makePin({ id: 2, name: 'Museum', category: 'museum' }),
+        makePin({ id: 3, name: 'Cafe', category: 'cafe' }),
+      ];
+      const { service, planItemCreate } = build({
+        pins,
+        geminiResult: {
+          assignments: [{ id: 999, day: 1, startTime: '09:00' }],
+        },
+      });
+
+      await service.generateTrip(
+        USER_ID,
+        BOARD_ID,
+        dto({ vibes: [TripVibe.FOOD_TOUR] }),
+      );
+
+      const titles = createdItems(planItemCreate).map((i) => i.title);
+      expect(titles.sort()).toEqual(['Cafe', 'Ramen']);
+    });
+
+    it('filters by category (plus hotel) when Gemini throws', async () => {
+      const pins = [
+        makePin({ id: 1, name: 'Ramen', category: 'restaurant' }),
+        makePin({ id: 2, name: 'Museum', category: 'museum' }),
+        makePin({ id: 3, name: 'Bar', category: 'bar' }),
+        makePin({ id: 4, name: 'Hotel', category: 'hotel' }),
+      ];
+      const { service, planItemCreate } = build({ pins, geminiThrows: true });
+
+      await service.generateTrip(
+        USER_ID,
+        BOARD_ID,
+        dto({ pinIds: [1, 2, 3, 4], dayCount: 2, vibes: [TripVibe.FOOD_TOUR] }),
+      );
+
+      const items = createdItems(planItemCreate);
+      expect(items.map((i) => i.title).sort()).toEqual([
+        'Bar',
+        'Hotel',
+        'Ramen',
+      ]);
+      // Round-robin across the 2 requested days.
+      expect(new Set(items.map((i) => i.dayNumber))).toEqual(new Set([1, 2]));
+    });
+
+    it('uses every pin when the fallback filter matches nothing', async () => {
+      const pins = [
+        makePin({ id: 1, name: 'Museum', category: 'museum' }),
+        makePin({ id: 2, name: 'Park', category: 'park' }),
+        makePin({ id: 3, name: 'Unknown' }),
+      ];
+      const { service, planItemCreate } = build({ pins, geminiThrows: true });
+
+      await service.generateTrip(
+        USER_ID,
+        BOARD_ID,
+        dto({ vibes: [TripVibe.SHOPPING] }),
+      );
+
+      const titles = createdItems(planItemCreate).map((i) => i.title);
+      expect(titles.sort()).toEqual(['Museum', 'Park', 'Unknown']);
+    });
+  });
+
+  describe('narrated schedule (dayNumber / timeOfDayText)', () => {
+    it('forces the narrated day and time over the model output', async () => {
+      const pins = [
+        makePin({ id: 1, name: 'A', dayNumber: 2, timeOfDayText: 'chiều' }),
+        makePin({ id: 2, name: 'B' }),
+      ];
+      const { service, planItemCreate } = build({
+        pins,
+        geminiResult: {
+          assignments: [
+            { id: 1, day: 1, startTime: '10:00' },
+            { id: 2, day: 1, startTime: '12:00' },
+          ],
+        },
+      });
+
+      await service.generateTrip(USER_ID, BOARD_ID, dto({ pinIds: [1, 2] }));
+
+      const byTitle = Object.fromEntries(
+        createdItems(planItemCreate).map((i) => [i.title, i]),
+      );
+      expect(byTitle.A.dayNumber).toBe(2);
+      expect(byTitle.A.startTime).toBe('15:00');
+      expect(byTitle.B.dayNumber).toBe(1);
+      expect(byTitle.B.startTime).toBe('12:00');
+    });
+
+    it('keeps input order for same-day pins with the same narrated time', async () => {
+      const pins = [
+        makePin({ id: 1, name: 'First', dayNumber: 1, timeOfDayText: 'trưa' }),
+        makePin({ id: 2, name: 'Second', dayNumber: 1, timeOfDayText: 'trưa' }),
+        makePin({
+          id: 3,
+          name: 'Morning',
+          dayNumber: 1,
+          timeOfDayText: 'sáng',
+        }),
+      ];
+      const { service, planItemCreate } = build({ pins, geminiThrows: true });
+
+      await service.generateTrip(USER_ID, BOARD_ID, dto({ dayCount: 1 }));
+
+      const items = createdItems(planItemCreate).sort(
+        (a, b) => a.sortOrder - b.sortOrder,
+      );
+      expect(items.map((i) => i.title)).toEqual(['Morning', 'First', 'Second']);
+      expect(items.map((i) => i.startTime)).toEqual([
+        '08:00',
+        '12:00',
+        '12:00',
+      ]);
+    });
+
+    it('grows dayCount to the max narrated day', async () => {
+      const pins = [
+        makePin({ id: 1, name: 'A', dayNumber: 1 }),
+        makePin({ id: 2, name: 'B', dayNumber: 3 }),
+        makePin({ id: 3, name: 'C' }),
+      ];
+      const { service, planItemCreate } = build({ pins, geminiThrows: true });
+
+      await service.generateTrip(USER_ID, BOARD_ID, dto({ dayCount: 1 }));
+
+      const byTitle = Object.fromEntries(
+        createdItems(planItemCreate).map((i) => [i.title, i]),
+      );
+      expect(byTitle.B.dayNumber).toBe(3);
+      expect(byTitle.A.dayNumber).toBe(1);
+    });
+
+    it('does not grow dayCount to the narrated day in vibe mode', async () => {
+      const pins = [
+        makePin({ id: 1, name: 'A', dayNumber: 1, category: 'restaurant' }),
+        makePin({ id: 2, name: 'B', dayNumber: 3, category: 'cafe' }),
+        makePin({ id: 3, name: 'C', category: 'museum' }),
+      ];
+      const { service, planItemCreate, generateJsonFromText } = build({
+        pins,
+        geminiResult: {
+          assignments: [
+            { id: 1, day: 1, startTime: '09:00' },
+            { id: 2, day: 1, startTime: '15:00' },
+          ],
+        },
+      });
+
+      await service.generateTrip(
+        USER_ID,
+        BOARD_ID,
+        dto({ dayCount: 1, vibes: [TripVibe.FOOD_TOUR] }),
+      );
+
+      const prompt =
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        (generateJsonFromText.mock.calls[0]?.[0] as Record<string, unknown>)
+          .prompt as string;
+      expect(prompt).toContain('planning a 1-day trip');
+      const items = createdItems(planItemCreate);
+      expect(items.map((i) => i.title).sort()).toEqual(['A', 'B']);
+      expect(items.every((i) => i.dayNumber === 1)).toBe(true);
+    });
+  });
+
+  describe('generateTripFromPins', () => {
+    const pinsDto = (over: Partial<Record<string, unknown>> = {}) =>
+      ({
+        pins: [
+          { name: 'Buôn Kơ Lang', dayNumber: 1, timeOfDayText: 'trưa' },
+          { name: 'Air dream 2', dayNumber: 1, timeOfDayText: 'chiều' },
+          { name: 'Bánh Mì Xíu Mại', dayNumber: 2, timeOfDayText: 'sáng' },
+        ],
+        dayCount: 1,
+        tripName: 'Đà Lạt',
+        stateId: 5,
+        countryId: 6,
+        ...over,
+      }) as never;
+
+    it('creates the trip with the inline destination and no board queries', async () => {
+      const { service, prisma, tripCreate, planItemCreate } = build({
+        pins: [],
+        geminiResult: {
+          assignments: [
+            { id: 1, day: 1, startTime: '09:00' },
+            { id: 2, day: 1, startTime: '10:00' },
+            { id: 3, day: 1, startTime: '11:00' },
+          ],
+        },
+      });
+
+      await service.generateTripFromPins(USER_ID, pinsDto({ cityId: 4 }));
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(prisma.board.findUnique).not.toHaveBeenCalled();
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      expect(prisma.boardPin.findMany).not.toHaveBeenCalled();
+      expect(tripCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+          data: expect.objectContaining({
+            name: 'Đà Lạt',
+            cityId: 4,
+            stateId: 5,
+            countryId: 6,
+          }),
+        }),
+      );
+      const items = createdItems(planItemCreate).sort(
+        (a, b) => a.dayNumber - b.dayNumber || a.sortOrder - b.sortOrder,
+      );
+      expect(items.map((i) => [i.title, i.dayNumber, i.startTime])).toEqual([
+        ['Buôn Kơ Lang', 1, '12:00'],
+        ['Air dream 2', 1, '15:00'],
+        ['Bánh Mì Xíu Mại', 2, '08:00'],
+      ]);
+    });
+
+    it('dedupes duplicate inline pins', async () => {
+      const { service, planItemCreate } = build({
+        pins: [],
+        geminiThrows: true,
+      });
+
+      await service.generateTripFromPins(
+        USER_ID,
+        pinsDto({
+          pins: [
+            { name: 'Waken Beans', latitude: 11.94, longitude: 108.44 },
+            { name: 'waken beans', latitude: 11.94, longitude: 108.44 },
+            { name: 'Other' },
+          ],
+        }),
+      );
+
+      const titles = createdItems(planItemCreate).map((i) => i.title);
+      expect(titles.sort()).toEqual(['Other', 'Waken Beans']);
+    });
   });
 });

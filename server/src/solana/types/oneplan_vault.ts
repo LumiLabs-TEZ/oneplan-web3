@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/oneplan_vault.json`.
  */
 export type OneplanVault = {
-  "address": "8pjmDZvmRzjcSwzffqnsdzsPRb3nV9BiVDhGU3vmR7uD",
+  "address": "HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL",
   "metadata": {
     "name": "oneplanVault",
     "version": "0.1.0",

@@ -12,7 +12,10 @@ import {
 
 /** Metadata edits for a confirmed vault spend. Amount is intentionally omitted. */
 export class UpdateVaultSpendDto {
-  @ApiPropertyOptional({ maxLength: 255, description: 'Expense / TX display name' })
+  @ApiPropertyOptional({
+    maxLength: 255,
+    description: 'Expense / TX display name',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(255)

@@ -4,7 +4,13 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { InviteStatus, VaultStatus, VaultTxKind, VaultTxStatus } from '@prisma/client';
+import {
+  InviteStatus,
+  VaultStatus,
+  VaultTxKind,
+  VaultTxSource,
+  VaultTxStatus,
+} from '@prisma/client';
 import {
   createAssociatedTokenAccountInstruction,
   getAssociatedTokenAddressSync,
@@ -16,7 +22,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SolanaService } from '../solana/solana.service';
 import { TripsHandler } from '../realtime/handlers/trips.handler';
 import { TripVaultService } from './trip-vault.service';
-import { cashDebts, cashDebtLines, computeSettlement, SettlementShare } from './settlement-math';
+import {
+  cashDebts,
+  cashDebtLines,
+  computeSettlement,
+  SettlementShare,
+} from './settlement-math';
 import { SettlementPreviewDto } from './dto/settlement.dto';
 
 /** Mirrors MAX_PAYOUTS / MAX_MEMBERS in the program. */
@@ -37,8 +48,20 @@ export class TripVaultSettlementService {
     private readonly trips: TripsHandler,
   ) {}
 
-  /** Gathers the ledger and runs the split. */
-  private async shares(tripId: number): Promise<{
+  /**
+   * Gathers the ledger and runs the split.
+   *
+   * A personal spend — a member paying a merchant from their own wallet on the
+   * group's behalf — counts as if that member had deposited the amount and the
+   * group had spent it, so the others owe them their share. `vaultOnly` drops
+   * those rows: the leave flow pays out real vault money only, and a member who
+   * fronted a dinner should neither be blocked from leaving nor paid back out of
+   * other people's deposits.
+   */
+  private async shares(
+    tripId: number,
+    opts: { vaultOnly?: boolean } = {},
+  ): Promise<{
     shares: SettlementShare[];
     balanceMicro: bigint;
     walletsByUser: Map<number, string>;
@@ -66,6 +89,7 @@ export class TripVaultSettlementService {
       where: { tripVaultId: vault.id, status: VaultTxStatus.CONFIRMED },
       select: {
         kind: true,
+        source: true,
         userId: true,
         amountMicro: true,
         shareWithUserIds: true,
@@ -93,6 +117,18 @@ export class TripVaultSettlementService {
           (depositsByUser.get(row.userId) ?? 0n) - row.amountMicro,
         );
       } else if (row.kind === VaultTxKind.SPEND) {
+        if (row.source === VaultTxSource.PERSONAL) {
+          if (opts.vaultOnly || row.userId === null) {
+            continue;
+          }
+          // Fronted by the member: credited like a deposit, shared like a
+          // spend. The two cancel in the total, so sum(net) still equals the
+          // vault balance.
+          depositsByUser.set(
+            row.userId,
+            (depositsByUser.get(row.userId) ?? 0n) + row.amountMicro,
+          );
+        }
         spends.push({
           amountMicro: row.amountMicro,
           shareWithUserIds: row.shareWithUserIds,
@@ -141,7 +177,9 @@ export class TripVaultSettlementService {
     walletsByUser: Map<number, string>,
   ): { userId: number; wallet: string; amountMicro: bigint }[] {
     return shares
-      .filter((share) => share.onChainMicro > 0n && walletsByUser.has(share.userId))
+      .filter(
+        (share) => share.onChainMicro > 0n && walletsByUser.has(share.userId),
+      )
       .map((share) => ({
         userId: share.userId,
         wallet: walletsByUser.get(share.userId)!,
@@ -153,10 +191,7 @@ export class TripVaultSettlementService {
    * Current vault ledger net for one accepted member (deposit − spend share).
    * Null when the trip has no vault.
    */
-  async memberNetMicro(
-    tripId: number,
-    userId: number,
-  ): Promise<bigint | null> {
+  async memberNetMicro(tripId: number, userId: number): Promise<bigint | null> {
     const vault = await this.prisma.tripVault.findUnique({
       where: { tripId },
       select: { id: true },
@@ -164,7 +199,7 @@ export class TripVaultSettlementService {
     if (!vault) {
       return null;
     }
-    const { shares } = await this.shares(tripId);
+    const { shares } = await this.shares(tripId, { vaultOnly: true });
     return shares.find((share) => share.userId === userId)?.netMicro ?? 0n;
   }
 
@@ -197,8 +232,14 @@ export class TripVaultSettlementService {
   ): Promise<SettlementPreviewDto> {
     const vaultRow = await this.vaultService.requireVault(tripId);
     const isSettled = vaultRow.status === VaultStatus.CLOSED;
-    const { shares: forecast, balanceMicro, walletsByUser, membersById, memberIds, spends } =
-      await this.shares(tripId);
+    const {
+      shares: forecast,
+      balanceMicro,
+      walletsByUser,
+      membersById,
+      memberIds,
+      spends,
+    } = await this.shares(tripId);
 
     // Once the vault has distributed there is nothing left to divide, so
     // recomputing the split reads a balance of zero and calls every net
@@ -294,8 +335,7 @@ export class TripVaultSettlementService {
         onChainMicro,
         // Whatever the settlement did not cover is still owed in cash. A member
         // who owes rather than is owed has nothing on chain either way.
-        offChainMicro:
-          share.netMicro > 0n ? share.netMicro - onChainMicro : 0n,
+        offChainMicro: share.netMicro > 0n ? share.netMicro - onChainMicro : 0n,
       };
     });
   }
@@ -349,7 +389,9 @@ export class TripVaultSettlementService {
    * Pays every on-chain share and closes the vault in one instruction. Members
    * do not co-sign — their Approve votes on the end request are the review.
    */
-  async executeFromServer(tripId: number): Promise<{ settled: boolean; signature: string | null }> {
+  async executeFromServer(
+    tripId: number,
+  ): Promise<{ settled: boolean; signature: string | null }> {
     const vault = await this.vaultService.requireVault(tripId);
     if (vault.status === VaultStatus.CLOSED) {
       return { settled: true, signature: null };

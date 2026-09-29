@@ -1,3 +1,7 @@
+import {
+  CONTENT_LOCALE_CLS_KEY,
+  parseAcceptLanguage,
+} from './common/locale/content-locale';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -37,8 +41,10 @@ import { WeatherModule } from './weather/weather.module';
 import { EngagementModule } from './engagement/engagement.module';
 import { TripGeneratorModule } from './trip-generator/trip-generator.module';
 import { GiftModule } from './gift/gift.module';
+import { MissionsModule } from './missions/missions.module';
 import { DeletedUsersModule } from './deleted-users/deleted-users.module';
 import { FareWatchModule } from './fare-watch/fare-watch.module';
+import { TractionModule } from './traction/traction.module';
 import { adminConfig } from './config/admin.config';
 import { solanaConfigSchema } from './solana/solana.config';
 import { SolanaModule } from './solana/solana.module';
@@ -87,9 +93,6 @@ import { TripVaultModule } from './trip-vault/trip-vault.module';
         // configured is skipped and logged as a startup warning rather than
         // silently shipping a malformed/empty response.
         ANDROID_APP_LINK_TARGETS: Joi.string().allow('').default(''),
-        // iOS AASA appIDs (`TEAMID.bundleId`, comma-separated). Dev must set
-        // GS4TMK323X.dev.lumilabs.oneplan; unset = prod App Store bundle.
-        IOS_APP_IDS: Joi.string().allow('').default(''),
         // Legacy single-package fallback, only read when
         // ANDROID_APP_LINK_TARGETS is unset. Defaults to the release
         // applicationId in android/app/build.gradle.kts.
@@ -208,6 +211,7 @@ import { TripVaultModule } from './trip-vault/trip-vault.module';
         ADMIN_EMAILS: Joi.string().allow('').default(''),
         ADMIN_WEB_ORIGINS: Joi.string().allow('').default(''),
         DASHBOARD_WEB_ORIGINS: Joi.string().allow('').default(''),
+        TRACTION_WEB_ORIGINS: Joi.string().allow('').default(''),
         // Telegram marketing bot (offer-code distribution). Two independent
         // flags: BOT_ENABLED runs the long-poll loop at all (set true ONLY in
         // prod — Telegram allows one poller per token); CAMPAIGN_ENABLED is the
@@ -225,6 +229,10 @@ import { TripVaultModule } from './trip-vault/trip-vault.module';
         TELEGRAM_GROUP_ID: Joi.string().allow('').default(''),
         TELEGRAM_WELCOME_TEXT: Joi.string().allow('').default(''),
         TELEGRAM_CAMPAIGN_CTA: Joi.string().allow('').default(''),
+        // Auto-start cron: flips PLANNING trips to ONGOING on their start date.
+        TRIP_AUTO_START_ENABLED: Joi.string()
+          .valid('true', 'false')
+          .default('true'),
         // Engagement push engine. ENGAGEMENT_ENABLED gates the cron entirely;
         // per-trigger flags allow dark-launching one trigger at a time. Read
         // once via ConfigService at runtime — restart to apply changes.
@@ -270,11 +278,10 @@ import { TripVaultModule } from './trip-vault/trip-vault.module';
         WEATHER_COLD_C: Joi.number().default(12),
         GOOGLE_MAPS_WEATHER_API_KEY: Joi.string().allow('').default(''),
         WEATHER_DEFAULT_TIMEZONE: Joi.string().default('Asia/Ho_Chi_Minh'),
+        // Plan-route day map (Mapbox Directions API). Optional: unset skips
+        // the upstream call and falls back to straight-line legs (no 500).
+        MAPBOX_ACCESS_TOKEN: Joi.string().allow('').default(''),
         ...solanaConfigSchema,
-        // Plan-route day map (Routes API — routes.googleapis.com). Optional:
-        // unset skips the upstream call and falls back to straight-line legs
-        // (no 500). Restrict to the Routes API only; IP-restrict to the VPS.
-        GOOGLE_ROUTES_API_KEY: Joi.string().allow('').default(''),
       }),
     }),
     ScheduleModule.forRoot(),
@@ -292,6 +299,10 @@ import { TripVaultModule } from './trip-vault/trip-vault.module';
           if (typeof sessionId === 'string') cls.set('sessionId', sessionId);
           if (typeof anonymousId === 'string')
             cls.set('anonymousId', anonymousId);
+          cls.set(
+            CONTENT_LOCALE_CLS_KEY,
+            parseAcceptLanguage(headers['accept-language']),
+          );
         },
       },
     }),
@@ -329,10 +340,12 @@ import { TripVaultModule } from './trip-vault/trip-vault.module';
     EngagementModule,
     TripGeneratorModule,
     GiftModule,
+    MissionsModule,
     DeletedUsersModule,
     SolanaModule,
     TripVaultModule,
     FareWatchModule,
+    TractionModule,
   ],
 })
 export class AppModule {}

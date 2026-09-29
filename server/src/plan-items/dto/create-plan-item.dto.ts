@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ExpenseCategory } from '@prisma/client';
 import {
+  ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
   IsDateString,
@@ -106,6 +107,17 @@ export class CreatePlanItemDto {
   @IsInt()
   @Min(1)
   voiceDuration?: number;
+
+  @ApiPropertyOptional({
+    type: [String],
+    maxItems: 5,
+    description: 'Image URLs or object keys (max 5)',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5)
+  @IsString({ each: true })
+  imageUrls?: string[];
 
   @ApiProperty({
     type: [Number],

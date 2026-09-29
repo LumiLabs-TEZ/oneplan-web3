@@ -1,10 +1,16 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   NotFoundException,
 } from '@nestjs/common';
-import { Currency, InviteStatus, SubscriptionStatus } from '@prisma/client';
+import {
+  Currency,
+  InviteStatus,
+  Prisma,
+  SubscriptionStatus,
+} from '@prisma/client';
 import { BudgetsService } from '../../src/budgets/budgets.service';
 import { PlanItemsService } from '../../src/plan-items/plan-items.service';
 import { PrismaService } from '../../src/prisma/prisma.service';
@@ -18,8 +24,13 @@ describe('TripsService', () => {
   let budgetsService: Record<string, any>;
   let planItemsService: Record<string, any>;
   let storageService: Record<string, any>;
+  let tripVaultMock: {
+    hasVault: jest.Mock;
+    syncMembersIfVault: jest.Mock;
+  };
   let tripsHandler: Record<string, any>;
   let notificationsService: Record<string, any>;
+  let exchangeRatesService: Record<string, any>;
 
   const mockUser = {
     id: 1,
@@ -100,6 +111,8 @@ describe('TripsService', () => {
       },
       budget: {
         count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+        update: jest.fn(),
       },
       marketplaceRating: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -111,10 +124,12 @@ describe('TripsService', () => {
       budgetPayment: {
         findMany: jest.fn().mockResolvedValue([]),
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       expenseShare: {
         findMany: jest.fn().mockResolvedValue([]),
         deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+        update: jest.fn(),
       },
       expense: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -122,6 +137,7 @@ describe('TripsService', () => {
         count: jest.fn().mockResolvedValue(0),
       },
       $transaction: jest.fn((cb: (tx: any) => Promise<any>) => cb(prisma)),
+      $executeRaw: jest.fn().mockResolvedValue(1),
     };
 
     activityService = {
@@ -144,9 +160,30 @@ describe('TripsService', () => {
 
     tripsHandler = {
       sendTripInvite: jest.fn(),
+      sendTripStarted: jest.fn(),
       sendTripEnded: jest.fn(),
       sendTripDeleted: jest.fn(),
+      sendTripSettlementUpdated: jest.fn(),
+      sendTripMemberRemoved: jest.fn(),
+      sendTripMemberRoleUpdated: jest.fn(),
+      sendVaultLeaveRequested: jest.fn(),
       getOnlineUserIds: jest.fn().mockReturnValue([]),
+    };
+
+    tripVaultMock = {
+      hasVault: jest.fn().mockResolvedValue(false),
+      syncMembersIfVault: jest.fn().mockResolvedValue(0),
+      assertDeletable: jest.fn().mockResolvedValue(undefined),
+      syncMembers: jest.fn().mockResolvedValue(0),
+      setMemberRole: jest.fn().mockResolvedValue(undefined),
+    } as never;
+
+    exchangeRatesService = {
+      getRate: jest.fn().mockResolvedValue({
+        rate: new Prisma.Decimal(2),
+        fetchedAt: new Date(),
+        isStale: false,
+      }),
     };
 
     notificationsService = {
@@ -164,15 +201,25 @@ describe('TripsService', () => {
       tripsHandler as any,
       notificationsService as any,
       { track: jest.fn() } as any,
-      // A trip with no vault is always deletable, which is the default here.
+      exchangeRatesService as any,
       {
-        assertDeletable: jest.fn().mockResolvedValue(undefined),
-        syncMembers: jest.fn().mockResolvedValue(0),
-        setMemberRole: jest.fn().mockResolvedValue(undefined),
+        onTripCreated: jest.fn(),
+        onMemberInvited: jest.fn(),
+        onInviteeEngaged: jest.fn(),
+        onTripPossiblySettled: jest.fn(),
       } as any,
+      // A trip with no vault is always deletable, which is the default here.
+      tripVaultMock as any,
       {
         memberNetMicro: jest.fn().mockResolvedValue(null),
         memberDepositMicro: jest.fn().mockResolvedValue(0n),
+        payoutLeaveMember: jest.fn().mockResolvedValue(undefined),
+      } as any,
+      {
+        getHistory: jest.fn().mockResolvedValue([]),
+      } as any,
+      {
+        assertEndableWithoutConsensus: jest.fn().mockResolvedValue(undefined),
       } as any,
     );
   });
@@ -275,6 +322,24 @@ describe('TripsService', () => {
       expect(prisma.country.findUnique).not.toHaveBeenCalled();
       const createArgs = prisma.trip.create.mock.calls[0][0];
       expect(createArgs.data.localCurrencies).toEqual([]);
+    });
+
+    it('filters the home currency out of explicit localCurrencies', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        preferredCurrency: Currency.VND,
+      });
+      prisma.trip.create.mockResolvedValue(mockTrip);
+      prisma.tripMember.create.mockResolvedValue(mockMember);
+      prisma.trip.findUniqueOrThrow.mockResolvedValue(mockTripWithIncludes);
+
+      await service.createTrip(1, {
+        name: 'Trip to Vietnam',
+        currency: Currency.VND,
+        localCurrencies: [Currency.VND, Currency.THB],
+      } as any);
+
+      const createArgs = prisma.trip.create.mock.calls[0][0];
+      expect(createArgs.data.localCurrencies).toEqual([Currency.THB]);
     });
   });
 
@@ -406,6 +471,7 @@ describe('TripsService', () => {
       expect(prisma.trip.findMany).toHaveBeenCalled();
       expect(prisma.trip.update).toHaveBeenCalled();
       expect(result.status).toBe('ONGOING');
+      expect(tripsHandler.sendTripStarted).toHaveBeenCalledWith(1);
     });
 
     it('should throw ForbiddenException when non-creator tries to start trip', async () => {
@@ -497,13 +563,14 @@ describe('TripsService', () => {
       expect(result.localCurrencies).toEqual([Currency.THB]);
     });
 
-    it('still blocks currency change when budgets or expenses exist', async () => {
+    it('rejects a currency change on an ended trip', async () => {
       prisma.tripMember.findUnique.mockResolvedValue(mockMember);
       prisma.trip.findUniqueOrThrow.mockResolvedValue({
+        startDate: null,
+        endDate: null,
         currency: Currency.VND,
+        status: 'ENDED',
       });
-      prisma.budget.count.mockResolvedValue(1);
-      prisma.expense.count.mockResolvedValue(0);
 
       await expect(
         service.updateTrip(1, 1, { currency: Currency.THB } as any),
@@ -512,11 +579,249 @@ describe('TripsService', () => {
       expect(prisma.trip.update).not.toHaveBeenCalled();
     });
 
+    it('migrates money rows inside a transaction when currency changes', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.trip.findUniqueOrThrow
+        // currentTrip read
+        .mockResolvedValueOnce({
+          startDate: null,
+          endDate: null,
+          currency: Currency.VND,
+          localCurrencies: [],
+          status: 'PLANNING',
+        })
+        // in-tx re-read
+        .mockResolvedValueOnce({ currency: Currency.VND })
+        // findTripDetail
+        .mockResolvedValue({
+          ...mockTripWithIncludes,
+          currency: Currency.THB,
+        });
+      prisma.expense.findMany.mockResolvedValue([
+        {
+          id: 1,
+          amount: new Prisma.Decimal(100),
+          originalAmount: new Prisma.Decimal(100),
+          originalCurrency: Currency.VND,
+          exchangeRate: new Prisma.Decimal(1),
+          shares: [{ id: 1, shareAmount: new Prisma.Decimal(100) }],
+        },
+      ]);
+      prisma.expense.update.mockResolvedValue({});
+      prisma.trip.update.mockResolvedValue({
+        ...mockTrip,
+        currency: Currency.THB,
+      });
+
+      const result = await service.updateTrip(1, 1, {
+        currency: Currency.THB,
+      } as any);
+
+      expect(prisma.$transaction).toHaveBeenCalled();
+      expect(prisma.$executeRaw).toHaveBeenCalled();
+      expect(exchangeRatesService.getRate).toHaveBeenCalledWith(
+        Currency.VND,
+        Currency.THB,
+      );
+      expect(prisma.expense.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 1 },
+          data: expect.objectContaining({
+            amount: new Prisma.Decimal(200),
+          }),
+        }),
+      );
+      expect(prisma.expenseShare.update).toHaveBeenCalled();
+      expect(tripsHandler.sendTripSettlementUpdated).toHaveBeenCalledWith(1);
+      expect(result.currency).toBe(Currency.THB);
+      // Fresh rates → no stale flag on the response.
+      expect(result.rateStale).toBeUndefined();
+    });
+
+    it('throws ConflictException when the currency changed concurrently, without migrating', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.trip.findUniqueOrThrow
+        // currentTrip read: still VND
+        .mockResolvedValueOnce({
+          startDate: null,
+          endDate: null,
+          currency: Currency.VND,
+          localCurrencies: [],
+          status: 'PLANNING',
+        })
+        // in-tx re-read under the advisory lock: someone else already
+        // changed it
+        .mockResolvedValueOnce({ currency: Currency.USD });
+
+      await expect(
+        service.updateTrip(1, 1, { currency: Currency.THB } as any),
+      ).rejects.toThrow(ConflictException);
+
+      expect(prisma.trip.update).not.toHaveBeenCalled();
+      expect(prisma.expense.update).not.toHaveBeenCalled();
+      expect(tripsHandler.sendTripSettlementUpdated).not.toHaveBeenCalled();
+    });
+
+    it('applies name, localCurrencies, and currency together in one PATCH', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.trip.findUniqueOrThrow
+        .mockResolvedValueOnce({
+          startDate: null,
+          endDate: null,
+          currency: Currency.VND,
+          localCurrencies: [],
+          status: 'PLANNING',
+        })
+        .mockResolvedValueOnce({ currency: Currency.VND })
+        .mockResolvedValue({
+          ...mockTripWithIncludes,
+          currency: Currency.THB,
+        });
+      prisma.trip.update.mockResolvedValue({
+        ...mockTrip,
+        currency: Currency.THB,
+      });
+
+      await service.updateTrip(1, 1, {
+        name: 'Renamed',
+        currency: Currency.THB,
+        localCurrencies: [Currency.USD],
+      } as any);
+
+      const updateArgs = prisma.trip.update.mock.calls[0][0];
+      expect(updateArgs.data).toEqual(
+        expect.objectContaining({
+          name: 'Renamed',
+          currency: Currency.THB,
+          localCurrencies: [Currency.USD],
+        }),
+      );
+      // The single tx update carried everything; migration still ran.
+      expect(prisma.$executeRaw).toHaveBeenCalled();
+    });
+
+    it('filters the new home currency out of stored localCurrencies on a currency change', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.trip.findUniqueOrThrow
+        .mockResolvedValueOnce({
+          startDate: null,
+          endDate: null,
+          currency: Currency.VND,
+          localCurrencies: [Currency.THB, Currency.USD],
+          status: 'PLANNING',
+        })
+        .mockResolvedValueOnce({ currency: Currency.VND })
+        .mockResolvedValue({
+          ...mockTripWithIncludes,
+          currency: Currency.THB,
+        });
+      prisma.trip.update.mockResolvedValue({
+        ...mockTrip,
+        currency: Currency.THB,
+      });
+
+      await service.updateTrip(1, 1, { currency: Currency.THB } as any);
+
+      const updateArgs = prisma.trip.update.mock.calls[0][0];
+      expect(updateArgs.data.localCurrencies).toEqual([Currency.USD]);
+    });
+
+    it('filters the new home currency out of localCurrencies sent in the same PATCH', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.trip.findUniqueOrThrow
+        .mockResolvedValueOnce({
+          startDate: null,
+          endDate: null,
+          currency: Currency.VND,
+          localCurrencies: [],
+          status: 'PLANNING',
+        })
+        .mockResolvedValueOnce({ currency: Currency.VND })
+        .mockResolvedValue({
+          ...mockTripWithIncludes,
+          currency: Currency.THB,
+        });
+      prisma.trip.update.mockResolvedValue({
+        ...mockTrip,
+        currency: Currency.THB,
+      });
+
+      await service.updateTrip(1, 1, {
+        currency: Currency.THB,
+        localCurrencies: [Currency.THB, Currency.SGD],
+      } as any);
+
+      const updateArgs = prisma.trip.update.mock.calls[0][0];
+      expect(updateArgs.data.localCurrencies).toEqual([Currency.SGD]);
+    });
+
+    it('filters the home currency out of a plain localCurrencies update (no currency change)', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.trip.findUnique.mockResolvedValue({ startDate: null });
+      prisma.trip.findUniqueOrThrow
+        .mockResolvedValueOnce({
+          startDate: null,
+          endDate: null,
+          currency: Currency.VND,
+          localCurrencies: [],
+          status: 'PLANNING',
+        })
+        .mockResolvedValue(mockTripWithIncludes);
+      prisma.trip.update.mockResolvedValue(mockTrip);
+
+      await service.updateTrip(1, 1, {
+        localCurrencies: [Currency.VND, Currency.THB],
+      } as any);
+
+      const updateArgs = prisma.trip.update.mock.calls[0][0];
+      expect(updateArgs.data.localCurrencies).toEqual([Currency.THB]);
+    });
+
+    it('sets rateStale on the response and logs a warning when a migration rate is stale', async () => {
+      exchangeRatesService.getRate.mockResolvedValue({
+        rate: new Prisma.Decimal(2),
+        fetchedAt: new Date(0),
+        isStale: true,
+      });
+      const warnSpy = jest
+        .spyOn((service as any).logger, 'warn')
+        .mockImplementation(() => undefined);
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.trip.findUniqueOrThrow
+        .mockResolvedValueOnce({
+          startDate: null,
+          endDate: null,
+          currency: Currency.VND,
+          localCurrencies: [],
+          status: 'PLANNING',
+        })
+        .mockResolvedValueOnce({ currency: Currency.VND })
+        .mockResolvedValue({
+          ...mockTripWithIncludes,
+          currency: Currency.THB,
+        });
+      prisma.trip.update.mockResolvedValue({
+        ...mockTrip,
+        currency: Currency.THB,
+      });
+
+      const result = await service.updateTrip(1, 1, {
+        currency: Currency.THB,
+      } as any);
+
+      expect(result.rateStale).toBe(true);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('stale'));
+    });
+
     it('should auto-set startDate when starting trip without one', async () => {
       prisma.tripMember.findUnique.mockResolvedValue(mockMember);
-      prisma.trip.findUnique
-        .mockResolvedValueOnce({ createdById: 1 })
-        .mockResolvedValueOnce({ startDate: null });
+      prisma.trip.findUnique.mockResolvedValue({ createdById: 1 });
+      prisma.trip.findUniqueOrThrow.mockResolvedValueOnce({
+        startDate: null,
+        endDate: null,
+        currency: Currency.VND,
+        status: 'PLANNING',
+      });
       prisma.tripMember.findMany.mockResolvedValue([
         { userId: 1, user: { displayName: 'Test User' } },
       ]);
@@ -645,8 +950,9 @@ describe('TripsService', () => {
   });
 
   describe('joinTrip', () => {
-    it('should join trip via invite code', async () => {
+    it('should join trip via invite code (first-time join by a non-member)', async () => {
       prisma.trip.findUnique.mockResolvedValue(mockTrip);
+      prisma.tripMember.findUnique.mockResolvedValue(null);
       prisma.tripMember.upsert.mockResolvedValue(mockMember);
       prisma.user.findUnique.mockResolvedValue({ displayName: 'Test User' });
       prisma.trip.findUniqueOrThrow.mockResolvedValue(mockTripWithIncludes);
@@ -667,6 +973,84 @@ describe('TripsService', () => {
           }),
         }),
       );
+      expect(activityService.log).toHaveBeenCalledWith(
+        1,
+        2,
+        'MEMBER_JOINED',
+        2,
+        expect.objectContaining({ displayName: 'Test User' }),
+      );
+      expect(notificationsService.sendMemberJoinedPush).toHaveBeenCalledWith(
+        1,
+        2,
+        'Test User',
+      );
+      expect(result.id).toBe(1);
+    });
+
+    it('should upgrade a PENDING member to ACCEPTED, logging activity and sending push', async () => {
+      prisma.trip.findUnique.mockResolvedValue(mockTrip);
+      prisma.tripMember.findUnique.mockResolvedValue({
+        ...mockMember,
+        inviteStatus: InviteStatus.PENDING,
+      });
+      prisma.tripMember.upsert.mockResolvedValue(mockMember);
+      prisma.user.findUnique.mockResolvedValue({ displayName: 'Test User' });
+      prisma.trip.findUniqueOrThrow.mockResolvedValue(mockTripWithIncludes);
+
+      await service.joinTrip('abc123', 2);
+
+      expect(prisma.tripMember.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({
+            inviteStatus: InviteStatus.ACCEPTED,
+          }),
+        }),
+      );
+      expect(activityService.log).toHaveBeenCalled();
+      expect(notificationsService.sendMemberJoinedPush).toHaveBeenCalled();
+    });
+
+    it('should be a no-op for an already-ACCEPTED member re-joining: joinedAt unchanged, no activity, no push', async () => {
+      prisma.trip.findUnique.mockResolvedValue(mockTrip);
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember); // ACCEPTED
+      prisma.trip.findUniqueOrThrow.mockResolvedValue(mockTripWithIncludes);
+
+      const result = await service.joinTrip('abc123', 2);
+
+      expect(prisma.tripMember.upsert).not.toHaveBeenCalled();
+      expect(activityService.log).not.toHaveBeenCalled();
+      expect(notificationsService.sendMemberJoinedPush).not.toHaveBeenCalled();
+      expect(result.id).toBe(1);
+    });
+
+    it('should throw 409 ONGOING_TRIP_CONFLICT for a genuine new join when the user already has another ongoing trip', async () => {
+      prisma.trip.findUnique.mockResolvedValue({
+        ...mockTrip,
+        status: 'ONGOING',
+      });
+      prisma.tripMember.findUnique.mockResolvedValue(null);
+      prisma.trip.findFirst.mockResolvedValue({
+        name: 'Existing Ongoing Trip',
+      });
+
+      await expect(service.joinTrip('abc123', 2)).rejects.toThrow(
+        HttpException,
+      );
+      expect(prisma.tripMember.upsert).not.toHaveBeenCalled();
+    });
+
+    it('should NOT throw 409 when an already-ACCEPTED member re-joins their own ongoing trip', async () => {
+      prisma.trip.findUnique.mockResolvedValue({
+        ...mockTrip,
+        status: 'ONGOING',
+      });
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember); // ACCEPTED
+      prisma.trip.findUniqueOrThrow.mockResolvedValue(mockTripWithIncludes);
+
+      const result = await service.joinTrip('abc123', 2);
+
+      expect(prisma.trip.findFirst).not.toHaveBeenCalled();
       expect(result.id).toBe(1);
     });
 
@@ -680,8 +1064,9 @@ describe('TripsService', () => {
   });
 
   describe('getInvitePreview', () => {
-    it('should return preview with signed cover URL and accepted member count', async () => {
+    it('should return preview with signed cover URL, tripId, and accepted member count', async () => {
       prisma.trip.findUnique.mockResolvedValue({
+        id: 1,
         name: 'Trip to Dubai',
         coverImageUrl: 'trip-covers/abc123',
         status: 'PLANNING',
@@ -693,6 +1078,7 @@ describe('TripsService', () => {
       expect(prisma.trip.findUnique).toHaveBeenCalledWith({
         where: { inviteCode: 'abc123' },
         select: {
+          id: true,
           name: true,
           coverImageUrl: true,
           status: true,
@@ -707,10 +1093,12 @@ describe('TripsService', () => {
         'trip-covers/abc123',
       );
       expect(result).toEqual({
+        tripId: 1,
         name: 'Trip to Dubai',
         coverImageUrl: 'https://signed.example/trip-covers/abc123',
         memberCount: 4,
         status: 'PLANNING',
+        isMember: false,
       });
     });
 
@@ -724,6 +1112,7 @@ describe('TripsService', () => {
 
     it('should return null cover image when trip has no cover key', async () => {
       prisma.trip.findUnique.mockResolvedValue({
+        id: 1,
         name: 'Trip to Da Lat',
         coverImageUrl: null,
         status: 'PLANNING',
@@ -734,11 +1123,82 @@ describe('TripsService', () => {
 
       expect(storageService.getSignedThumbUrl).not.toHaveBeenCalled();
       expect(result).toEqual({
+        tripId: 1,
         name: 'Trip to Da Lat',
         coverImageUrl: null,
         memberCount: 2,
         status: 'PLANNING',
+        isMember: false,
       });
+    });
+
+    it('should return isMember: false when no userId is provided (unauthenticated web landing path)', async () => {
+      prisma.trip.findUnique.mockResolvedValue({
+        id: 1,
+        name: 'Trip to Da Lat',
+        coverImageUrl: null,
+        status: 'PLANNING',
+        _count: { members: 2 },
+      });
+
+      const result = await service.getInvitePreview('abc123');
+
+      expect(result.isMember).toBe(false);
+      expect(prisma.tripMember.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('should return isMember: true and the tripId for an ACCEPTED member', async () => {
+      prisma.trip.findUnique.mockResolvedValue({
+        id: 1,
+        name: 'Trip to Da Lat',
+        coverImageUrl: null,
+        status: 'PLANNING',
+        _count: { members: 2 },
+      });
+      prisma.tripMember.findUnique.mockResolvedValue({
+        inviteStatus: InviteStatus.ACCEPTED,
+      });
+
+      const result = await service.getInvitePreview('abc123', 2);
+
+      expect(result.isMember).toBe(true);
+      expect(result.tripId).toBe(1);
+      expect(prisma.tripMember.findUnique).toHaveBeenCalledWith({
+        where: { tripId_userId: { tripId: 1, userId: 2 } },
+        select: { inviteStatus: true },
+      });
+    });
+
+    it('should return isMember: false for a PENDING member', async () => {
+      prisma.trip.findUnique.mockResolvedValue({
+        id: 1,
+        name: 'Trip to Da Lat',
+        coverImageUrl: null,
+        status: 'PLANNING',
+        _count: { members: 2 },
+      });
+      prisma.tripMember.findUnique.mockResolvedValue({
+        inviteStatus: InviteStatus.PENDING,
+      });
+
+      const result = await service.getInvitePreview('abc123', 2);
+
+      expect(result.isMember).toBe(false);
+    });
+
+    it('should return isMember: false for a user unrelated to the trip', async () => {
+      prisma.trip.findUnique.mockResolvedValue({
+        id: 1,
+        name: 'Trip to Da Lat',
+        coverImageUrl: null,
+        status: 'PLANNING',
+        _count: { members: 2 },
+      });
+      prisma.tripMember.findUnique.mockResolvedValue(null);
+
+      const result = await service.getInvitePreview('abc123', 999);
+
+      expect(result.isMember).toBe(false);
     });
   });
 
@@ -876,6 +1336,39 @@ describe('TripsService', () => {
       });
     });
 
+    // H3: tripMemberRemoved is new with the web3 port and makes clients
+    // navigate away, so a classic trip must keep behaving like develop.
+    it('does not broadcast tripMemberRemoved for a classic trip (no vault)', async () => {
+      prisma.trip.findUnique.mockResolvedValue({ createdById: 1 });
+      prisma.user.findUnique.mockResolvedValue({ displayName: 'User 10' });
+      prisma.tripMember.findUnique.mockResolvedValue({
+        vaultLeaveClearedAt: null,
+      });
+      prisma.tripMember.delete.mockResolvedValue({});
+
+      await service.removeMember(1, 10, 1);
+
+      expect(tripVaultMock.hasVault).toHaveBeenCalledWith(1);
+      expect(tripsHandler.sendTripMemberRemoved).not.toHaveBeenCalled();
+    });
+
+    it('broadcasts tripMemberRemoved for a vault trip', async () => {
+      tripVaultMock.hasVault.mockResolvedValue(true);
+      prisma.trip.findUnique.mockResolvedValue({ createdById: 1 });
+      prisma.user.findUnique.mockResolvedValue({ displayName: 'User 10' });
+      prisma.tripMember.findUnique.mockResolvedValue({
+        vaultLeaveClearedAt: null,
+      });
+      prisma.tripMember.delete.mockResolvedValue({});
+
+      await service.removeMember(1, 10, 1);
+
+      expect(tripsHandler.sendTripMemberRemoved).toHaveBeenCalledWith(1, {
+        userId: 10,
+        displayName: 'User 10',
+      });
+    });
+
     it('should allow a member to leave (remove self)', async () => {
       prisma.trip.findUnique.mockResolvedValue({ createdById: 1 });
       prisma.user.findUnique.mockResolvedValue({ displayName: 'User 10' });
@@ -913,6 +1406,78 @@ describe('TripsService', () => {
       await expect(service.removeMember(999, 10, 1)).rejects.toThrow(
         NotFoundException,
       );
+    });
+
+    it('resets original-currency provenance on every expense whose amount is rewritten', async () => {
+      const D = (n: number | string) => new Prisma.Decimal(n);
+      prisma.trip.findUnique.mockResolvedValue({
+        createdById: 1,
+        currency: Currency.VND,
+      });
+      prisma.user.findUnique.mockResolvedValue({ displayName: 'User 10' });
+      prisma.tripMember.findUnique.mockResolvedValue({
+        vaultLeaveClearedAt: null,
+      });
+      prisma.tripMember.delete.mockResolvedValue({});
+      // Foreign-entered expense (100 THB → 30 VND-ish) whose leaver share
+      // was just deleted: remaining shares sum to 20, amount says 30.
+      prisma.expense.findMany.mockResolvedValue([
+        {
+          id: 7,
+          amount: D('30'),
+          originalAmount: D('100'),
+          originalCurrency: Currency.THB,
+          exchangeRate: D('0.3'),
+          shares: [
+            { id: 1, shareAmount: D('10') },
+            { id: 2, shareAmount: D('10') },
+          ],
+        },
+      ]);
+
+      await service.removeMember(1, 10, 1);
+
+      expect(prisma.expense.update).toHaveBeenCalledTimes(1);
+      const { where, data } = prisma.expense.update.mock.calls[0][0];
+      expect(where).toEqual({ id: 7 });
+      expect(data.amount.equals(D('20'))).toBe(true);
+      // Provenance reset to home-currency defaults so a later currency
+      // migration cannot re-derive from the stale 100 THB and resurrect
+      // the departed member's share.
+      expect(data.originalAmount.equals(D('20'))).toBe(true);
+      expect(data.originalCurrency).toBe(Currency.VND);
+      expect(data.exchangeRate).toBe(1);
+    });
+
+    it('leaves expenses untouched when remaining shares already sum to the amount', async () => {
+      const D = (n: number | string) => new Prisma.Decimal(n);
+      prisma.trip.findUnique.mockResolvedValue({
+        createdById: 1,
+        currency: Currency.VND,
+      });
+      prisma.user.findUnique.mockResolvedValue({ displayName: 'User 10' });
+      prisma.tripMember.findUnique.mockResolvedValue({
+        vaultLeaveClearedAt: null,
+      });
+      prisma.tripMember.delete.mockResolvedValue({});
+      // The leaver had no share of this expense — nothing to rewrite.
+      prisma.expense.findMany.mockResolvedValue([
+        {
+          id: 8,
+          amount: D('20'),
+          originalAmount: D('20'),
+          originalCurrency: Currency.VND,
+          exchangeRate: D('1'),
+          shares: [
+            { id: 1, shareAmount: D('10') },
+            { id: 2, shareAmount: D('10') },
+          ],
+        },
+      ]);
+
+      await service.removeMember(1, 10, 1);
+
+      expect(prisma.expense.update).not.toHaveBeenCalled();
     });
   });
 });

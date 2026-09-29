@@ -5,11 +5,13 @@ import {
   TripStatus,
   VaultStatus,
   VaultTxKind,
+  VaultTxSource,
 } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { TripVaultService } from './trip-vault.service';
 import { bankNameFor } from './vault-bank-names';
+import { VAULT_FAILURE_CODES } from './vault-failure-codes';
 import {
   VaultHistoryEntryDto,
   VaultHistoryMemberDto,
@@ -35,7 +37,9 @@ export class TripVaultHistoryService {
     private readonly vaultService: TripVaultService,
   ) {}
 
-  private toMember(row: MemberRow | null | undefined): VaultHistoryMemberDto | null {
+  private toMember(
+    row: MemberRow | null | undefined,
+  ): VaultHistoryMemberDto | null {
     if (!row) {
       return null;
     }
@@ -82,10 +86,19 @@ export class TripVaultHistoryService {
       where: { tripId, inviteStatus: InviteStatus.ACCEPTED },
     });
 
+    // A row with no signature never reached the chain: the client did not
+    // sign, or has not yet. Showing it read as money spent, and counted in
+    // the day's total. Once abandoned it stays out for the same reason.
+    const reached = rows.filter(
+      (row) =>
+        row.signature !== null &&
+        row.failureCode !== VAULT_FAILURE_CODES.abandoned,
+    );
+
     const visibleRows =
       forUserId === undefined
-        ? rows
-        : rows.filter((row) =>
+        ? reached
+        : reached.filter((row) =>
             this.isVisibleToUser(row, forUserId, acceptedCount),
           );
 
@@ -127,10 +140,14 @@ export class TripVaultHistoryService {
         amountVnd: row.amountVnd?.toString() ?? null,
         title: row.expenseName,
         category: row.expenseCategory,
-        // Always null. Money leaves the vault, not anybody's pocket, so a vault
-        // transaction is paid by the group whoever pressed the button — and that
-        // person is reported as madeBy. A deposit has no payer either.
-        paidBy: null,
+        // Money out of the vault is paid by the group whoever pressed the
+        // button, so a vault spend names nobody here and reports that person
+        // as madeBy. A personal spend is the one case with a payer: the member
+        // whose own wallet the money left, and whom the group now owes.
+        paidBy:
+          row.source === VaultTxSource.PERSONAL
+            ? this.toMember(row.user)
+            : null,
         shareWith: shareIds
           .map((id) => byId.get(id))
           .filter((member): member is VaultHistoryMemberDto => !!member),
@@ -148,6 +165,7 @@ export class TripVaultHistoryService {
   private isVisibleToUser(
     row: {
       kind: VaultTxKind;
+      source: VaultTxSource;
       userId: number | null;
       shareWithUserIds: number[];
     },
@@ -159,6 +177,11 @@ export class TripVaultHistoryService {
     }
     if (row.kind === VaultTxKind.SETTLEMENT) {
       return row.userId === userId;
+    }
+    // The member who fronted a personal spend is owed for it, so they see it
+    // whether or not they are in the split.
+    if (row.source === VaultTxSource.PERSONAL && row.userId === userId) {
+      return true;
     }
     // SPEND / REVERT: only All (empty share) or named in shareWith — not the
     // submitter alone. Editing All → Huy must hide the row from everyone else
@@ -260,8 +283,11 @@ export class TripVaultHistoryService {
       name: record.expenseName,
       note: record.note,
       category: record.expenseCategory,
-      // See above: the vault pays, not the member who initiated it.
-      paidBy: null,
+      // See above: the vault pays, unless the member paid from their own wallet.
+      paidBy:
+        record.source === VaultTxSource.PERSONAL
+          ? this.toMember(record.user)
+          : null,
       shareWith: await this.membersByIds(
         await this.collapseIfEveryone(tripId, record.shareWithUserIds),
       ),

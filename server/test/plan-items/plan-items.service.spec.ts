@@ -35,7 +35,7 @@ describe('PlanItemsService', () => {
     description: 'Modern art museum',
     location: 'Downtown',
     startTime: '09:30',
-    category: ExpenseCategory.ACTIVITIES,
+    category: ExpenseCategory.TICKET,
     notes: ['Bring camera'],
     voiceUrl: null,
     voiceDuration: null,

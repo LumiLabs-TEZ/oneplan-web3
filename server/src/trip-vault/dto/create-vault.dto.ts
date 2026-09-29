@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, Matches } from 'class-validator';
+import { IsOptional, Matches, MaxLength } from 'class-validator';
 
 export class CreateVaultDto {
   // Defaults chosen for a devnet trip: a member can spend up to 3 USDC alone,
@@ -11,6 +11,7 @@ export class CreateVaultDto {
   })
   @IsOptional()
   @Matches(/^\d+$/)
+  @MaxLength(20)
   thresholdMicro?: string;
 
   @ApiPropertyOptional({
@@ -19,6 +20,7 @@ export class CreateVaultDto {
   })
   @IsOptional()
   @Matches(/^\d+$/)
+  @MaxLength(20)
   dailyLimitMicro?: string;
 }
 

@@ -65,6 +65,9 @@ export class TripRequestsService {
         tag: dto.tag,
         budget: dto.budget,
         currency: dto.currency,
+        participantCount: dto.participantCount,
+        dayCount: dto.dayCount,
+        description: dto.description?.trim() || undefined,
       },
       include: tripRequestInclude,
     });
@@ -79,6 +82,9 @@ export class TripRequestsService {
         tag: created.tag,
         budget: created.budget?.toString() ?? null,
         currency: created.currency,
+        participantCount: created.participantCount,
+        dayCount: created.dayCount,
+        hasDescription: created.description != null,
       },
     });
 

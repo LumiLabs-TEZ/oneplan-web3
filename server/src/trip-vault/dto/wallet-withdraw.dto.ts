@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString } from 'class-validator';
+import { IsNotEmpty, IsString, Matches, MaxLength } from 'class-validator';
 
 export class InspectRecipientDto {
   @ApiProperty({ description: 'The Solana address the member pasted' })
@@ -29,6 +29,8 @@ export class BuildWithdrawalDto {
   @ApiProperty({ description: 'Amount in micro-USDC as a decimal string' })
   @IsString()
   @IsNotEmpty()
+  @Matches(/^\d+$/)
+  @MaxLength(20)
   amountMicro: string;
 }
 

@@ -1,9 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString } from 'class-validator';
+import { IsString, MaxLength } from 'class-validator';
 
 export class LookupRecipientDto {
   @ApiProperty({ description: 'Raw VietQR payload as scanned' })
   @IsString()
+  @MaxLength(512)
   qrPayload: string;
 }
 
@@ -19,7 +20,8 @@ export class RecipientDto {
 
   @ApiPropertyOptional({
     nullable: true,
-    description: 'Amount carried by the code, as a decimal string. Usually absent.',
+    description:
+      'Amount carried by the code, as a decimal string. Usually absent.',
   })
   amountVnd: string | null;
 

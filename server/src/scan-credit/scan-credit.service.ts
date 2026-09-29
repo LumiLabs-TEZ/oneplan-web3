@@ -1,10 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AnalyticsEventName, Prisma, SubscriptionStatus } from '@prisma/client';
+import { AnalyticsEventName, Prisma } from '@prisma/client';
 import { AnalyticsService } from '../analytics/analytics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { InsufficientScanCreditsException } from './insufficient-scan-credits.exception';
-import { effectiveSubscriptionStatus } from '../common/subscription-status.util';
+import { isEntitledToPro } from '../common/subscription-status.util';
 
 export type ScanCreditSource =
   | 'signup_bonus'
@@ -12,7 +12,9 @@ export type ScanCreditSource =
   | 'purchase'
   | 'pay_once'
   | 'admin_adjustment'
-  | 'app_upgrade';
+  | 'app_upgrade'
+  | 'rewarded_ad'
+  | 'mission_reward';
 
 export interface ScanCreditBalance {
   available: number;
@@ -50,6 +52,11 @@ type ProSku = (typeof PRO_SKUS)[number];
 
 const PAY_ONCE_SKU = 'pay_once';
 
+// Rewarded-ad reward: fixed +1 per completed ad view, hard-capped per UTC day.
+// The cap mirrors the "Max 3/day" copy on the iOS free-ad card.
+const REWARDED_AD_AMOUNT = 1;
+const REWARDED_AD_DAILY_CAP = 3;
+
 // Consumable scan-credit packs. The credit amount is fixed by the product
 // itself, so it's a constant map (not env-tunable) — changing it would mean a
 // different App Store product anyway.
@@ -78,11 +85,6 @@ const PRO_CYCLE_DEFAULT: Record<ProSku, number> = {
   pro_monthly: 20,
   pro_yearly: 300,
 };
-
-const ACTIVE_PAID_STATUSES = new Set<SubscriptionStatus>([
-  SubscriptionStatus.ACTIVE,
-  SubscriptionStatus.GRACE_PERIOD,
-]);
 
 interface ProTxn {
   transactionId: string;
@@ -324,6 +326,91 @@ export class ScanCreditService {
       });
     }
     return this.getBalance(userId);
+  }
+
+  // Rewarded-ad reward: +1 credit per completed ad view, at most
+  // REWARDED_AD_DAILY_CAP grants per UTC day. Idempotent per (user, adKey) —
+  // the client generates one UUID per completed view and retries with the same
+  // key on network failure. Unlike app_upgrade there is no partial-unique-index
+  // backstop; the per-user advisory lock serializes replays, which is the only
+  // race possible for a same-user key.
+  async grantRewardedAd(
+    userId: number,
+    adKey: string,
+  ): Promise<{ granted: boolean; remainingToday: number }> {
+    let granted = false;
+    let remainingToday = 0;
+    let created = false;
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${userId}::bigint)`;
+      const startOfDay = new Date();
+      startOfDay.setUTCHours(0, 0, 0, 0);
+      const todayCount = await tx.scanCreditGrant.count({
+        where: {
+          userId,
+          source: 'rewarded_ad',
+          grantedAt: { gte: startOfDay },
+        },
+      });
+      const existing = await tx.scanCreditGrant.findFirst({
+        where: { userId, source: 'rewarded_ad', externalRef: adKey },
+        select: { id: true },
+      });
+      if (existing) {
+        // Replay of an already-granted view: report success so a retrying
+        // client sees a consistent outcome, but create nothing.
+        granted = true;
+        remainingToday = Math.max(0, REWARDED_AD_DAILY_CAP - todayCount);
+        return;
+      }
+      if (todayCount >= REWARDED_AD_DAILY_CAP) {
+        remainingToday = 0;
+        return;
+      }
+      await tx.scanCreditGrant.create({
+        data: {
+          userId,
+          source: 'rewarded_ad',
+          amount: REWARDED_AD_AMOUNT,
+          remaining: REWARDED_AD_AMOUNT,
+          externalRef: adKey,
+        },
+      });
+      granted = true;
+      created = true;
+      remainingToday = Math.max(0, REWARDED_AD_DAILY_CAP - todayCount - 1);
+    });
+
+    // Fire-and-forget AFTER commit, only on a real create (mirrors grantAppUpgrade).
+    if (created) {
+      void this.analytics.track(AnalyticsEventName.SCAN_CREDITS_GRANTED, {
+        userId,
+        properties: { source: 'rewarded_ad', amount: REWARDED_AD_AMOUNT },
+      });
+    }
+    return { granted, remainingToday };
+  }
+
+  // Mission-shop redemption (30⚡ → scan credits). Runs inside the CALLER's
+  // already-locked transaction (MissionsService.redeem holds the per-user
+  // advisory lock), so no lock or idempotency guard here — the RewardRedemption
+  // row is the record of the redeem and `externalRef` ties the grant to it.
+  // The caller emits SCAN_CREDITS_GRANTED after its transaction commits.
+  async grantMissionReward(
+    tx: Prisma.TransactionClient,
+    userId: number,
+    amount: number,
+    externalRef: string,
+  ): Promise<void> {
+    await tx.scanCreditGrant.create({
+      data: {
+        userId,
+        source: 'mission_reward',
+        amount,
+        remaining: amount,
+        externalRef,
+      },
+    });
   }
 
   // Trims and validates a marketing version string (e.g. "1.2.5"); returns null
@@ -651,15 +738,17 @@ export class ScanCreditService {
 
     // Stale-ACTIVE guard (see subscription-status.util) — a Google Play sub
     // with no RTDN wired can sit at stored ACTIVE forever after it lapses.
-    // Route through the shared helper so this can't drift from
+    // Route through the shared predicate so this can't drift from
     // subscription.service's resolveTier() again (that drift is what shipped
-    // the "renews Thursday" bug with a two-week-stale date on device).
-    const effectiveStatus = effectiveSubscriptionStatus({
+    // the "renews Thursday" bug with a two-week-stale date on device, and
+    // separately let a local ACTIVE_PAID_STATUSES copy here omit
+    // BILLING_RETRY — Apple keeps retrying the charge during that state, so a
+    // renewal can still land and grant a cycle; excluding it just hid the
+    // next-grant date from users the rest of the app already treats as Pro).
+    const isActive = isEntitledToPro({
       subscriptionStatus: user.subscriptionStatus,
       subscriptionExpiresAt: user.subscriptionExpiresAt,
     });
-
-    const isActive = ACTIVE_PAID_STATUSES.has(effectiveStatus);
     // The next cycle's credits arrive when the subscription renews (= the
     // current period's expiry) while active; nothing scheduled otherwise.
     const nextProGrantAt =

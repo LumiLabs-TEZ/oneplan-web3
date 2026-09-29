@@ -3,7 +3,13 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { Currency, InviteStatus, PlanScope, Prisma } from '@prisma/client';
+import {
+  Currency,
+  ExpenseCategory,
+  InviteStatus,
+  PlanScope,
+  Prisma,
+} from '@prisma/client';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { ExchangeRatesService } from '../../src/exchange-rates/exchange-rates.service';
@@ -219,6 +225,85 @@ describe('BudgetsService', () => {
       ).rejects.toThrow(ForbiddenException);
     });
 
+    it('persists the category when supplied and null when omitted', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockAcceptedMember);
+      prisma.tripMember.findMany.mockResolvedValue(mockMembers);
+      prisma.budget.create.mockResolvedValue(mockBudget);
+      prisma.budgetPayment.createMany.mockResolvedValue({ count: 3 });
+      prisma.budget.findUniqueOrThrow.mockResolvedValue(mockBudgetWithPayments);
+
+      await service.createBudget(1, 1, {
+        name: 'Coffee run',
+        amount: 100.0,
+        category: ExpenseCategory.COFFEE,
+      });
+      expect(prisma.budget.create.mock.calls[0][0].data.category).toBe(
+        ExpenseCategory.COFFEE,
+      );
+
+      prisma.budget.create.mockClear();
+      await service.createBudget(1, 1, { name: 'Plain', amount: 100.0 });
+      expect(prisma.budget.create.mock.calls[0][0].data.category).toBeNull();
+    });
+
+    it('fans out only to the supplied contributors, each at the FULL amount', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockAcceptedMember);
+      // validateMemberIds resolves the subset against trip members.
+      prisma.tripMember.findMany.mockResolvedValue([
+        { userId: 1, inviteStatus: InviteStatus.ACCEPTED },
+        { userId: 3, inviteStatus: InviteStatus.ACCEPTED },
+      ]);
+      prisma.budget.create.mockResolvedValue(mockBudget);
+      prisma.budgetPayment.createMany.mockResolvedValue({ count: 2 });
+      prisma.budget.findUniqueOrThrow.mockResolvedValue(mockBudgetWithPayments);
+
+      await service.createBudget(1, 1, {
+        name: 'Narrowed',
+        amount: 100.0,
+        userIds: [1, 3],
+      });
+
+      const createManyArgs = prisma.budgetPayment.createMany.mock.calls[0][0];
+      expect(createManyArgs.data.map((d: any) => d.userId)).toEqual([1, 3]);
+      // Guards the no-division invariant: perPersonAmount and every payment row
+      // carry the full amount, not amount / contributors.
+      expect(createManyArgs.data.map((d: any) => Number(d.amount))).toEqual([
+        100, 100,
+      ]);
+      expect(
+        Number(prisma.budget.create.mock.calls[0][0].data.perPersonAmount),
+      ).toBe(100);
+    });
+
+    it('rejects contributor ids that are not trip members', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockAcceptedMember);
+      prisma.tripMember.findMany.mockResolvedValue([
+        { userId: 1, inviteStatus: InviteStatus.ACCEPTED },
+      ]);
+      prisma.budget.create.mockResolvedValue(mockBudget);
+
+      await expect(
+        service.createBudget(1, 1, {
+          name: 'Bad',
+          amount: 100.0,
+          userIds: [1, 999],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects contributors on a PERSONAL budget', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockAcceptedMember);
+
+      await expect(
+        service.createBudget(1, 1, {
+          name: 'Personal',
+          amount: 100.0,
+          scope: PlanScope.PERSONAL,
+          userIds: [1],
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
     it('persists originalCurrency = trip.currency and exchangeRate = 1 when only amount is given', async () => {
       prisma.tripMember.findUnique.mockResolvedValue(mockAcceptedMember);
       prisma.tripMember.findMany.mockResolvedValue(mockMembers);
@@ -292,6 +377,46 @@ describe('BudgetsService', () => {
 
       expect(result.originalCurrency).toBe(Currency.THB);
       expect(result.exchangeRate).toBe(600.5);
+    });
+
+    it('stores a 2dp-rounded converted amount mirrored into perPersonAmount and every payment row', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockAcceptedMember);
+      prisma.tripMember.findMany.mockResolvedValue([
+        { userId: 1 },
+        { userId: 2 },
+      ]);
+      prisma.trip.findUniqueOrThrow.mockResolvedValue({
+        currency: Currency.USD,
+      });
+      // 30 THB × 0.3335 = 10.005 → rounds half-up to 10.01 at the column
+      // precision; perPersonAmount and each payment must carry the same
+      // rounded value, not the raw product.
+      exchangeRates.getRate.mockResolvedValue({
+        rate: new Prisma.Decimal('0.3335'),
+        fetchedAt: new Date(),
+        isStale: false,
+      });
+      prisma.budget.create.mockResolvedValue({ ...mockBudget, id: 88 });
+      prisma.budget.findUniqueOrThrow.mockResolvedValue({
+        ...mockBudgetWithPayments,
+        id: 88,
+      });
+
+      await service.createBudget(1, 1, {
+        name: 'Boundary budget',
+        amount: 30,
+        originalAmount: 30,
+        originalCurrency: Currency.THB,
+      } as any);
+
+      const createArgs = prisma.budget.create.mock.calls[0][0];
+      expect(createArgs.data.amount.toString()).toBe('10.01');
+      expect(createArgs.data.perPersonAmount.toString()).toBe('10.01');
+      const paymentRows = prisma.budgetPayment.createMany.mock.calls[0][0].data;
+      expect(paymentRows).toHaveLength(2);
+      for (const row of paymentRows) {
+        expect(row.amount.toString()).toBe('10.01');
+      }
     });
   });
 

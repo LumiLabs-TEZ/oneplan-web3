@@ -7,14 +7,14 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-oneplan_vault = "8pjmDZvmRzjcSwzffqnsdzsPRb3nV9BiVDhGU3vmR7uD"
+oneplan_vault = "HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL"
 
 [programs.localnet]
-oneplan_vault = "8pjmDZvmRzjcSwzffqnsdzsPRb3nV9BiVDhGU3vmR7uD"
+oneplan_vault = "HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL"
 
 [provider]
 cluster = "devnet"
-wallet = "~/.config/solana/oneplan-devnet.json"
+wallet = "~/.config/solana/oneplan-devnet-authority.json"
 
 [scripts]
 test = "cargo test"

@@ -3,6 +3,7 @@ export const REALTIME_EVENTS = {
   FRIEND_REQUEST_RECEIVED: 'friendRequestReceived',
   FRIEND_REQUEST_ACCEPTED: 'friendRequestAccepted',
   TRIP_INVITE_RECEIVED: 'tripInviteReceived',
+  TRIP_STARTED: 'tripStarted',
   TRIP_ENDED: 'tripEnded',
   TRIP_DELETED: 'tripDeleted',
   TRIP_SETTLEMENT_UPDATED: 'tripSettlementUpdated',

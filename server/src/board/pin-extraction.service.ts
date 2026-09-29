@@ -32,6 +32,7 @@ import {
 import { ScanCreditService } from '../scan-credit/scan-credit.service';
 import { InsufficientScanCreditsException } from '../scan-credit/insufficient-scan-credits.exception';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { MissionsService } from '../missions/missions.service';
 
 const CACHE_REPLAY_PIN_DELAY_MS = 260;
 const KEEPALIVE_INTERVAL_MS = 10_000;
@@ -100,6 +101,7 @@ export class PinExtractionService {
     private readonly scanCredit: ScanCreditService,
     private readonly analytics: AnalyticsService,
     private readonly config: ConfigService,
+    private readonly missions: MissionsService,
   ) {
     const days = this.config.get<number>('PIN_EXTRACTION_CACHE_TTL_DAYS');
     const ttlDays = typeof days === 'number' && days > 0 ? days : 7;
@@ -750,6 +752,12 @@ export class PinExtractionService {
         this.logger.warn(
           `[${shortId}] terminal analytics failed: ${(err as Error).message}`,
         );
+      }
+
+      // first_scan mission — successful extractions only (cache hits count:
+      // the user still got their pins). Handles a null userId internally.
+      if (terminalStatus === PinExtractionStatus.DONE) {
+        void this.missions.onScanFinished(row?.userId);
       }
 
       // 1b. Refund the consumed credit when appropriate. FAILED/CANCELLED

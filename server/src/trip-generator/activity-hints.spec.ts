@@ -1,4 +1,4 @@
-import { activityImageHint } from './activity-hints';
+import { classifyActivityForItem, activityImageHint } from './activity-hints';
 
 describe('activityImageHint', () => {
   describe('picks the right activity', () => {
@@ -12,7 +12,7 @@ describe('activityImageHint', () => {
       ['Nhận phòng homestay nghỉ ngơi', 'hotel room interior'],
       ['Check-in sống ảo Wat Arun', 'architecture'],
       ['Tham quan Chùa Răng Phật', 'architecture'],
-      ['Xem show ánh sáng tại Rain Vortex', 'night light show'],
+      ['Xem show ánh sáng tại Rain Vortex', 'nightlife bar night scene'],
       ['Ngắm hoàng hôn sông Chao Phraya', 'photo spot viewpoint'],
       ['Ngắm Hồ Xuân Hương Đà Lạt', 'scenic view'],
       ['Tắm biển Nha Trang', 'scenic view'],
@@ -89,6 +89,36 @@ describe('activityImageHint', () => {
   it('treats returning to the hotel as a stay', () => {
     expect(activityImageHint('Di chuyển về khách sạn')).toBe(
       'hotel room interior',
+    );
+  });
+});
+
+describe('classifyActivityForItem', () => {
+  it('lets the name decide before the description (Singapore #172 regressions)', () => {
+    expect(
+      classifyActivityForItem(
+        'Khám phá khu phố Tàu Chinatown',
+        'Dạo quanh các con phố, ghé ăn thử món địa phương tại các quầy hàng.',
+      )?.id,
+    ).toBe('explore');
+    expect(classifyActivityForItem('Khám phá ẩm thực đường phố', '')?.id).toBe(
+      'food',
+    );
+    expect(
+      classifyActivityForItem('Dạo chơi và mua sắm tại Orchard Road', '')?.id,
+    ).toBe('market');
+    expect(
+      classifyActivityForItem('Chill tại các quán bar ở Ann Siang Hill', '')
+        ?.id,
+    ).toBe('nightlife');
+    expect(
+      classifyActivityForItem(
+        'Bữa tối Cơm gà Hải Nam tại Maxwell Food Centre',
+        '',
+      )?.id,
+    ).toBe('food');
+    expect(classifyActivityForItem('Ghé thăm', 'Bữa trưa bún chả')?.id).toBe(
+      'food',
     );
   });
 });

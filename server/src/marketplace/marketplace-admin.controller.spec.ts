@@ -4,6 +4,7 @@ import { MarketplaceListingStatus } from '@prisma/client';
 import { AdminGuard } from '../auth/guards/admin.guard';
 import { MarketplaceAdminController } from './marketplace-admin.controller';
 import { MarketplaceService } from './marketplace.service';
+import { MarketplaceTranslationService } from './translation/marketplace-translation.service';
 
 function buildContext(email: string | undefined): ExecutionContext {
   const req = email ? { user: { email } } : { user: undefined };
@@ -17,14 +18,23 @@ function buildContext(email: string | undefined): ExecutionContext {
 describe('MarketplaceAdminController', () => {
   let controller: MarketplaceAdminController;
   let marketplaceService: jest.Mocked<MarketplaceService>;
+  let translationService: jest.Mocked<MarketplaceTranslationService>;
 
   beforeEach(() => {
     marketplaceService = {
       adminListListings: jest.fn(),
       adminSetListingStatus: jest.fn(),
     } as unknown as jest.Mocked<MarketplaceService>;
+    translationService = {
+      getTranslations: jest.fn(),
+      upsertTranslation: jest.fn(),
+      generateTranslation: jest.fn(),
+    } as unknown as jest.Mocked<MarketplaceTranslationService>;
 
-    controller = new MarketplaceAdminController(marketplaceService);
+    controller = new MarketplaceAdminController(
+      marketplaceService,
+      translationService,
+    );
   });
 
   it('lists pending listings by default and respects an explicit status', async () => {
@@ -80,19 +90,19 @@ describe('AdminGuard', () => {
   }
 
   it('allows admins (case-insensitive)', () => {
-    const guard = buildGuard(['dev@lumilabs.space']);
+    const guard = buildGuard(['dev@example.com']);
     expect(guard.canActivate(buildContext('Dev@LumiLabs.Space'))).toBe(true);
   });
 
   it('rejects non-admins with ForbiddenException', () => {
-    const guard = buildGuard(['dev@lumilabs.space']);
+    const guard = buildGuard(['dev@example.com']);
     expect(() => guard.canActivate(buildContext('user@example.com'))).toThrow(
       ForbiddenException,
     );
   });
 
   it('rejects unauthenticated requests with UnauthorizedException', () => {
-    const guard = buildGuard(['dev@lumilabs.space']);
+    const guard = buildGuard(['dev@example.com']);
     expect(() => guard.canActivate(buildContext(undefined))).toThrow();
   });
 });

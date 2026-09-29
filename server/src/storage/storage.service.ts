@@ -267,6 +267,7 @@ export class StorageService implements OnModuleInit {
         case UploadTarget.TRIP_COVER:
         case UploadTarget.TRIP_PHOTO:
         case UploadTarget.PLAN_ITEM_VOICE:
+        case UploadTarget.PLAN_ITEM_IMAGE:
           await this.prisma.trip.findUniqueOrThrow({
             where: { id: entityId },
           });
@@ -370,6 +371,10 @@ export class StorageService implements OnModuleInit {
       }
       case UploadTarget.PLAN_ITEM_VOICE:
         break;
+      case UploadTarget.PLAN_ITEM_IMAGE:
+        // Plan-item images are stored by object key on the plan item record.
+        // Nothing to persist during confirm step.
+        break;
       case UploadTarget.MARKET_ITEM_IMAGE:
         // Marketplace media is stored by object key in listing/item records.
         // Nothing to persist during confirm step.
@@ -403,6 +408,43 @@ export class StorageService implements OnModuleInit {
         break;
       }
     }
+  }
+
+  /**
+   * Copies an existing object into a target's path (fresh generated key) and
+   * returns the new key. Used to give an entity its own independent copy of
+   * media owned elsewhere (e.g. marketplace item images applied to a trip),
+   * so deleting either side never orphans the other. The `<key>.thumb.webp`
+   * sibling is copied too when present (best effort).
+   */
+  async copyToTarget(
+    sourceKey: string,
+    target: UploadTarget,
+    entityId: number,
+  ): Promise<string> {
+    const prefix = UPLOAD_TARGET_CONFIGS[target].pathPrefix.replace(
+      '{entityId}',
+      String(entityId),
+    );
+    // Preserve the source extension; no MIME is available at copy time.
+    const extMatch = /\.[A-Za-z0-9]+$/.exec(sourceKey);
+    const ext = extMatch ? extMatch[0] : '';
+    const destinationKey = `${prefix}/${Date.now()}-${this.randomId()}${ext}`;
+
+    await this.bucket.file(sourceKey).copy(this.bucket.file(destinationKey));
+
+    const sourceThumbKey = `${sourceKey}${THUMB_SUFFIX}`;
+    try {
+      if (await this.thumbExists(sourceThumbKey)) {
+        await this.bucket
+          .file(sourceThumbKey)
+          .copy(this.bucket.file(`${destinationKey}${THUMB_SUFFIX}`));
+      }
+    } catch {
+      // Thumb copy is best effort; the full-size copy above is what matters.
+    }
+
+    return destinationKey;
   }
 
   async deleteObject(objectKey: string): Promise<void> {

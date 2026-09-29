@@ -40,6 +40,15 @@ export class TripRequestDto {
   currency: Currency;
 
   @ApiPropertyOptional({ type: 'integer' })
+  participantCount: number | null;
+
+  @ApiPropertyOptional({ type: 'integer' })
+  dayCount: number | null;
+
+  @ApiPropertyOptional()
+  description: string | null;
+
+  @ApiPropertyOptional({ type: 'integer' })
   cityId: number | null;
 
   @ApiPropertyOptional({ type: 'integer' })
@@ -85,6 +94,9 @@ export class TripRequestDto {
     dto.tag = entity.tag;
     dto.budget = entity.budget?.toString() ?? null;
     dto.currency = entity.currency;
+    dto.participantCount = entity.participantCount;
+    dto.dayCount = entity.dayCount;
+    dto.description = entity.description;
     dto.cityId = entity.cityId;
     dto.stateId = entity.stateId;
     dto.countryId = entity.countryId;

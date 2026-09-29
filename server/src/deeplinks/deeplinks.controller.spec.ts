@@ -62,18 +62,6 @@ describe('DeeplinksController', () => {
         },
       });
     });
-
-    it('uses IOS_APP_IDS so dev can serve the dev bundle instead of prod', () => {
-      const devController = makeController({
-        IOS_APP_IDS: ' GS4TMK323X.dev.lumilabs.oneplan , ',
-        ANDROID_APP_PACKAGE_NAME: 'com.oneplan.android',
-        ANDROID_APP_SHA256_CERT_FINGERPRINTS: 'AA:BB:CC',
-      });
-
-      expect(
-        devController.getAppleAppSiteAssociation().applinks.details[0].appIDs,
-      ).toEqual(['GS4TMK323X.dev.lumilabs.oneplan']);
-    });
   });
 
   describe('getAndroidAssetLinks', () => {
@@ -189,6 +177,85 @@ describe('DeeplinksController', () => {
       ]);
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
+    });
+  });
+
+  describe('store link (User-Agent switch)', () => {
+    const ANDROID_UA =
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+    const IOS_UA =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) ' +
+      'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+    const DESKTOP_UA =
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+    const PLAY_URL =
+      'https://play.google.com/store/apps/details?id=com.oneplan.android';
+    const APP_STORE_URL = 'https://apps.apple.com/app/id6761648165';
+
+    beforeEach(() => {
+      (friendsService.getPublicPreviewByCode as jest.Mock).mockRejectedValue(
+        new NotFoundException('User not found'),
+      );
+      (tripsService.getInvitePreview as jest.Mock).mockRejectedValue(
+        new NotFoundException('Invalid invite code'),
+      );
+      (
+        marketplaceService.getPublicListingPreview as jest.Mock
+      ).mockRejectedValue(new NotFoundException('Listing not found'));
+    });
+
+    it.each([
+      ['friend', (ua?: string) => controller.friendLanding('CODE', ua)],
+      ['join', (ua?: string) => controller.joinLanding('CODE', ua)],
+      ['listing', (ua?: string) => controller.listingLanding('123', ua)],
+    ])(
+      '%s landing points an Android UA at the Play Store',
+      async (_n, render) => {
+        const html = await render(ANDROID_UA);
+
+        expect(html).toContain(`href="${PLAY_URL}"`);
+        expect(html).not.toContain(APP_STORE_URL);
+      },
+    );
+
+    it.each([
+      ['friend', (ua?: string) => controller.friendLanding('CODE', ua)],
+      ['join', (ua?: string) => controller.joinLanding('CODE', ua)],
+      ['listing', (ua?: string) => controller.listingLanding('123', ua)],
+    ])(
+      '%s landing points iOS/desktop/unknown UAs at the App Store',
+      async (_n, render) => {
+        for (const ua of [IOS_UA, DESKTOP_UA, undefined]) {
+          const html = await render(ua);
+
+          expect(html).toContain(`href="${APP_STORE_URL}"`);
+          expect(html).not.toContain('play.google.com');
+        }
+      },
+    );
+
+    it('keeps the apple-itunes-app smart-banner meta on every landing', async () => {
+      const html = await controller.joinLanding('CODE', ANDROID_UA);
+
+      expect(html).toContain(
+        '<meta name="apple-itunes-app" content="app-id=6761648165">',
+      );
+    });
+
+    it('uses the configured Android package for the Play link', async () => {
+      const c = makeController({
+        ANDROID_APP_PACKAGE_NAME: 'com.oneplan.android.dev',
+        ANDROID_APP_SHA256_CERT_FINGERPRINTS: 'AA:BB:CC',
+      });
+
+      const html = await c.joinLanding('CODE', ANDROID_UA);
+
+      expect(html).toContain(
+        'href="https://play.google.com/store/apps/details?id=com.oneplan.android.dev"',
+      );
     });
   });
 

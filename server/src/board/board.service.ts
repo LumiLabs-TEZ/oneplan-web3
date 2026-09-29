@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   ActivityAction,
+  AnalyticsEventName,
   Board,
   BoardPin,
   Currency,
@@ -14,6 +15,8 @@ import {
 } from '@prisma/client';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { AnalyticsService } from '../analytics/analytics.service';
+import { MissionsService } from '../missions/missions.service';
 import { GeminiService } from '../common/gemini/gemini.service';
 import { StorageService } from '../storage/storage.service';
 import { TripActivityService } from '../trip-activity/trip-activity.service';
@@ -22,12 +25,18 @@ import { TripDto } from '../trips/dto/trip.dto';
 import { BoardDto, BoardPinDto, BoardSummaryDto } from './dto/board.dto';
 import { CreateBoardDto } from './dto/create-board.dto';
 import { UpdateBoardDto } from './dto/update-board.dto';
-import { AddPinsToBoardDto } from './dto/add-pins-to-board.dto';
+import { AddPinsToBoardDto, PinInputDto } from './dto/add-pins-to-board.dto';
 import {
   BoardDescriptionDto,
   GenerateBoardDescriptionDto,
 } from './dto/generate-board-description.dto';
-import { GenerateTripFromBoardDto } from './dto/generate-trip-from-board.dto';
+import {
+  GenerateTripFromBoardDto,
+  GenerateTripOptionsDto,
+  TripVibe,
+} from './dto/generate-trip-from-board.dto';
+import { GenerateTripFromPinsDto } from './dto/generate-trip-from-pins.dto';
+import { parseTimeOfDay } from './time-of-day';
 
 const DESCRIPTION_TIMEOUT_MS = 15_000;
 
@@ -63,6 +72,35 @@ const PIN_CATEGORY_MAP: Record<string, ExpenseCategory> = {
   spa: ExpenseCategory.OTHER,
   other: ExpenseCategory.OTHER,
 };
+
+// Human-readable vibe descriptions fed to the arrange prompt.
+const VIBE_LABELS: Record<TripVibe, string> = {
+  [TripVibe.FOOD_TOUR]:
+    'Food tour — eat your way through the destination (restaurants, cafés, street food, bars)',
+  [TripVibe.LANDMARKS_CULTURE]:
+    'Landmarks & culture — iconic sights, museums, temples, historic districts',
+  [TripVibe.NATURE_OUTDOORS]:
+    'Nature & outdoors — parks, beaches, hikes, viewpoints, waterfalls',
+  [TripVibe.NIGHTLIFE]:
+    'Nightlife — bars, night markets, live music, late venues',
+  [TripVibe.SHOPPING]: 'Shopping — malls, markets, boutiques, local shops',
+  [TripVibe.RELAX_WELLNESS]:
+    'Relax & wellness — spas, hot springs, quiet cafés, slow scenic spots',
+};
+
+// Pin categories (PIN_CATEGORY_MAP vocabulary) that count as a match for each
+// vibe. Used as a hint in the prompt and as the deterministic fallback filter
+// when Gemini is unavailable. Hotels are always kept (home base) regardless.
+const VIBE_CATEGORIES: Record<TripVibe, string[]> = {
+  [TripVibe.FOOD_TOUR]: ['restaurant', 'cafe', 'bar'],
+  [TripVibe.LANDMARKS_CULTURE]: ['landmark', 'museum', 'viewpoint', 'cinema'],
+  [TripVibe.NATURE_OUTDOORS]: ['park', 'beach', 'viewpoint'],
+  [TripVibe.NIGHTLIFE]: ['bar', 'cinema'],
+  [TripVibe.SHOPPING]: ['shop', 'grocery'],
+  [TripVibe.RELAX_WELLNESS]: ['spa', 'cafe', 'beach', 'park'],
+};
+
+const HOME_BASE_CATEGORY = 'hotel';
 
 // Gemini response schema (UPPERCASE types) for the arrange step. The model
 // returns one assignment per input pin — id echoed verbatim, never invented.
@@ -129,10 +167,25 @@ interface ArrangeResult {
   suggestions?: RawSuggestion[];
 }
 
+// The subset of a pin the arranger needs. Persisted BoardPin rows satisfy it,
+// and so do inline (never-persisted) pins with synthetic ids.
+export type ArrangeablePin = Pick<
+  BoardPin,
+  | 'id'
+  | 'name'
+  | 'address'
+  | 'latitude'
+  | 'longitude'
+  | 'notes'
+  | 'category'
+  | 'dayNumber'
+  | 'timeOfDayText'
+>;
+
 // One resolved plan-item placement after reconciling Gemini's output (or the
 // fallback) against the authoritative pin list.
 interface PinPlacement {
-  pin: BoardPin;
+  pin: ArrangeablePin;
   dayNumber: number;
   startTime: string;
   sortOrder: number;
@@ -188,6 +241,8 @@ export class BoardService {
     private readonly gemini: GeminiService,
     private readonly tripsService: TripsService,
     private readonly activityService: TripActivityService,
+    private readonly analytics: AnalyticsService,
+    private readonly missions: MissionsService,
   ) {}
 
   private async resolveCoverImageUrl(
@@ -244,6 +299,15 @@ export class BoardService {
         country: { select: { name: true } },
       },
     });
+
+    // Server-emitted proof of creation (BOARD_OPENED is client-emitted and
+    // proves nothing) — drives the first_board mission.
+    void this.analytics.track(AnalyticsEventName.BOARD_CREATED, {
+      userId,
+      properties: { boardId: board.id },
+    });
+    void this.missions.onBoardCreated(userId);
+
     return {
       ...this.toSummary(board, 0),
       coverImageUrl: await this.resolveCoverImageUrl(board.coverImageUrl),
@@ -507,13 +571,81 @@ Write a description for a travel board titled "${dto.title}" focused on ${locati
       throw new NotFoundException('One or more pins are not on this board');
     }
 
-    // Never spread fewer pins across more days than we have pins.
-    const dayCount = Math.min(dto.dayCount, pins.length);
+    // The generated trip's destination is the board's location.
+    return this.arrangeAndCreateTrip(userId, pins, board, dto);
+  }
+
+  // Same as generateTrip, but the pins arrive inline (straight from a pin
+  // extraction session) and never touch a Board. The destination is sent
+  // explicitly since there is no board row to copy it from.
+  async generateTripFromPins(
+    userId: number,
+    dto: GenerateTripFromPinsDto,
+  ): Promise<TripDto> {
+    // Dedupe within the payload the same way addPinsToBoard does, keeping the
+    // first occurrence so extraction order survives.
+    const unique: PinInputDto[] = [];
+    for (const pin of dto.pins) {
+      if (!unique.some((u) => this.isDuplicatePin(pin, u))) unique.push(pin);
+    }
+    const pins: ArrangeablePin[] = unique.map((pin, i) => ({
+      id: i + 1,
+      name: pin.name,
+      address: pin.address ?? null,
+      latitude: pin.latitude ?? null,
+      longitude: pin.longitude ?? null,
+      notes: pin.notes ?? null,
+      category: pin.category ?? null,
+      dayNumber: pin.dayNumber ?? null,
+      timeOfDayText: pin.timeOfDayText ?? null,
+    }));
+
+    return this.arrangeAndCreateTrip(
+      userId,
+      pins,
+      {
+        cityId: dto.cityId ?? null,
+        stateId: dto.stateId,
+        countryId: dto.countryId,
+      },
+      dto,
+    );
+  }
+
+  // Shared tail of both generate routes: arrange the pins, then create the
+  // trip, its creator-member, and one plan item per placement in a single
+  // transaction, and return the fully-mapped TripDto.
+  private async arrangeAndCreateTrip(
+    userId: number,
+    pins: ArrangeablePin[],
+    location: {
+      cityId: number | null;
+      stateId: number | null;
+      countryId: number | null;
+    },
+    dto: GenerateTripOptionsDto,
+  ): Promise<TripDto> {
+    // Empty = "surprise me": every selected pin is placed (legacy behaviour).
+    const vibes = [...new Set(dto.vibes ?? [])];
+    // Never spread fewer pins across more days than we have pins. When we are
+    // following the video (no vibes), never squeeze a pin narrated as "Day 3"
+    // into a shorter trip either: the video's own day structure wins over the
+    // requested length. In vibe mode pins are being dropped anyway, so the
+    // requested length wins — growing it would only create empty days.
+    const maxNarratedDay =
+      vibes.length === 0
+        ? Math.max(0, ...pins.map((p) => p.dayNumber ?? 0))
+        : 0;
+    const dayCount = Math.max(
+      Math.min(dto.dayCount, pins.length),
+      Math.min(maxNarratedDay, pins.length),
+    );
 
     const { placements, suggestions } = await this.arrangePins(
       pins,
       dayCount,
       dto.fillGaps ?? false,
+      vibes,
     );
 
     // Default the trip currency to the user's preference (mirrors createTrip;
@@ -532,10 +664,9 @@ Write a description for a travel board titled "${dto.title}" focused on ${locati
           currency,
           createdById: userId,
           inviteCode,
-          // The generated trip's destination is the board's location.
-          cityId: board.cityId,
-          stateId: board.stateId,
-          countryId: board.countryId,
+          cityId: location.cityId,
+          stateId: location.stateId,
+          countryId: location.countryId,
         },
       });
 
@@ -602,6 +733,9 @@ Write a description for a travel board titled "${dto.title}" focused on ${locati
       undefined,
       { name: dto.tripName },
     );
+    // Generated trips count for first_trip/streak like any other creation
+    // path (no startDate at this point).
+    void this.missions.onTripCreated(userId, trip.id, null);
 
     return this.tripsService.getTrip(trip.id, userId);
   }
@@ -611,18 +745,20 @@ Write a description for a travel board titled "${dto.title}" focused on ${locati
   // so we drop invented ids, fill missing pins round-robin, dedupe, and clamp
   // the day range. Any error/abort/empty result falls back to a full even split.
   private async arrangePins(
-    pins: BoardPin[],
+    pins: ArrangeablePin[],
     dayCount: number,
     fillGaps: boolean,
+    vibes: TripVibe[],
   ): Promise<{
     placements: PinPlacement[];
     suggestions: SuggestionPlacement[];
   }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), TRIP_GEN_TIMEOUT_MS);
+    const dropUnassigned = vibes.length > 0;
 
     try {
-      const prompt = this.buildArrangePrompt(pins, dayCount, fillGaps);
+      const prompt = this.buildArrangePrompt(pins, dayCount, fillGaps, vibes);
       const result = await this.gemini.generateJsonFromText<ArrangeResult>({
         prompt,
         responseSchema: ARRANGE_RESPONSE_SCHEMA,
@@ -636,7 +772,13 @@ Write a description for a travel board titled "${dto.title}" focused on ${locati
         pins,
         dayCount,
         result?.assignments,
+        dropUnassigned,
       );
+      if (placements.length === 0) {
+        // With vibes the model may legitimately drop pins, but dropping ALL of
+        // them is unusable — treat like any other bad output and fall back.
+        throw new Error('model kept no pins');
+      }
       const suggestions = fillGaps
         ? this.reconcileSuggestions(
             pins,
@@ -650,8 +792,11 @@ Write a description for a travel board titled "${dto.title}" focused on ${locati
       this.logger.warn(
         `Gemini trip arrange failed, using round-robin: ${(error as Error).message}`,
       );
+      const fallbackPins = dropUnassigned
+        ? this.filterPinsByVibe(pins, vibes)
+        : pins;
       return {
-        placements: this.roundRobinPlacements(pins, dayCount),
+        placements: this.roundRobinPlacements(fallbackPins, dayCount),
         suggestions: [],
       };
     } finally {
@@ -659,10 +804,29 @@ Write a description for a travel board titled "${dto.title}" focused on ${locati
     }
   }
 
+  // Deterministic stand-in for the AI's vibe judgement: keep pins whose
+  // category matches any chosen vibe (plus hotels). If nothing matches we'd
+  // rather build the full trip than an empty one.
+  private filterPinsByVibe(
+    pins: ArrangeablePin[],
+    vibes: TripVibe[],
+  ): ArrangeablePin[] {
+    const allowed = new Set(vibes.flatMap((v) => VIBE_CATEGORIES[v]));
+    const kept = pins.filter((p) => {
+      const category = p.category?.toLowerCase();
+      return (
+        category != null &&
+        (category === HOME_BASE_CATEGORY || allowed.has(category))
+      );
+    });
+    return kept.length > 0 ? kept : pins;
+  }
+
   private buildArrangePrompt(
-    pins: BoardPin[],
+    pins: ArrangeablePin[],
     dayCount: number,
     fillGaps: boolean,
+    vibes: TripVibe[],
   ): string {
     const places = pins.map((p) => ({
       id: p.id,
@@ -685,16 +849,34 @@ Write a description for a travel board titled "${dto.title}" focused on ${locati
     const returnShape = fillGaps
       ? `Return JSON: { "assignments": [ { "id", "day", "startTime", "mealSlot" } ], "suggestions": [ { "name", "day", "startTime", "latitude", "longitude", "address", "category" } ] } with one assignment per place.`
       : `Return JSON: { "assignments": [ { "id", "day", "startTime", "mealSlot" } ] } with one entry per place.`;
+    // Without vibes every place must be placed; with vibes the model curates
+    // the list and omits non-matching places from "assignments".
+    const selectionRules =
+      vibes.length === 0
+        ? `- Use ONLY the places listed below in "assignments". Copy each "id" verbatim — never invent, drop, merge, or rename a place.
+- Assign every place to exactly one day, numbered 1 to ${dayCount}.`
+        : `- Use ONLY the places listed below in "assignments". Copy each "id" verbatim — never invent, merge, or rename a place.
+- The traveller wants these vibes:
+${vibes.map((v) => `  • ${VIBE_LABELS[v]}`).join('\n')}
+- Keep a place only if it clearly fits at least one of those vibes — judge by its category and name. Category hints per vibe: ${vibes
+            .map(
+              (v) =>
+                `${VIBE_LABELS[v].split(' — ')[0]}: ${VIBE_CATEGORIES[v].join(', ')}`,
+            )
+            .join('; ')}.
+- Always keep an accommodation place (hotel) — it is the home base.
+- Drop every other place by omitting it from "assignments" entirely. Drop only for vibe mismatch, never merely to shorten the trip.
+- Assign each kept place to exactly one day, numbered 1 to ${dayCount}.`;
+
     return `You are planning a ${dayCount}-day trip itinerary.
 
 Rules:
-- Use ONLY the places listed below in "assignments". Copy each "id" verbatim — never invent, drop, merge, or rename a place.
-- Assign every place to exactly one day, numbered 1 to ${dayCount}.
+${selectionRules}
 - Home base: if exactly one place has an accommodation category (hotel), it is the trip's fixed home base. Assign it to day 1 with an afternoon check-in startTime (around 14:00), and cluster every day's places around it. Do not schedule it again on later days.
 - Daily rhythm: breakfast around 08:00, morning sightseeing, lunch around 12:00, afternoon sightseeing or a café stop around 15:00, dinner around 18:30, then optionally one evening spot around 20:00.
 - Place food places (restaurant, cafe, bar) into meal slots — set "mealSlot" to one of "breakfast", "lunch", "dinner", or "snack" for them, choosing by proximity to that day's cluster. Leave "mealSlot" out for non-food places.
 - Spread sightseeing places evenly across the days — at most 4 per day.
-- If a place has "knownDay" or "knownTime" (its schedule from the original travel video), prefer that day and a startTime consistent with that time mention. Cluster the remaining places around them.
+- If a place has "knownDay" or "knownTime" (its schedule from the original travel video), you MUST keep it on that day and give it a startTime matching that time mention. Cluster the remaining places around them.
 - Group places that are geographically close on the same day to minimise travel.
 - If the places span multiple distant regions or countries, keep each region on its own contiguous block of days — never mix far-apart regions on the same day.
 - Within each day, order places sensibly and give each a 24-hour "startTime" as "HH:MM" running from morning to evening.${suggestionRules}
@@ -706,19 +888,30 @@ ${JSON.stringify(places)}`;
   }
 
   // Build final placements from the model's assignments, trusting only ids that
-  // exist in the input. Missing pins are appended round-robin. sortOrder is
+  // exist in the input. Missing pins are appended round-robin — unless
+  // `dropUnassigned` (vibe mode), where an omitted pin means "doesn't fit the
+  // vibe" and is left off the trip (hotels are always kept). sortOrder is
   // re-derived per day by startTime so the plan reads top-to-bottom.
   private reconcileAssignments(
-    pins: BoardPin[],
+    pins: ArrangeablePin[],
     dayCount: number,
     assignments: ArrangeResult['assignments'] | undefined,
+    dropUnassigned = false,
   ): PinPlacement[] {
     const pinById = new Map(pins.map((p) => [p.id, p]));
+    const assignedIds = new Set(
+      (assignments ?? []).map((a) => a.id).filter((id) => pinById.has(id)),
+    );
+    const isHomeBase = (pin: ArrangeablePin) =>
+      pin.category?.toLowerCase() === HOME_BASE_CATEGORY;
+    const keptPins = dropUnassigned
+      ? pins.filter((p) => assignedIds.has(p.id) || isHomeBase(p))
+      : pins;
     const dayByPinId = new Map<number, number>();
 
     // Pins with a day narrated in the source video (BoardPin.dayNumber — not
     // the AI-arranged PinPlacement day) keep it, clamped to the trip length.
-    for (const pin of pins) {
+    for (const pin of keptPins) {
       if (pin.dayNumber != null) {
         dayByPinId.set(pin.id, Math.min(Math.max(pin.dayNumber, 1), dayCount));
       }
@@ -730,9 +923,10 @@ ${JSON.stringify(places)}`;
       dayByPinId.set(a.id, day);
     }
 
-    // Any pin the model skipped gets spread across the remaining days.
+    // Any kept pin the model skipped (all pins in legacy mode, forced-in
+    // hotels in vibe mode) gets spread across the remaining days.
     let fillCursor = 0;
-    for (const pin of pins) {
+    for (const pin of keptPins) {
       if (!dayByPinId.has(pin.id)) {
         dayByPinId.set(pin.id, (fillCursor % dayCount) + 1);
         fillCursor++;
@@ -745,8 +939,14 @@ ${JSON.stringify(places)}`;
         startTimeByPinId.set(a.id, a.startTime);
       }
     }
+    // A time narrated in the source video is authoritative over the model's
+    // guess, exactly like dayNumber above.
+    for (const pin of keptPins) {
+      const known = parseTimeOfDay(pin.timeOfDayText);
+      if (known) startTimeByPinId.set(pin.id, known);
+    }
 
-    return this.buildPlacements(pins, dayByPinId, startTimeByPinId);
+    return this.buildPlacements(keptPins, dayByPinId, startTimeByPinId);
   }
 
   // Defensively validate the model's suggested venues (only requested when
@@ -755,7 +955,7 @@ ${JSON.stringify(places)}`;
   // extras and must never fail the request. sortOrder interleaves them with
   // that day's pins by startTime, renumbering the pins' sortOrder to match.
   private reconcileSuggestions(
-    pins: BoardPin[],
+    pins: ArrangeablePin[],
     dayCount: number,
     raw: RawSuggestion[] | undefined,
     placements: PinPlacement[],
@@ -834,22 +1034,34 @@ ${JSON.stringify(places)}`;
   }
 
   private roundRobinPlacements(
-    pins: BoardPin[],
+    pins: ArrangeablePin[],
     dayCount: number,
   ): PinPlacement[] {
+    // Even without the model, narrated days/times are still honoured.
     const dayByPinId = new Map<number, number>();
-    pins.forEach((pin, i) => dayByPinId.set(pin.id, (i % dayCount) + 1));
-    return this.buildPlacements(pins, dayByPinId, new Map());
+    const startTimeByPinId = new Map<number, string>();
+    let fillCursor = 0;
+    for (const pin of pins) {
+      if (pin.dayNumber != null) {
+        dayByPinId.set(pin.id, Math.min(Math.max(pin.dayNumber, 1), dayCount));
+      } else {
+        dayByPinId.set(pin.id, (fillCursor % dayCount) + 1);
+        fillCursor++;
+      }
+      const known = parseTimeOfDay(pin.timeOfDayText);
+      if (known) startTimeByPinId.set(pin.id, known);
+    }
+    return this.buildPlacements(pins, dayByPinId, startTimeByPinId);
   }
 
   // Group pins by their assigned day, keep any model-provided start time (else
   // hand out the ladder by position), and number sortOrder within each day.
   private buildPlacements(
-    pins: BoardPin[],
+    pins: ArrangeablePin[],
     dayByPinId: Map<number, number>,
     startTimeByPinId: Map<number, string>,
   ): PinPlacement[] {
-    const byDay = new Map<number, BoardPin[]>();
+    const byDay = new Map<number, ArrangeablePin[]>();
     for (const pin of pins) {
       const day = dayByPinId.get(pin.id) ?? 1;
       const list = byDay.get(day) ?? [];
@@ -860,20 +1072,22 @@ ${JSON.stringify(places)}`;
     const placements: PinPlacement[] = [];
     for (const day of [...byDay.keys()].sort((a, b) => a - b)) {
       const dayPins = byDay.get(day)!;
-      // Order by any provided start time so the ladder fallback fills the gaps
-      // in a stable, readable sequence.
-      dayPins.sort((a, b) => {
-        const ta = startTimeByPinId.get(a.id) ?? '';
-        const tb = startTimeByPinId.get(b.id) ?? '';
-        return ta.localeCompare(tb);
-      });
-      dayPins.forEach((pin, i) => {
+      // Pins without a time inherit the ladder slot for their position, then
+      // the day is ordered by time with the incoming (extraction/narration)
+      // order as the tiebreak — so two "trưa" pins stay in the order the
+      // video showed them. Array.prototype.sort is stable.
+      const timed = dayPins.map((pin, i) => ({
+        pin,
+        startTime:
+          startTimeByPinId.get(pin.id) ??
+          START_TIME_LADDER[Math.min(i, START_TIME_LADDER.length - 1)],
+      }));
+      timed.sort((a, b) => a.startTime.localeCompare(b.startTime));
+      timed.forEach((entry, i) => {
         placements.push({
-          pin,
+          pin: entry.pin,
           dayNumber: day,
-          startTime:
-            startTimeByPinId.get(pin.id) ??
-            START_TIME_LADDER[Math.min(i, START_TIME_LADDER.length - 1)],
+          startTime: entry.startTime,
           sortOrder: i,
         });
       });

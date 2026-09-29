@@ -3,7 +3,9 @@ import { Cron } from '@nestjs/schedule';
 import {
   ExpenseCategory,
   VaultStatus,
+  VaultTransaction,
   VaultTxKind,
+  VaultTxSource,
   VaultTxStatus,
 } from '@prisma/client';
 import { PublicKey } from '@solana/web3.js';
@@ -13,11 +15,17 @@ import { SolanaService } from '../solana/solana.service';
 import { PAYOUT_PROVIDER } from '../payout/payout-provider.interface';
 import type { PayoutProvider } from '../payout/payout-provider.interface';
 import { ExpensesService } from '../expenses/expenses.service';
+import { PAYOUT_SENDING } from './payout-claim';
+import {
+  FAILURE_CODES_WITHOUT_TRANSFER,
+  VAULT_FAILURE_CODES,
+} from './vault-failure-codes';
 
 export interface ReconcileReport {
   payoutsSent: number;
   confirmed: number;
   reverted: number;
+  abandoned: number;
   stale: number;
   drift: number;
 }
@@ -44,7 +52,7 @@ export class TripVaultReconcileService {
 
   @Cron('*/5 * * * *')
   async handleCron(): Promise<void> {
-    if (!this.solana.isConfigured) {
+    if (!this.solana.isEnabled || !this.solana.isConfigured) {
       return;
     }
     try {
@@ -66,17 +74,65 @@ export class TripVaultReconcileService {
       payoutsSent: 0,
       confirmed: 0,
       reverted: 0,
+      abandoned: 0,
       stale: 0,
       drift: 0,
     };
 
-    await this.settleBroadcastDeposits(report);
-    await this.sendMissingPayouts(report);
-    await this.resolvePending(report);
-    await this.revertConfirmedFailures(report);
-    await this.checkDrift(report);
+    // Each step on its own. One row the chain refuses used to stop every
+    // step after it, so a single bad revert silenced the drift check for
+    // weeks.
+    await this.step('settleBroadcastDeposits', () =>
+      this.settleBroadcastDeposits(report),
+    );
+    await this.step('expireUnsignedSpends', () =>
+      this.expireUnsignedSpends(report),
+    );
+    await this.step('sendMissingPayouts', () =>
+      this.sendMissingPayouts(report),
+    );
+    await this.step('resolvePending', () => this.resolvePending(report));
+    await this.step('revertConfirmedFailures', () =>
+      this.revertConfirmedFailures(report),
+    );
+    await this.step('checkDrift', () => this.checkDrift(report));
 
     return report;
+  }
+
+  private async step(name: string, run: () => Promise<void>): Promise<void> {
+    try {
+      await run();
+    } catch (error) {
+      this.logger.error(`reconcile step ${name} failed: ${String(error)}`);
+    }
+  }
+
+  /**
+   * A spend the client never signed.
+   *
+   * The row is written before the signature is asked for, so a verification
+   * failure or a closed app leaves it PENDING with nothing on chain. Nothing
+   * else here would ever pick it up, and history was showing it as money
+   * spent. After the grace period it is marked abandoned; there is nothing to
+   * revert.
+   */
+  private async expireUnsignedSpends(report: ReconcileReport): Promise<void> {
+    const result = await this.prisma.vaultTransaction.updateMany({
+      where: {
+        kind: VaultTxKind.SPEND,
+        status: VaultTxStatus.PENDING,
+        signature: null,
+        payoutStatus: null,
+        proposalPda: null,
+        createdAt: { lt: new Date(Date.now() - PENDING_GRACE_MS) },
+      },
+      data: {
+        status: VaultTxStatus.FAILED,
+        failureCode: VAULT_FAILURE_CODES.abandoned,
+      },
+    });
+    report.abandoned += result.count;
   }
 
   /**
@@ -114,6 +170,7 @@ export class TripVaultReconcileService {
 
   /** A. The chain leg landed but the fiat leg never started. */
   private async sendMissingPayouts(report: ReconcileReport): Promise<void> {
+    const staleClaim = new Date(Date.now() - PENDING_GRACE_MS);
     const rows = await this.prisma.vaultTransaction.findMany({
       where: {
         // Only a spend pays a merchant. A deposit now reaches PENDING with a
@@ -121,16 +178,36 @@ export class TripVaultReconcileService {
         kind: VaultTxKind.SPEND,
         status: VaultTxStatus.PENDING,
         signature: { not: null },
-        payoutStatus: null,
+        // Never started, or claimed by a submit that died before it finished.
+        OR: [
+          { payoutStatus: null },
+          { payoutStatus: PAYOUT_SENDING, updatedAt: { lt: staleClaim } },
+        ],
         // A proposal carries a signature from the moment it is created, but no
         // money has moved until a second member approves it. Without this the
         // job would pay a merchant for a spend still sitting in the vault.
-        OR: [{ proposalPda: null }, { approvedAt: { not: null } }],
+        AND: [{ OR: [{ proposalPda: null }, { approvedAt: { not: null } }] }],
       },
       take: BATCH,
     });
 
     for (const row of rows) {
+      // Claim it, as submitPayment does, so the two cannot both pay and both
+      // create the expense. Re-claiming a stale SENDING row bumps updatedAt.
+      const claim = await this.prisma.vaultTransaction.updateMany({
+        where: {
+          id: row.id,
+          status: VaultTxStatus.PENDING,
+          OR: [
+            { payoutStatus: null },
+            { payoutStatus: PAYOUT_SENDING, updatedAt: { lt: staleClaim } },
+          ],
+        },
+        data: { payoutStatus: PAYOUT_SENDING },
+      });
+      if (claim.count === 0) {
+        continue;
+      }
       const result = await this.payout.payout({
         bankBin: row.bankBin!,
         accountNumber: row.bankAccount!,
@@ -155,7 +232,12 @@ export class TripVaultReconcileService {
     const rows = await this.prisma.vaultTransaction.findMany({
       where: {
         status: VaultTxStatus.PENDING,
-        payoutStatus: { not: null },
+        // SENDING is a submit (or sendMissingPayouts) still working on it; the
+        // provider has no answer to give yet.
+        AND: [
+          { payoutStatus: { not: null } },
+          { payoutStatus: { not: PAYOUT_SENDING } },
+        ],
         createdAt: { lt: new Date(Date.now() - PENDING_GRACE_MS) },
       },
       take: BATCH,
@@ -213,12 +295,47 @@ export class TripVaultReconcileService {
       where: {
         status: VaultTxStatus.FAILED,
         signature: { not: null },
-        failureCode: { not: 'REVERTED' },
+        // A cancelled proposal carries the cancel transaction's signature but
+        // moved no USDC; asking the program to give it back fails on chain.
+        failureCode: { notIn: FAILURE_CODES_WITHOUT_TRANSFER },
       },
       take: BATCH,
     });
 
     for (const row of rows) {
+      try {
+        await this.revertOne(row);
+        report.reverted += 1;
+      } catch (error) {
+        // The next row may well be fine; this one is logged and retried on
+        // the next tick.
+        this.logger.error(
+          `revert of vault tx ${row.id} failed: ${String(error)}`,
+        );
+      }
+    }
+  }
+
+  private async revertOne(row: VaultTransaction): Promise<void> {
+    if (row.source === VaultTxSource.PERSONAL) {
+      // The money came from the member, not the vault, so it goes back to
+      // the member. Without a wallet on file there is nowhere to send it and
+      // the row stays FAILED for someone to look at.
+      const wallet = row.userId
+        ? await this.prisma.walletAccount.findUnique({
+            where: { userId: row.userId },
+          })
+        : null;
+      if (!wallet) {
+        throw new Error(
+          `personal spend ${row.id} failed but user ${row.userId} has no wallet; refund by hand`,
+        );
+      }
+      await this.solana.refundPersonalSpend(
+        new PublicKey(wallet.publicKey),
+        row.amountMicro,
+      );
+    } else {
       const vault = await this.prisma.tripVault.findUniqueOrThrow({
         where: { id: row.tripVaultId },
         select: { vaultPda: true },
@@ -227,12 +344,11 @@ export class TripVaultReconcileService {
         new PublicKey(vault.vaultPda),
         row.amountMicro,
       );
-      await this.prisma.vaultTransaction.update({
-        where: { id: row.id },
-        data: { failureCode: 'REVERTED' },
-      });
-      report.reverted += 1;
     }
+    await this.prisma.vaultTransaction.update({
+      where: { id: row.id },
+      data: { failureCode: VAULT_FAILURE_CODES.reverted },
+    });
   }
 
   /**
@@ -251,9 +367,15 @@ export class TripVaultReconcileService {
         const onChain = await this.solana.getTokenBalance(
           new PublicKey(vault.usdcAta),
         );
+        // Personal spends never passed through the vault, so they are not
+        // part of what its balance should be.
         const totals = await this.prisma.vaultTransaction.groupBy({
           by: ['kind'],
-          where: { tripVaultId: vault.id, status: VaultTxStatus.CONFIRMED },
+          where: {
+            tripVaultId: vault.id,
+            status: VaultTxStatus.CONFIRMED,
+            source: VaultTxSource.VAULT,
+          },
           _sum: { amountMicro: true },
         });
 

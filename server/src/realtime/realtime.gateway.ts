@@ -26,12 +26,12 @@ export class RealtimeGateway
   private readonly lifecycleLogger = new Logger('RealtimeLifecycle');
 
   handleConnection(client: WebSocket, req: IncomingMessage): void {
-    this.lifecycleLogger.log('client connected');
+    this.lifecycleLogger.debug('client connected');
     this.connectionService.authenticateClient(client, req);
   }
 
   handleDisconnect(client: WebSocket): void {
-    this.lifecycleLogger.log('client disconnected');
+    this.lifecycleLogger.debug('client disconnected');
     this.connectionService.disconnectClient(client);
   }
 
@@ -40,7 +40,8 @@ export class RealtimeGateway
     client: WebSocket,
     data: { tripId: number },
   ): Promise<void> {
-    this.lifecycleLogger.log(`client joining trip ${data?.tripId}`);
+    // tripId is client-supplied: log it as a number, never the raw value.
+    this.lifecycleLogger.debug(`client joining trip ${Number(data?.tripId)}`);
     return this.chatHandler.handleJoinTrip(client, data);
   }
 

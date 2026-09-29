@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ExpenseCategory } from '@prisma/client';
+import { ExpenseCategory, VaultTxSource } from '@prisma/client';
 import {
   IsArray,
   IsEnum,
@@ -15,11 +15,13 @@ export class PreparePaymentDto {
     description: 'Raw EMVCo payload scanned from the VietQR code',
   })
   @IsString()
+  @MaxLength(512)
   qrPayload: string;
 
   @ApiPropertyOptional({ description: 'Amount in VND as a decimal string' })
   @IsOptional()
   @Matches(/^\d+$/)
+  @MaxLength(20)
   amountVnd?: string;
 
   @ApiProperty({ description: 'Expense name shown in the trip ledger' })
@@ -45,6 +47,19 @@ export class PreparePaymentDto {
   @IsArray()
   @IsInt({ each: true })
   shareWithUserIds: number[];
+
+  // Who pays. Only the caller can sign for their own wallet, so the choice is
+  // the group or the caller — never another member.
+  @ApiPropertyOptional({
+    enum: VaultTxSource,
+    enumName: 'VaultTxSource',
+    description:
+      'VAULT (default): the group wallet pays and the approval threshold applies. ' +
+      "PERSONAL: the caller's own USDC wallet pays; no approval, no fee.",
+  })
+  @IsOptional()
+  @IsEnum(VaultTxSource)
+  source?: VaultTxSource;
 }
 
 export class PreparePaymentResponseDto {
@@ -58,6 +73,21 @@ export class PreparePaymentResponseDto {
 
   @ApiProperty({ description: 'True when a second member must approve' })
   needsApproval: boolean;
+
+  @ApiProperty({ enum: VaultTxSource, enumName: 'VaultTxSource' })
+  source: VaultTxSource;
+
+  @ApiProperty({
+    description:
+      'Micro-USDC the transaction moves, as a decimal string. The client checks the instruction against it before signing.',
+  })
+  amountUsdcMicro: string;
+
+  @ApiPropertyOptional({
+    description:
+      "PERSONAL only: the caller's USDC token account the transfer debits.",
+  })
+  payerAta?: string;
 }
 
 export class SubmitSignedDto {
@@ -71,6 +101,7 @@ export class SubmitSignedDto {
 export class DepositRequestDto {
   @ApiProperty({ description: 'Amount in micro-USDC as a decimal string' })
   @Matches(/^\d+$/)
+  @MaxLength(20)
   amountMicro: string;
 }
 
@@ -93,12 +124,14 @@ export class SubmitDepositDto {
   @IsString()
   signedTx: string;
 
-  // Recorded for display only. The program enforces the real amount on chain,
-  // and the reconcile job's drift check catches a row that disagrees with the
-  // vault balance, so a client that lies here corrects itself rather than
-  // moving money.
-  @ApiProperty({ description: 'Amount in micro-USDC as a decimal string' })
+  // Ignored by the server: the credited amount is decoded from the signed
+  // transaction (audit S1). Kept so existing clients keep validating.
+  @ApiProperty({
+    description:
+      'Amount in micro-USDC as a decimal string (informational; the server credits what the signed transaction transfers)',
+  })
   @Matches(/^\d+$/)
+  @MaxLength(20)
   amountMicro: string;
 }
 

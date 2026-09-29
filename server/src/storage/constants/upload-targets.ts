@@ -4,6 +4,7 @@ export enum UploadTarget {
   TRIP_PHOTO = 'trip-photo',
   EXPENSE_RECEIPT = 'expense-receipt',
   PLAN_ITEM_VOICE = 'plan-item-voice',
+  PLAN_ITEM_IMAGE = 'plan-item-image',
   MARKET_ITEM_IMAGE = 'market-item-image',
   BOARD_COVER = 'board-cover',
   JOURNAL_COVER = 'journal-cover',
@@ -48,6 +49,11 @@ export const UPLOAD_TARGET_CONFIGS: Record<UploadTarget, UploadTargetConfig> = {
   [UploadTarget.PLAN_ITEM_VOICE]: {
     pathPrefix: 'trips/{entityId}/voice',
     allowedContentTypes: ['audio/mp4', 'audio/m4a', 'audio/mpeg'],
+    maxSizeBytes: 10 * 1024 * 1024,
+  },
+  [UploadTarget.PLAN_ITEM_IMAGE]: {
+    pathPrefix: 'trips/{entityId}/plan-images',
+    allowedContentTypes: ['image/jpeg', 'image/png', 'image/webp'],
     maxSizeBytes: 10 * 1024 * 1024,
   },
   [UploadTarget.MARKET_ITEM_IMAGE]: {

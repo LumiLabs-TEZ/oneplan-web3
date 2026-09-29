@@ -152,6 +152,11 @@ describe('ExpensesService', () => {
       exchangeRates as unknown as ExchangeRatesService,
       tripsHandler as any,
       { track: jest.fn() } as any,
+      {
+        onExpenseAdded: jest.fn(),
+        onQualifyingAction: jest.fn(),
+        onTripPossiblySettled: jest.fn(),
+      } as any,
     );
   });
 
@@ -192,6 +197,72 @@ describe('ExpensesService', () => {
       expect(shareUserIds).toEqual(expect.arrayContaining([1, 2, 3]));
       expect(result.id).toBe(1);
       expect(result.shares).toHaveLength(3);
+    });
+
+    it('records an explicit paidById when that member is accepted', async () => {
+      // findUnique serves both assertMember (caller) and resolvePayer (payer).
+      prisma.tripMember.findUnique.mockImplementation((args: any) =>
+        Promise.resolve({
+          userId: args.where.tripId_userId.userId,
+          inviteStatus: InviteStatus.ACCEPTED,
+        }),
+      );
+      prisma.tripMember.findMany.mockResolvedValue([
+        { userId: 1 },
+        { userId: 2 },
+      ]);
+      prisma.expense.create.mockResolvedValue(mockExpense);
+      prisma.expenseShare.createMany.mockResolvedValue({ count: 2 });
+      prisma.expense.findUniqueOrThrow.mockResolvedValue(
+        mockExpenseWithIncludes,
+      );
+
+      await service.createExpense(1, 1, {
+        name: 'Dinner',
+        amount: 30,
+        memberIds: [1, 2],
+        expenseDate: '2026-03-18',
+        paidById: 2,
+      });
+
+      expect(prisma.expense.create.mock.calls[0][0].data.paidById).toBe(2);
+    });
+
+    it('rejects a paidById who is not an accepted member', async () => {
+      prisma.tripMember.findUnique.mockImplementation((args: any) => {
+        const { userId } = args.where.tripId_userId;
+        if (userId === 1) {
+          return Promise.resolve({
+            userId,
+            inviteStatus: InviteStatus.ACCEPTED,
+          });
+        }
+        // Pending member and non-member alike must be refused.
+        return Promise.resolve(
+          userId === 2 ? { userId, inviteStatus: InviteStatus.PENDING } : null,
+        );
+      });
+      prisma.tripMember.findMany.mockResolvedValue([{ userId: 1 }]);
+
+      await expect(
+        service.createExpense(1, 1, {
+          name: 'Dinner',
+          amount: 30,
+          memberIds: [1],
+          expenseDate: '2026-03-18',
+          paidById: 2,
+        }),
+      ).rejects.toThrow(BadRequestException);
+
+      await expect(
+        service.createExpense(1, 1, {
+          name: 'Dinner',
+          amount: 30,
+          memberIds: [1],
+          expenseDate: '2026-03-18',
+          paidById: 999,
+        }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should create an expense with a single member', async () => {
@@ -348,6 +419,90 @@ describe('ExpensesService', () => {
       expect(result.originalCurrency).toBe(Currency.THB);
       expect(result.exchangeRate).toBe(600);
     });
+
+    it('rounds the converted amount to 2dp and splits shares that sum to it exactly', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.tripMember.findMany.mockResolvedValue([
+        { userId: 1 },
+        { userId: 2 },
+        { userId: 3 },
+      ]);
+      prisma.trip.findUniqueOrThrow.mockResolvedValue({
+        currency: Currency.USD,
+      });
+      // 10.001 THB-ish → USD at rate 1: unrounded 10.001 vs stored 10.00.
+      exchangeRates.getRate.mockResolvedValue({
+        rate: new Prisma.Decimal('1'),
+        fetchedAt: new Date(),
+        isStale: false,
+      });
+      prisma.expense.create.mockResolvedValue(mockExpense);
+      prisma.expenseShare.createMany.mockResolvedValue({ count: 3 });
+      prisma.expense.findUniqueOrThrow.mockResolvedValue(
+        mockExpenseWithIncludes,
+      );
+
+      await service.createExpense(1, 1, {
+        name: 'Odd amount',
+        amount: 10,
+        memberIds: [1, 2, 3],
+        expenseDate: '2026-03-18',
+        originalAmount: 10.001,
+        originalCurrency: Currency.THB,
+      } as any);
+
+      const createArgs = prisma.expense.create.mock.calls[0][0];
+      // Stored amount is the 2dp value, matching the Decimal(18,2) column.
+      expect(createArgs.data.amount.toString()).toBe('10');
+      const shares = prisma.expenseShare.createMany.mock.calls[0][0].data;
+      const shareSum = shares.reduce(
+        (acc: number, s: any) => acc + Number(s.shareAmount),
+        0,
+      );
+      expect(shareSum).toBeCloseTo(10, 10);
+    });
+
+    it('stores 10.01 (not 10.00) at the half-cent boundary and shares sum to it', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.tripMember.findMany.mockResolvedValue([
+        { userId: 1 },
+        { userId: 2 },
+      ]);
+      prisma.trip.findUniqueOrThrow.mockResolvedValue({
+        currency: Currency.USD,
+      });
+      // 2.001 × 5 = 10.005 → Decimal half-up rounds to 10.01. Before the
+      // resolveAmounts rounding fix, JS Number(10.005) truncated share math
+      // to 10.00 while Postgres stored 10.01 — a one-cent invariant break.
+      exchangeRates.getRate.mockResolvedValue({
+        rate: new Prisma.Decimal('5'),
+        fetchedAt: new Date(),
+        isStale: false,
+      });
+      prisma.expense.create.mockResolvedValue(mockExpense);
+      prisma.expenseShare.createMany.mockResolvedValue({ count: 2 });
+      prisma.expense.findUniqueOrThrow.mockResolvedValue(
+        mockExpenseWithIncludes,
+      );
+
+      await service.createExpense(1, 1, {
+        name: 'Boundary',
+        amount: 10,
+        memberIds: [1, 2],
+        expenseDate: '2026-03-18',
+        originalAmount: 2.001,
+        originalCurrency: Currency.THB,
+      } as any);
+
+      const createArgs = prisma.expense.create.mock.calls[0][0];
+      expect(createArgs.data.amount.toString()).toBe('10.01');
+      const shares = prisma.expenseShare.createMany.mock.calls[0][0].data;
+      const shareSum = shares.reduce(
+        (acc: number, s: any) => acc + Number(s.shareAmount),
+        0,
+      );
+      expect(shareSum).toBeCloseTo(10.01, 10);
+    });
   });
 
   describe('createReceiptExpense', () => {
@@ -497,6 +652,40 @@ describe('ExpensesService', () => {
         .sort();
       expect(shareAmounts).toEqual([0.81, 0.81, 0.82]);
       expect(sumShares()).toBeCloseTo(2.44, 10);
+    });
+
+    it('stores the 2dp-rounded converted total at a half-cent boundary and shares sum to it', async () => {
+      prisma.tripMember.findMany.mockResolvedValue([
+        { userId: 1 },
+        { userId: 2 },
+      ]);
+      prisma.trip.findUniqueOrThrow.mockResolvedValue({
+        currency: Currency.USD,
+      });
+      // Total 30 THB × 0.3335 = 10.005 → Decimal half-up 10.01. Pre-fix,
+      // Number math saw 10.004999… and reconciled shares to 10.00 while
+      // the column stored 10.01.
+      exchangeRates.getRate.mockResolvedValue({
+        rate: new Prisma.Decimal('0.3335'),
+        fetchedAt: new Date(),
+        isStale: false,
+      });
+
+      await service.createReceiptExpense(
+        1,
+        1,
+        baseDto(
+          [
+            { name: 'A', amount: 20, userId: 1 },
+            { name: 'B', amount: 10, userId: 2 },
+          ],
+          Currency.THB,
+        ),
+      );
+
+      const data = prisma.expense.create.mock.calls[0][0].data;
+      expect(data.amount.toString()).toBe('10.01');
+      expect(sumShares()).toBeCloseTo(10.01, 10);
     });
 
     it('flags rateStale when the FX rate is stale', async () => {
@@ -680,7 +869,83 @@ describe('ExpensesService', () => {
       expect(result.id).toBe(1);
     });
 
-    it('should recalculate shares when amount changes', async () => {
+    it('should recalculate shares when amount changes (membership also changed)', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.expense.findUnique.mockResolvedValue(mockExpense);
+      prisma.expense.findUniqueOrThrow.mockResolvedValueOnce({
+        amount: { toNumber: () => 30 },
+      });
+      prisma.expense.update.mockResolvedValue(mockExpense);
+      prisma.tripMember.findMany.mockResolvedValue([
+        { userId: 1 },
+        { userId: 2 },
+        { userId: 3 },
+      ]);
+      prisma.expenseShare.findMany
+        .mockResolvedValueOnce([
+          { id: 1, userId: 1 },
+          { id: 2, userId: 2 },
+          { id: 3, userId: 3 },
+        ])
+        .mockResolvedValueOnce([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      prisma.expenseShare.update.mockResolvedValue({});
+      prisma.expense.findUniqueOrThrow.mockResolvedValue(
+        mockExpenseWithIncludes,
+      );
+
+      // Amount AND membership both change here, so the equal-resplit path
+      // (not the amount-only proportional-scale path) is the one exercised.
+      await service.updateExpense(1, 1, 1, {
+        amount: 60,
+        memberIds: [1, 2, 3],
+      });
+
+      expect(prisma.$transaction).toHaveBeenCalled();
+      expect(prisma.expenseShare.findMany).toHaveBeenLastCalledWith({
+        where: { expenseId: 1 },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+      });
+      expect(prisma.expenseShare.update).toHaveBeenCalledTimes(3);
+    });
+
+    it('amount-only edit preserves the existing distribution by scaling shares proportionally', async () => {
+      prisma.tripMember.findUnique.mockResolvedValue(mockMember);
+      prisma.expense.findUnique.mockResolvedValue(mockExpense);
+      prisma.expense.findUniqueOrThrow.mockResolvedValueOnce({
+        amount: { toNumber: () => 30 },
+      });
+      prisma.expense.update.mockResolvedValue(mockExpense);
+      // Uneven shares (as a receipt-scan expense would have), summing to 30.
+      prisma.expenseShare.findMany.mockResolvedValue([
+        { id: 1, shareAmount: 5 },
+        { id: 2, shareAmount: 25 },
+      ]);
+      prisma.expenseShare.update.mockResolvedValue({});
+      prisma.expense.findUniqueOrThrow.mockResolvedValue(
+        mockExpenseWithIncludes,
+      );
+
+      // memberIds untouched: this must scale 5/25 proportionally, not
+      // flatten to an equal split.
+      await service.updateExpense(1, 1, 1, { amount: 60 });
+
+      expect(prisma.expenseShare.findMany).toHaveBeenCalledWith({
+        where: { expenseId: 1 },
+        select: { id: true, shareAmount: true },
+        orderBy: { id: 'asc' },
+      });
+      const written = prisma.expenseShare.update.mock.calls.map(
+        ([arg]: any[]) => Number(arg.data.shareAmount),
+      );
+      expect(written).toEqual([10, 50]); // 5 * (60/30), 25 * (60/30)
+      expect(written.reduce((a: number, b: number) => a + b, 0)).toBeCloseTo(
+        60,
+        10,
+      );
+    });
+
+    it('amount-only recompute keeps sum(shares) === amount for odd splits', async () => {
       prisma.tripMember.findUnique.mockResolvedValue(mockMember);
       prisma.expense.findUnique.mockResolvedValue(mockExpense);
       prisma.expense.findUniqueOrThrow.mockResolvedValueOnce({
@@ -688,24 +953,26 @@ describe('ExpensesService', () => {
       });
       prisma.expense.update.mockResolvedValue(mockExpense);
       prisma.expenseShare.findMany.mockResolvedValue([
-        { id: 1 },
-        { id: 2 },
-        { id: 3 },
+        { id: 1, shareAmount: 10 },
+        { id: 2, shareAmount: 10 },
+        { id: 3, shareAmount: 10 },
       ]);
       prisma.expenseShare.update.mockResolvedValue({});
       prisma.expense.findUniqueOrThrow.mockResolvedValue(
         mockExpenseWithIncludes,
       );
 
-      await service.updateExpense(1, 1, 1, { amount: 60 });
+      // 100 scaled proportionally from an even 10/10/10 split: rounding
+      // residual still reconciles onto the first share.
+      await service.updateExpense(1, 1, 1, { amount: 100 });
 
-      expect(prisma.$transaction).toHaveBeenCalled();
-      expect(prisma.expenseShare.findMany).toHaveBeenCalledWith({
-        where: { expenseId: 1 },
-        select: { id: true },
-        orderBy: { id: 'asc' },
-      });
-      expect(prisma.expenseShare.update).toHaveBeenCalledTimes(3);
+      const written = prisma.expenseShare.update.mock.calls.map(
+        ([arg]: any[]) => Number(arg.data.shareAmount),
+      );
+      expect(written.reduce((a: number, b: number) => a + b, 0)).toBeCloseTo(
+        100,
+        10,
+      );
     });
 
     it('should update expense members and recalculate shares', async () => {
@@ -751,6 +1018,7 @@ describe('ExpensesService', () => {
           userId: { in: [1, 2] },
         },
         select: { userId: true },
+        orderBy: { id: 'asc' },
       });
       expect(prisma.expenseShare.deleteMany).toHaveBeenCalledWith({
         where: { expenseId: 1, userId: { in: [3] } },

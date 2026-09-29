@@ -5,11 +5,16 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ActivityAction, InviteStatus } from '@prisma/client';
+import { ActivityAction, ContentLocale, InviteStatus } from '@prisma/client';
+import { ClsService } from 'nestjs-cls';
+import { CONTENT_LOCALE_CLS_KEY } from '../common/locale/content-locale';
 import { PrismaService } from '../prisma/prisma.service';
+import { UploadTarget } from '../storage/constants/upload-targets';
 import { StorageService } from '../storage/storage.service';
 import { TripActivityService } from '../trip-activity/trip-activity.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { MissionsService } from '../missions/missions.service';
+import { MarketplaceAcquisitionService } from '../marketplace/acquisition/marketplace-acquisition.service';
 import { ANALYTICS_EVENTS } from '../analytics/constants/events';
 import { AddMembersDto } from './dto/add-members.dto';
 import { CreatePlanItemDto } from './dto/create-plan-item.dto';
@@ -57,6 +62,9 @@ export class PlanItemsService {
     private readonly activityService: TripActivityService,
     private readonly storageService: StorageService,
     private readonly analytics: AnalyticsService,
+    private readonly missions: MissionsService,
+    private readonly marketplaceAcquisition: MarketplaceAcquisitionService,
+    private readonly cls: ClsService,
   ) {}
 
   async createPlanItem(
@@ -83,6 +91,7 @@ export class PlanItemsService {
           category: dto.category,
           voiceUrl: dto.voiceUrl,
           voiceDuration: dto.voiceDuration,
+          imageUrls: this.normalizeImageKeys(dto.imageUrls ?? []),
           sortOrder: dto.sortOrder ?? 0,
         },
       });
@@ -145,7 +154,7 @@ export class PlanItemsService {
       orderBy: [{ dayNumber: 'asc' }, { sortOrder: 'asc' }, { id: 'asc' }],
     });
 
-    return items.map((item) => this.formatItem(item));
+    return Promise.all(items.map((item) => this.formatItem(item)));
   }
 
   async getPlanItem(
@@ -199,6 +208,12 @@ export class PlanItemsService {
     }
     if (dto.sortOrder !== undefined) data.sortOrder = dto.sortOrder;
     if (dto.dayNumber !== undefined) data.dayNumber = dto.dayNumber;
+    // Full replace, like the marketplace item update. Keys are normalized so
+    // signed (thumb) URLs echoed back by the client persist as original keys.
+    // No S3 deletion here — removed originals are cleaned up on item delete.
+    if (dto.imageUrls !== undefined) {
+      data.imageUrls = this.normalizeImageKeys(dto.imageUrls);
+    }
 
     if (dto.userIds !== undefined) {
       await this.validateMemberIds(tripId, dto.userIds);
@@ -249,6 +264,9 @@ export class PlanItemsService {
 
     if (planItem.voiceUrl) {
       await this.storageService.deleteObject(planItem.voiceUrl);
+    }
+    for (const imageKey of planItem.imageUrls ?? []) {
+      await this.storageService.deleteObject(imageKey);
     }
 
     this.activityService.log(
@@ -347,11 +365,70 @@ export class PlanItemsService {
       }
     }
 
+    // The frozen snapshot may predate the admin's latest edits: refresh it in
+    // place from the current approved listing before copying (a missing/
+    // rejected/deleted listing keeps the frozen copy).
+    let acquisitionItems = acquisition.items;
+    if (acquisition.listingId !== null) {
+      const listing =
+        await this.marketplaceAcquisition.findApprovedListingForAcquisition(
+          acquisition.listingId,
+        );
+      if (listing) {
+        const refreshed = await this.prisma.$transaction((tx) =>
+          this.marketplaceAcquisition.refreshAcquisitionSnapshotIfStale(
+            tx,
+            acquisition,
+            listing,
+            this.cls.get<ContentLocale | null>(CONTENT_LOCALE_CLS_KEY) ?? null,
+          ),
+        );
+        if (refreshed) {
+          acquisitionItems = await this.prisma.acquisitionItem.findMany({
+            where: { acquisitionId: acquisition.id },
+            orderBy: [
+              { dayNumber: 'asc' },
+              { sortOrder: 'asc' },
+              { id: 'asc' },
+            ],
+          });
+        }
+      }
+    }
+
     const acceptedMembers = await this.prisma.tripMember.findMany({
       where: { tripId, inviteStatus: InviteStatus.ACCEPTED },
       select: { userId: true },
     });
     const memberUserIds = acceptedMembers.map((m) => m.userId);
+
+    // Copy snapshot images into trip-owned objects BEFORE the transaction.
+    // The trip must not share keys with the marketplace: deletePlanItem
+    // hard-deletes every image key, which would break the listing/snapshot.
+    // A failed copy skips that image only — never fails the apply.
+    const copiedImageKeysByItemId = new Map<number, string[]>();
+    for (const mi of acquisitionItems) {
+      const copiedKeys: string[] = [];
+      for (const imageKey of (mi.imageUrls ?? []).slice(0, 5)) {
+        try {
+          copiedKeys.push(
+            await this.storageService.copyToTarget(
+              imageKey,
+              UploadTarget.PLAN_ITEM_IMAGE,
+              tripId,
+            ),
+          );
+        } catch (error) {
+          console.warn(
+            `applyAcquisitionToTrip: image copy failed for ${imageKey}`,
+            error,
+          );
+        }
+      }
+      if (copiedKeys.length > 0) {
+        copiedImageKeysByItemId.set(mi.id, copiedKeys);
+      }
+    }
 
     const createdItemIds = await this.prisma.$transaction(async (tx) => {
       if (acquisition.listingId !== null) {
@@ -362,7 +439,7 @@ export class PlanItemsService {
       }
 
       const ids: number[] = [];
-      for (const mi of acquisition.items) {
+      for (const mi of acquisitionItems) {
         const created = await tx.tripPlanItem.create({
           data: {
             tripId,
@@ -379,6 +456,7 @@ export class PlanItemsService {
             planDate: null,
             voiceUrl: null,
             voiceDuration: null,
+            imageUrls: copiedImageKeysByItemId.get(mi.id) ?? [],
           },
         });
         ids.push(created.id);
@@ -412,6 +490,7 @@ export class PlanItemsService {
         itemCount: createdItemIds.length,
       },
     });
+    void this.missions.onPlanApplied(userId);
 
     const items = await this.prisma.tripPlanItem.findMany({
       where: { id: { in: createdItemIds } },
@@ -419,7 +498,7 @@ export class PlanItemsService {
       orderBy: [{ dayNumber: 'asc' }, { sortOrder: 'asc' }, { id: 'asc' }],
     });
 
-    return items.map((item) => this.formatItem(item));
+    return Promise.all(items.map((item) => this.formatItem(item)));
   }
 
   async getLocationPlanCount(
@@ -463,17 +542,33 @@ export class PlanItemsService {
   private async assertItemBelongsToTrip(
     itemId: number,
     tripId: number,
-  ): Promise<{ id: number; title: string; voiceUrl: string | null }> {
+  ): Promise<{
+    id: number;
+    title: string;
+    voiceUrl: string | null;
+    imageUrls: string[];
+  }> {
     const item = await this.prisma.tripPlanItem.findUnique({
       where: { id: itemId },
-      select: { id: true, title: true, tripId: true, voiceUrl: true },
+      select: {
+        id: true,
+        title: true,
+        tripId: true,
+        voiceUrl: true,
+        imageUrls: true,
+      },
     });
 
     if (!item || item.tripId !== tripId) {
       throw new NotFoundException('Plan item not found');
     }
 
-    return { id: item.id, title: item.title, voiceUrl: item.voiceUrl };
+    return {
+      id: item.id,
+      title: item.title,
+      voiceUrl: item.voiceUrl,
+      imageUrls: item.imageUrls ?? [],
+    };
   }
 
   private async validateMemberIds(
@@ -509,7 +604,39 @@ export class PlanItemsService {
     return this.formatItem(item);
   }
 
-  private formatItem(item: {
+  /**
+   * Strips submitted image values down to bare original object keys: signed
+   * URLs are reduced to keys, and thumbnail keys (`<key>.thumb.webp` — what a
+   * signed thumb URL from `formatItem` extracts back to) lose their suffix so
+   * the DB always stores the original object key.
+   */
+  private normalizeImageKeys(values: string[]): string[] {
+    const THUMB_SUFFIX = '.thumb.webp';
+    return values.map((value) => {
+      const key = this.storageService.extractObjectKey(value);
+      return key.endsWith(THUMB_SUFFIX)
+        ? key.slice(0, -THUMB_SUFFIX.length)
+        : key;
+    });
+  }
+
+  /** Signs stored image keys into ready-to-use (thumb) URLs for the DTO. */
+  private async signImageUrls(keys: string[]): Promise<string[]> {
+    return Promise.all(
+      keys.map(async (key) => {
+        // Legacy/foreign absolute URLs pass through unsigned.
+        if (/^https?:\/\//i.test(key)) return key;
+        try {
+          const { url } = await this.storageService.getSignedThumbUrl(key);
+          return url;
+        } catch {
+          return key;
+        }
+      }),
+    );
+  }
+
+  private async formatItem(item: {
     id: number;
     tripId: number;
     planDate: Date | null;
@@ -524,6 +651,7 @@ export class PlanItemsService {
     category: any;
     voiceUrl: string | null;
     voiceDuration: number | null;
+    imageUrls: string[];
     sortOrder: number;
     createdAt: Date | null;
     members: Array<{
@@ -531,7 +659,7 @@ export class PlanItemsService {
       userId: number;
       user: { id: number; displayName: string; avatarUrl: string | null };
     }>;
-  }): PlanItemDto {
+  }): Promise<PlanItemDto> {
     return {
       id: item.id,
       tripId: item.tripId,
@@ -547,6 +675,7 @@ export class PlanItemsService {
       category: item.category,
       voiceUrl: item.voiceUrl,
       voiceDuration: item.voiceDuration,
+      imageUrls: await this.signImageUrls(item.imageUrls ?? []),
       sortOrder: item.sortOrder,
       createdAt: item.createdAt?.toISOString() ?? new Date().toISOString(),
       members: item.members.map((m) => this.formatMember(m)),

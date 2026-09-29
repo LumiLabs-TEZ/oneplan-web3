@@ -10,7 +10,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("8pjmDZvmRzjcSwzffqnsdzsPRb3nV9BiVDhGU3vmR7uD");
+declare_id!("HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL");
 
 #[program]
 pub mod oneplan_vault {

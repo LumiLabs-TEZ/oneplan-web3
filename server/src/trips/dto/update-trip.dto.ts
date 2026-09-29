@@ -60,7 +60,8 @@ export class UpdateTripDto {
     enum: Currency,
     enumName: 'Currency',
     description:
-      'Trip currency. Can only be changed if no budgets or expenses exist.',
+      'Trip currency. Changing it converts all existing budgets/expenses ' +
+      'to the new currency at current rates. Not allowed on ended trips.',
   })
   @IsOptional()
   @IsEnum(Currency)

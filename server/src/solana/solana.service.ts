@@ -8,6 +8,7 @@ import { AnchorProvider, Program, Wallet } from '@coral-xyz/anchor';
 import BN from 'bn.js';
 import {
   createAssociatedTokenAccountIdempotentInstruction,
+  createTransferCheckedInstruction,
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import {
@@ -20,6 +21,11 @@ import {
 } from '@solana/web3.js';
 import bs58 from 'bs58';
 
+import {
+  DEFAULT_SOLANA_COMMITMENT,
+  DEFAULT_SOLANA_RPC_URL,
+  DEFAULT_SOLANA_USDC_MINT,
+} from './solana.config';
 import idl from './idl/oneplan_vault.json';
 import type { OneplanVault } from './types/oneplan_vault';
 
@@ -44,14 +50,11 @@ export class SolanaService {
   private readonly keypair: Keypair | null;
 
   constructor(private readonly config: ConfigService) {
-    const rpcUrl = this.config.get<string>(
-      'SOLANA_RPC_URL',
-      'https://api.devnet.solana.com',
-    );
-    const commitment = this.config.get<Commitment>(
-      'SOLANA_COMMITMENT',
-      'confirmed',
-    );
+    // Empty is "unset" (Joi lets ops blank a var), so `||`, not a get() default.
+    const rpcUrl =
+      this.config.get<string>('SOLANA_RPC_URL') || DEFAULT_SOLANA_RPC_URL;
+    const commitment = (this.config.get<string>('SOLANA_COMMITMENT') ||
+      DEFAULT_SOLANA_COMMITMENT) as Commitment;
     // Host only: the endpoint carries an API key and a log line is the easiest
     // place for one to leak.
     new Logger(SolanaService.name).log(`RPC ${new URL(rpcUrl).host}`);
@@ -64,12 +67,45 @@ export class SolanaService {
       commitment,
       wsEndpoint: SolanaService.websocketFor(rpcUrl),
     });
-    this.usdcMint = new PublicKey(
-      this.config.getOrThrow<string>('SOLANA_USDC_MINT'),
-    );
+
+    // A bad value here must switch the feature off, never crash boot: every
+    // problem is collected and the fee payer is dropped, so isConfigured is
+    // false and each write path answers 503.
+    const problems: string[] = [];
+    const production = this.config.get<string>('NODE_ENV') === 'production';
+    const mintRaw = this.config.get<string>('SOLANA_USDC_MINT');
+    if (production && !mintRaw) {
+      problems.push('SOLANA_USDC_MINT is unset in production');
+    }
+    let usdcMint = new PublicKey(DEFAULT_SOLANA_USDC_MINT);
+    if (mintRaw) {
+      try {
+        usdcMint = new PublicKey(mintRaw);
+      } catch {
+        problems.push('SOLANA_USDC_MINT is not a valid public key');
+      }
+    }
+    this.usdcMint = usdcMint;
+    if (production && !this.config.get<string>('SOLANA_RPC_URL')) {
+      problems.push('SOLANA_RPC_URL is unset in production');
+    }
 
     const secret = this.config.get<string>('SOLANA_FEE_PAYER_SECRET_KEY', '');
-    this.keypair = secret ? Keypair.fromSecretKey(bs58.decode(secret)) : null;
+    let keypair: Keypair | null = null;
+    if (secret) {
+      try {
+        keypair = Keypair.fromSecretKey(bs58.decode(secret));
+      } catch {
+        problems.push('SOLANA_FEE_PAYER_SECRET_KEY is not a valid secret key');
+      }
+    }
+    if (problems.length > 0) {
+      keypair = null;
+      this.logger.error(
+        `Solana misconfigured, group wallet disabled: ${problems.join('; ')}`,
+      );
+    }
+    this.keypair = keypair;
 
     // A throwaway wallet keeps Anchor constructible when no fee payer is set.
     // Every write path checks isConfigured first, so it is never used to sign.
@@ -79,11 +115,20 @@ export class SolanaService {
     });
     this.program = new Program(idl as OneplanVault, provider);
 
-    if (!this.keypair) {
+    if (!this.keypair && problems.length === 0) {
       this.logger.warn(
         'SOLANA_FEE_PAYER_SECRET_KEY is not set - vault endpoints will return 503',
       );
     }
+  }
+
+  /**
+   * Server-side kill switch (WEB3_ENABLED, default false). Distinct from
+   * isConfigured: keys can be present on a server where the feature is dark.
+   */
+  get isEnabled(): boolean {
+    const value: unknown = this.config.get('WEB3_ENABLED', false);
+    return value === true || value === 'true';
   }
 
   get isConfigured(): boolean {
@@ -119,7 +164,16 @@ export class SolanaService {
   /** Owner of the treasury USDC ATA (fee payer unless SOLANA_TREASURY_OWNER). */
   treasuryOwner(): PublicKey {
     const owner = this.config.get<string>('SOLANA_TREASURY_OWNER', '');
-    return owner ? new PublicKey(owner) : this.feePayer.publicKey;
+    if (!owner) {
+      return this.feePayer.publicKey;
+    }
+    try {
+      return new PublicKey(owner);
+    } catch {
+      throw new ServiceUnavailableException(
+        'SOLANA_TREASURY_OWNER is not a valid public key',
+      );
+    }
   }
 
   /**
@@ -144,7 +198,39 @@ export class SolanaService {
       this.usdcMint,
     );
     const signature = await this.sendAsFeePayer([ix]);
-    this.logger.log(`created treasury USDC ATA ${ata.toBase58()}: ${signature}`);
+    this.logger.log(
+      `created treasury USDC ATA ${ata.toBase58()}: ${signature}`,
+    );
+    return ata;
+  }
+
+  /**
+   * Creates the receiver's USDC ATA if it is missing.
+   *
+   * A personal payment is a plain token transfer into it, and a transfer into an
+   * account that does not exist fails on chain. Its own fee-payer tx, like the
+   * treasury one, so the member-signed transfer stays a single instruction.
+   */
+  async ensureReceiverAta(): Promise<PublicKey> {
+    const ata = getAssociatedTokenAddressSync(
+      this.usdcMint,
+      this.receiverPublicKey,
+    );
+    const info = await this.connection.getAccountInfo(ata);
+    if (info) {
+      return ata;
+    }
+
+    const ix = createAssociatedTokenAccountIdempotentInstruction(
+      this.feePayer.publicKey,
+      ata,
+      this.receiverPublicKey,
+      this.usdcMint,
+    );
+    const signature = await this.sendAsFeePayer([ix]);
+    this.logger.log(
+      `created receiver USDC ATA ${ata.toBase58()}: ${signature}`,
+    );
     return ata;
   }
 
@@ -177,7 +263,20 @@ export class SolanaService {
    */
   async broadcastSigned(base64Tx: string): Promise<string> {
     const tx = Transaction.from(Buffer.from(base64Tx, 'base64'));
-    return this.connection.sendRawTransaction(tx.serialize());
+    try {
+      return await this.connection.sendRawTransaction(tx.serialize());
+    } catch (error) {
+      // Which signer the client failed to satisfy is the whole diagnosis, and
+      // the library's message names none of them.
+      const signers = tx.signatures.map((entry) => ({
+        publicKey: entry.publicKey.toBase58(),
+        signed: entry.signature !== null,
+      }));
+      this.logger.error(
+        `broadcast rejected: ${String(error)}; feePayer=${tx.feePayer?.toBase58()} signers=${JSON.stringify(signers)}`,
+      );
+      throw error;
+    }
   }
 
   /**
@@ -193,16 +292,38 @@ export class SolanaService {
     const blockhash = tx.recentBlockhash;
     if (!blockhash) {
       // Nothing to bound the wait with, so ask the chain outright instead.
-      await this.connection.confirmTransaction(signature, 'confirmed');
+      SolanaService.assertLanded(
+        await this.connection.confirmTransaction(signature, 'confirmed'),
+        signature,
+      );
       return;
     }
     const lastValidBlockHeight =
       (await this.connection.getBlockHeight('confirmed')) +
       BLOCKHASH_VALIDITY_BLOCKS;
-    await this.connection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      'confirmed',
+    SolanaService.assertLanded(
+      await this.connection.confirmTransaction(
+        { signature, blockhash, lastValidBlockHeight },
+        'confirmed',
+      ),
+      signature,
     );
+  }
+
+  /**
+   * confirmTransaction resolves (does not reject) for a transaction that landed
+   * and FAILED; the failure is only in `value.err`. Discarding it booked
+   * deposits and fired payouts for transactions that moved nothing.
+   */
+  private static assertLanded(
+    result: { value: { err: unknown } },
+    signature: string,
+  ): void {
+    if (result.value.err) {
+      throw new Error(
+        `transaction ${signature} failed on chain: ${JSON.stringify(result.value.err)}`,
+      );
+    }
   }
 
   /**
@@ -232,9 +353,12 @@ export class SolanaService {
     tx.recentBlockhash = blockhash;
     tx.sign(this.feePayer, ...extraSigners);
     const signature = await this.connection.sendRawTransaction(tx.serialize());
-    await this.connection.confirmTransaction(
-      { signature, blockhash, lastValidBlockHeight },
-      'confirmed',
+    SolanaService.assertLanded(
+      await this.connection.confirmTransaction(
+        { signature, blockhash, lastValidBlockHeight },
+        'confirmed',
+      ),
+      signature,
     );
     return signature;
   }
@@ -258,7 +382,16 @@ export class SolanaService {
           'SOLANA_RECEIVER_SECRET_KEY is not configured',
         );
       }
-      this.receiverKeypair = Keypair.fromSecretKey(bs58.decode(secret));
+      try {
+        this.receiverKeypair = Keypair.fromSecretKey(bs58.decode(secret));
+      } catch {
+        this.logger.error(
+          'SOLANA_RECEIVER_SECRET_KEY is not a valid secret key',
+        );
+        throw new ServiceUnavailableException(
+          'SOLANA_RECEIVER_SECRET_KEY is not valid',
+        );
+      }
     }
     return this.receiverKeypair;
   }
@@ -288,11 +421,52 @@ export class SolanaService {
   }
 
   /**
+   * Returns a failed personal payment to the member who made it.
+   *
+   * The USDC went from the member's own account to the receiver, not through
+   * the vault, so the vault program's revert cannot undo it. The receiver
+   * simply sends it back. The member's token account is opened first if it has
+   * gone missing since — the refund must not fail for want of somewhere to land.
+   */
+  async refundPersonalSpend(
+    owner: PublicKey,
+    amountMicro: bigint,
+  ): Promise<string> {
+    const receiver = this.receiverKeypairOrThrow;
+    const receiverAta = getAssociatedTokenAddressSync(
+      this.usdcMint,
+      receiver.publicKey,
+    );
+    const ownerAta = getAssociatedTokenAddressSync(this.usdcMint, owner);
+    const ixs = [
+      createAssociatedTokenAccountIdempotentInstruction(
+        this.feePayer.publicKey,
+        ownerAta,
+        owner,
+        this.usdcMint,
+      ),
+      createTransferCheckedInstruction(
+        receiverAta,
+        this.usdcMint,
+        ownerAta,
+        receiver.publicKey,
+        amountMicro,
+        6,
+      ),
+    ];
+    return this.sendAsFeePayer(ixs, [receiver]);
+  }
+
+  /**
    * After settlement empties the vault ATA and sets status Closed, reclaim
    * PDA + ATA rent to the fee payer. Safe to call only when ATA balance is 0.
    */
   async closeVault(vaultPda: PublicKey): Promise<string> {
-    const vaultAta = getAssociatedTokenAddressSync(this.usdcMint, vaultPda, true);
+    const vaultAta = getAssociatedTokenAddressSync(
+      this.usdcMint,
+      vaultPda,
+      true,
+    );
     const ix = await this.program.methods
       .closeVault()
       .accountsPartial({

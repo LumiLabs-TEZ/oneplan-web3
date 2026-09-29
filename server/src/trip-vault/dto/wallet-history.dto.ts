@@ -12,11 +12,14 @@ export class WalletHistoryEntryDto {
   })
   address: string;
 
-  @ApiProperty({ description: 'Absolute amount in micro-USDC as a decimal string' })
+  @ApiProperty({
+    description: 'Absolute amount in micro-USDC as a decimal string',
+  })
   amountMicro: string;
 
   @ApiProperty({
-    description: 'Unix seconds when the transfer landed (string for iOS decode safety)',
+    description:
+      'Unix seconds when the transfer landed (string for iOS decode safety)',
   })
   blockTime: string;
 

@@ -10,6 +10,7 @@ import {
   ParseEnumPipe,
   Post,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -24,6 +25,7 @@ import {
 } from '@nestjs/swagger';
 import { AuthProvider } from '@prisma/client';
 import { Throttle } from '@nestjs/throttler';
+import { Web3EnabledGuard } from '../solana/web3-enabled.guard';
 import { AuthService } from './auth.service';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { Public } from './decorators/public.decorator';
@@ -33,13 +35,13 @@ import { LinkEmailDto } from './dto/link-email.dto';
 import { LoginDto } from './dto/login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
-import { WalletTokenDto } from './dto/wallet-token.dto';
-import { WalletTokenService } from './wallet-token.service';
 import { SocialLoginDto } from './dto/social-login.dto';
 import { UserProfileDto } from './dto/user-profile.dto';
 import { PassportSummaryDto } from './dto/passport-summary.dto';
 import { PassportSummaryQueryDto } from './dto/passport-summary-query.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { WalletTokenDto } from './dto/wallet-token.dto';
+import { WalletTokenService } from './wallet-token.service';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -61,7 +63,10 @@ export class AuthController {
     return this.walletTokens.jwks();
   }
 
+  // 404 unless WEB3_ENABLED: prod stays dark whatever WALLET_JWT_* holds.
   @Get('wallet-token')
+  @UseGuards(Web3EnabledGuard)
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Short-lived token the app exchanges for a wallet session',
     operationId: 'getWalletToken',

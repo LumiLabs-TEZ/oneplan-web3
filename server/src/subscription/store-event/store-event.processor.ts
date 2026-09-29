@@ -18,10 +18,17 @@ export class StoreEventProcessor {
     const isNotification = event.source === 'NOTIFICATION';
 
     if (isNotification && event.eventId) {
+      // Only a fully-PROCESSED row is a true duplicate. Callers (e.g. the Play
+      // RTDN handler) may have already claimed this eventId with a bare
+      // placeholder row (outcome RECEIVED) before verifying with the store,
+      // or a prior attempt may have left it FAILED/ORPHANED — all of those
+      // must still go through entitlement.apply() below, not be treated as
+      // already-done. persist() upserts, so re-processing the same row is safe.
       const existing = await this.prisma.storeNotification.findUnique({
         where: { notificationUUID: event.eventId },
+        select: { outcome: true },
       });
-      if (existing) return 'DUPLICATE';
+      if (existing?.outcome === 'PROCESSED') return 'DUPLICATE';
     }
 
     if (event.kind === 'TEST') {
@@ -60,8 +67,23 @@ export class StoreEventProcessor {
    * now that we know who the user is (typically right after client verify
    * comes in).
    *
-   * Safe to re-run: each row is just a "doorbell" — apply() uses already
-   * normalized data, and the ledger/grant writes are all idempotent.
+   * ONLY refunds are replayed. A refund is fully described by what we already
+   * persisted — applyRefund() needs nothing but lineId + transactionId — so it
+   * can be rebuilt offline and applied faithfully.
+   *
+   * A SUBSCRIPTION_STATE row cannot. Its two decisive fields, `status` and
+   * `expiresAt`, are NOT in the stored notification: for Apple `status` comes
+   * from a live getAllSubscriptionStatuses() call, for Play from a live
+   * purchases.subscriptions.get(). Synthesizing the event without them (the
+   * previous behaviour: `productId: ''`, no status, no expiry) made
+   * applySubscriptionState() write subscriptionStatus=NONE,
+   * subscriptionProductId='', subscriptionExpiresAt=null — i.e. it WIPED the
+   * entitlement of a paying user. Because replayOrphans() is only ever called
+   * immediately after a successful client verify, the state on record at that
+   * moment is already fresher and fully verified; replaying an older
+   * subscription doorbell could only ever make it staler or emptier, never
+   * better. So we skip those rows and leave them ORPHANED — visible to
+   * operators, and still available should a re-query-based replay land later.
    *
    * One failing row must NOT block the rest: they're independent of each
    * other, and a broken payload shouldn't hold a valid refund hostage.
@@ -74,13 +96,20 @@ export class StoreEventProcessor {
     if (orphans.length === 0) return 0;
 
     let replayed = 0;
+    let skipped = 0;
     for (const row of orphans) {
+      const kind = this.resolveOrphanKind(row.notificationType, row.rawPayload);
+      if (kind !== 'REFUND') {
+        // Not replayable offline — see the doc comment above.
+        skipped += 1;
+        continue;
+      }
       try {
         await this.entitlement.apply({
           store: (row.store as StoreEvent['store']) ?? 'APPLE',
           source: 'NOTIFICATION',
           eventId: row.notificationUUID,
-          kind: this.inferKind(row.notificationType),
+          kind,
           lineId,
           transactionId: row.transactionId ?? '',
           productId: '',
@@ -102,7 +131,28 @@ export class StoreEventProcessor {
         );
       }
     }
+    if (skipped > 0) {
+      this.logger.warn(
+        `Replay for line ${lineId}: left ${skipped} non-refund orphan(s) ORPHANED — ` +
+          `subscription state cannot be rebuilt from a stored notification, and the ` +
+          `just-completed verify already carries fresher state`,
+      );
+    }
     return replayed;
+  }
+
+  /**
+   * Best-effort kind for a stored notification. The column wins when it's
+   * populated. Play RTDN rows used to leave it null (before the adapter was
+   * updated to set it), so a rawPayload fallback remains for historical rows
+   * that will stay NULL forever.
+   */
+  private resolveOrphanKind(
+    notificationType: string | null,
+    rawPayload: unknown,
+  ): StoreEvent['kind'] {
+    if (notificationType) return this.inferKind(notificationType);
+    return this.inferKindFromRaw(rawPayload) ?? 'SUBSCRIPTION_STATE';
   }
 
   private inferKind(notificationType: string | null): StoreEvent['kind'] {
@@ -112,6 +162,19 @@ export class StoreEventProcessor {
       return 'REFUND';
     }
     return 'SUBSCRIPTION_STATE';
+  }
+
+  /** Returns null when the payload says nothing about the kind. */
+  private inferKindFromRaw(rawPayload: unknown): StoreEvent['kind'] | null {
+    if (!rawPayload || typeof rawPayload !== 'object') return null;
+    const raw = rawPayload as Record<string, unknown>;
+    // Play: voidedPurchaseNotification is the only refund-shaped RTDN.
+    if (raw.voidedPurchaseNotification) return 'REFUND';
+    // Apple: ResponseBodyV2DecodedPayload carries the type as a string.
+    if (typeof raw.notificationType === 'string') {
+      return this.inferKind(raw.notificationType);
+    }
+    return null;
   }
 
   /** Looks up the user via an existing ledger row. Apple: originalTransactionId. Play: purchaseToken stored in transactionId. */
@@ -135,22 +198,27 @@ export class StoreEventProcessor {
     error?: unknown,
   ): Promise<void> {
     if (!event.eventId) return;
-    await this.prisma.storeNotification.create({
-      data: {
-        notificationUUID: event.eventId,
-        notificationType: event.notificationType ?? null,
-        originalTransactionId: event.lineId,
-        transactionId: event.transactionId,
-        environment: event.environment,
-        signedDate: event.signedDate ?? null,
-        store: event.store,
-        rawPayload: (event.raw ?? null) as never,
-        userId,
-        outcome,
-        errorMessage:
-          error instanceof Error ? error.message.slice(0, 255) : null,
-        processedAt: outcome === 'PROCESSED' ? new Date() : null,
-      },
+    const data = {
+      notificationType: event.notificationType ?? null,
+      originalTransactionId: event.lineId,
+      transactionId: event.transactionId,
+      environment: event.environment,
+      signedDate: event.signedDate ?? null,
+      store: event.store,
+      rawPayload: (event.raw ?? null) as never,
+      userId,
+      outcome,
+      errorMessage: error instanceof Error ? error.message.slice(0, 255) : null,
+      processedAt: outcome === 'PROCESSED' ? new Date() : null,
+    };
+    // upsert, not create: a row may already exist for this eventId — a
+    // caller-side claim placeholder, or a prior FAILED/ORPHANED attempt —
+    // and must be overwritten with the real outcome, not conflict on the
+    // unique notificationUUID.
+    await this.prisma.storeNotification.upsert({
+      where: { notificationUUID: event.eventId },
+      create: { notificationUUID: event.eventId, ...data },
+      update: data,
     });
   }
 }

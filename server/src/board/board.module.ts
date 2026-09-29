@@ -3,6 +3,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { ScanCreditModule } from '../scan-credit/scan-credit.module';
 import { StorageModule } from '../storage/storage.module';
 import { TripsModule } from '../trips/trips.module';
+import { MissionsModule } from '../missions/missions.module';
 import { BoardController } from './board.controller';
 import { GeminiModule } from '../common/gemini/gemini.module';
 import { BoardService } from './board.service';
@@ -17,6 +18,7 @@ import { VideoResolverService } from './video-resolver.service';
     ScanCreditModule,
     GeminiModule,
     TripsModule,
+    MissionsModule,
   ],
   controllers: [BoardController, PinExtractionController],
   providers: [BoardService, PinExtractionService, VideoResolverService],

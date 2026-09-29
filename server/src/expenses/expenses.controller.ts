@@ -33,6 +33,10 @@ import { ExpenseDto } from './dto/expense.dto';
 import { ExpenseSummaryDto } from './dto/expense-summary.dto';
 import { ExpenseShareDto } from './dto/expense-share.dto';
 import { TripBreakdownDto } from './dto/expense-breakdown.dto';
+import {
+  TripSettlementSummaryDto,
+  SettleCounterpartyDto,
+} from './dto/trip-settlement.dto';
 
 @ApiBearerAuth()
 @ApiTags('Expenses')
@@ -117,6 +121,38 @@ export class ExpensesController {
     @Param('tripId', ParseIntPipe) tripId: number,
   ): Promise<TripBreakdownDto> {
     return this.expensesService.settleAllShares(tripId, userId);
+  }
+
+  @Get('settlements')
+  @ApiOperation({
+    operationId: 'getTripSettlements',
+    summary: 'Get pairwise (your-POV) who-owes-whom settlements for a trip',
+  })
+  @ApiParam({ name: 'tripId', type: 'integer' })
+  @ApiOkResponse({ type: TripSettlementSummaryDto })
+  @ApiForbiddenResponse({ description: 'Not a member of this trip' })
+  getTripSettlements(
+    @CurrentUser('sub') userId: number,
+    @Param('tripId', ParseIntPipe) tripId: number,
+  ): Promise<TripSettlementSummaryDto> {
+    return this.expensesService.getTripSettlements(tripId, userId);
+  }
+
+  @Post('settlements/settle')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'settleCounterparty',
+    summary: 'Settle all unsettled shares between you and one counterparty',
+  })
+  @ApiParam({ name: 'tripId', type: 'integer' })
+  @ApiOkResponse({ type: TripSettlementSummaryDto })
+  @ApiForbiddenResponse({ description: 'Not a member of this trip' })
+  settleCounterparty(
+    @CurrentUser('sub') userId: number,
+    @Param('tripId', ParseIntPipe) tripId: number,
+    @Body() dto: SettleCounterpartyDto,
+  ): Promise<TripSettlementSummaryDto> {
+    return this.expensesService.settleCounterparty(tripId, userId, dto);
   }
 
   @Get(':id')

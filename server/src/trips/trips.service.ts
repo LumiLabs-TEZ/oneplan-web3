@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   Injectable,
@@ -10,6 +11,7 @@ import {
   ActivityAction,
   Currency,
   InviteStatus,
+  Prisma,
   SubscriptionStatus,
   TripMemberRole,
   TripStatus,
@@ -19,6 +21,11 @@ import {
 import { randomBytes } from 'crypto';
 import { BudgetsService } from '../budgets/budgets.service';
 import { mapIsoToCurrencyEnum } from '../common/currency/iso-to-enum';
+import { ExchangeRatesService } from '../exchange-rates/exchange-rates.service';
+import {
+  buildCurrencyRateMap,
+  migrateTripCurrency,
+} from './currency-migration';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PlanItemsService } from '../plan-items/plan-items.service';
 import { TripsHandler } from '../realtime/handlers/trips.handler';
@@ -26,6 +33,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { TripActivityService } from '../trip-activity/trip-activity.service';
 import { AnalyticsService } from '../analytics/analytics.service';
+import { VaultSafetyService } from '../solana/vault-safety.service';
 import { TripVaultService } from '../trip-vault/trip-vault.service';
 import { TripVaultSettlementService } from '../trip-vault/trip-vault-settlement.service';
 import {
@@ -34,6 +42,7 @@ import {
   isMeaningfulVaultDebt,
 } from '../trip-vault/vault-leave-dust';
 import { ANALYTICS_EVENTS } from '../analytics/constants/events';
+import { MissionsService } from '../missions/missions.service';
 import { effectiveSubscriptionStatus } from '../common/subscription-status.util';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { InviteMembersDto } from './dto/invite-members.dto';
@@ -44,6 +53,10 @@ import { TripDto, TripLocationDto } from './dto/trip.dto';
 import { TripMemberDto } from './dto/trip-member.dto';
 import { TripSummaryDto } from './dto/trip-summary.dto';
 import { UpdateTripDto } from './dto/update-trip.dto';
+import {
+  convertDayNumbersToPlanDates,
+  findOngoingConflictNames,
+} from './trip-start.helpers';
 import {
   LeavePreviewDto,
   LeavePreviewBudgetDto,
@@ -81,7 +94,7 @@ const TRIP_DETAIL_INCLUDE = {
 
 @Injectable()
 export class TripsService {
-  private static readonly logger = new Logger(TripsService.name);
+  private readonly logger = new Logger(TripsService.name);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -92,9 +105,12 @@ export class TripsService {
     private readonly tripsHandler: TripsHandler,
     private readonly notificationsService: NotificationsService,
     private readonly analytics: AnalyticsService,
+    private readonly exchangeRatesService: ExchangeRatesService,
+    private readonly missions: MissionsService,
     private readonly tripVault: TripVaultService,
     private readonly vaultSettlement: TripVaultSettlementService,
     private readonly vaultHistory: TripVaultHistoryService,
+    private readonly vaultSafety: VaultSafetyService,
   ) {}
 
   async createTrip(userId: number, dto: CreateTripDto): Promise<TripDto> {
@@ -107,16 +123,16 @@ export class TripsService {
         where: { id: userId },
         select: { preferredCurrency: true },
       });
-      // The product is built around paying Vietnamese merchants, so a trip
-      // with no stated currency is a dong trip.
-      currency = user?.preferredCurrency ?? Currency.VND;
+      currency = user?.preferredCurrency ?? Currency.USD;
     }
 
     // Resolve local currencies: use explicit DTO value (including empty
     // array) when provided; otherwise auto-suggest from the trip country.
     let localCurrencies: Currency[];
     if (dto.localCurrencies !== undefined) {
-      localCurrencies = dto.localCurrencies;
+      // Home currency is never a "local" currency — same rule as the
+      // auto-suggest branch below and the updateTrip filter.
+      localCurrencies = dto.localCurrencies.filter((c) => c !== currency);
     } else if (dto.countryId !== undefined) {
       const country = await this.prisma.country.findUnique({
         where: { id: dto.countryId },
@@ -180,6 +196,7 @@ export class TripsService {
         currency: trip.currency,
       },
     });
+    void this.missions.onTripCreated(userId, trip.id, trip.startDate);
 
     return this.findTripDetail(trip.id, userId);
   }
@@ -229,7 +246,19 @@ export class TripsService {
   }
 
   async getTrip(tripId: number, userId: number): Promise<TripDto> {
-    await this.assertMember(tripId, userId);
+    const member = await this.prisma.tripMember.findUnique({
+      where: { tripId_userId: { tripId, userId } },
+      select: { inviteStatus: true, invitedById: true },
+    });
+    if (!member || member.inviteStatus !== InviteStatus.ACCEPTED) {
+      throw new ForbiddenException('You are not a member of this trip');
+    }
+    // friend_joined mission: an invited member opening the trip is the
+    // spec's "invite worked" signal — pays the inviter. Fire-and-forget with
+    // its own cheap pre-checks; adds nothing to the response path.
+    if (member.invitedById !== null && member.invitedById !== userId) {
+      void this.missions.onInviteeEngaged(member.invitedById, userId);
+    }
     return this.findTripDetail(tripId, userId);
   }
 
@@ -244,42 +273,10 @@ export class TripsService {
       await this.assertCreator(tripId, userId);
 
       // Check ALL accepted members for ongoing trip conflicts
-      const members = await this.prisma.tripMember.findMany({
-        where: { tripId, inviteStatus: InviteStatus.ACCEPTED },
-        select: { userId: true, user: { select: { displayName: true } } },
-      });
-      const memberUserIds = members.map((m) => m.userId);
-
-      const conflictingTrips = await this.prisma.trip.findMany({
-        where: {
-          id: { not: tripId },
-          status: TripStatus.ONGOING,
-          members: {
-            some: {
-              userId: { in: memberUserIds },
-              inviteStatus: InviteStatus.ACCEPTED,
-            },
-          },
-        },
-        select: {
-          members: {
-            where: {
-              userId: { in: memberUserIds },
-              inviteStatus: InviteStatus.ACCEPTED,
-            },
-            select: { user: { select: { displayName: true } } },
-          },
-        },
-      });
-
-      const conflictingNames = [
-        ...new Set(
-          conflictingTrips.flatMap((t) =>
-            t.members.map((m) => m.user.displayName),
-          ),
-        ),
-      ];
-
+      const conflictingNames = await findOngoingConflictNames(
+        this.prisma,
+        tripId,
+      );
       if (conflictingNames.length > 0) {
         throw new HttpException(
           {
@@ -292,32 +289,49 @@ export class TripsService {
       }
     }
 
-    // Validate currency change - only allowed if no financial history
-    if (dto.currency !== undefined) {
-      const currentTrip = await this.prisma.trip.findUniqueOrThrow({
-        where: { id: tripId },
-        select: { currency: true },
-      });
+    const now = new Date();
+    const currentTrip = await this.prisma.trip.findUniqueOrThrow({
+      where: { id: tripId },
+      select: {
+        startDate: true,
+        endDate: true,
+        currency: true,
+        localCurrencies: true,
+        status: true,
+      },
+    });
 
-      if (dto.currency !== currentTrip.currency) {
-        const [budgetCount, expenseCount] = await Promise.all([
-          this.prisma.budget.count({ where: { tripId } }),
-          this.prisma.expense.count({ where: { tripId } }),
-        ]);
-
-        if (budgetCount > 0 || expenseCount > 0) {
-          throw new BadRequestException(
-            'Cannot change currency after budgets or expenses have been recorded',
-          );
-        }
-      }
+    // A trip with a group wallet ends only through the end-trip vote, which
+    // also settles the vault. A plain status PATCH would strand the USDC.
+    if (
+      dto.status === TripStatus.ENDED &&
+      currentTrip.status !== TripStatus.ENDED
+    ) {
+      await this.vaultSafety.assertEndableWithoutConsensus(tripId);
     }
 
-    const now = new Date();
-    const currentTrip = await this.prisma.trip.findUnique({
-      where: { id: tripId },
-      select: { startDate: true, endDate: true },
-    });
+    // Currency change: allowed any time except on an ended trip — settled
+    // history must not be re-denominated. All money rows are migrated to the
+    // new currency inside the update transaction below.
+    const isCurrencyChange =
+      dto.currency !== undefined && dto.currency !== currentTrip.currency;
+    if (
+      isCurrencyChange &&
+      (currentTrip.status === TripStatus.ENDED ||
+        dto.status === TripStatus.ENDED)
+    ) {
+      throw new BadRequestException('Cannot change currency on an ended trip');
+    }
+    // Home currency is never a "local" currency (same rule as createTrip).
+    // Recompute whenever the home currency changes or an explicit list is
+    // sent, so e.g. changing home to THB drops THB from localCurrencies.
+    const nextHomeCurrency = dto.currency ?? currentTrip.currency;
+    const nextLocalCurrencies =
+      dto.localCurrencies !== undefined || isCurrencyChange
+        ? (dto.localCurrencies ?? currentTrip.localCurrencies).filter(
+            (c) => c !== nextHomeCurrency,
+          )
+        : undefined;
     const autoStartDate =
       dto.status === TripStatus.ONGOING &&
       !currentTrip?.startDate &&
@@ -326,46 +340,87 @@ export class TripsService {
         : undefined;
     const autoEndDate = dto.status === TripStatus.ENDED ? now : undefined;
 
-    const updated = await this.prisma.trip.update({
-      where: { id: tripId },
-      data: {
-        ...(dto.name !== undefined ? { name: dto.name } : {}),
-        ...(autoStartDate
-          ? { startDate: autoStartDate }
-          : dto.startDate !== undefined
-            ? { startDate: new Date(dto.startDate) }
-            : {}),
-        ...(autoEndDate
-          ? { endDate: autoEndDate }
-          : dto.endDate !== undefined
-            ? { endDate: new Date(dto.endDate) }
-            : {}),
-        ...(dto.cityId !== undefined ? { cityId: dto.cityId } : {}),
-        ...(dto.stateId !== undefined ? { stateId: dto.stateId } : {}),
-        ...(dto.countryId !== undefined ? { countryId: dto.countryId } : {}),
-        ...(dto.status !== undefined ? { status: dto.status } : {}),
-        ...(dto.currency !== undefined ? { currency: dto.currency } : {}),
-        ...(dto.localCurrencies !== undefined
-          ? { localCurrencies: dto.localCurrencies }
+    const updateData = {
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(autoStartDate
+        ? { startDate: autoStartDate }
+        : dto.startDate !== undefined
+          ? { startDate: new Date(dto.startDate) }
           : {}),
-      },
-    });
+      ...(autoEndDate
+        ? { endDate: autoEndDate }
+        : dto.endDate !== undefined
+          ? { endDate: new Date(dto.endDate) }
+          : {}),
+      ...(dto.cityId !== undefined ? { cityId: dto.cityId } : {}),
+      ...(dto.stateId !== undefined ? { stateId: dto.stateId } : {}),
+      ...(dto.countryId !== undefined ? { countryId: dto.countryId } : {}),
+      ...(dto.status !== undefined ? { status: dto.status } : {}),
+      ...(dto.currency !== undefined ? { currency: dto.currency } : {}),
+      ...(nextLocalCurrencies !== undefined
+        ? { localCurrencies: nextLocalCurrencies }
+        : {}),
+    };
+
+    let updated;
+    let migrationUsedStaleRates = false;
+    if (isCurrencyChange) {
+      // Rates are fetched before the transaction so external lookups never
+      // extend it; the tx itself is pure math + row updates.
+      const { map: rateFor, staleCurrencies } = await buildCurrencyRateMap(
+        this.prisma,
+        this.exchangeRatesService,
+        tripId,
+        currentTrip.currency,
+        dto.currency!,
+      );
+      updated = await this.prisma.$transaction(async (tx) => {
+        // Serialize concurrent currency changes per trip. Lock space is
+        // shared with scan-credit's per-user locks (different id domain;
+        // collision is harmless — it only serializes two unrelated txs).
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${tripId}::bigint)`;
+        const fresh = await tx.trip.findUniqueOrThrow({
+          where: { id: tripId },
+          select: { currency: true },
+        });
+        if (fresh.currency !== currentTrip.currency) {
+          throw new ConflictException(
+            'Trip currency was changed concurrently. Reload and retry.',
+          );
+        }
+        // Update the trip first so concurrent readers inside later
+        // statements see the new currency.
+        const trip = await tx.trip.update({
+          where: { id: tripId },
+          data: updateData,
+        });
+        await migrateTripCurrency(tx, rateFor, tripId, currentTrip.currency);
+        return trip;
+      });
+      // All amounts changed — nudge online members to refetch.
+      this.tripsHandler.sendTripSettlementUpdated(tripId);
+      if (staleCurrencies.length > 0) {
+        migrationUsedStaleRates = true;
+        this.logger.warn(
+          `Trip ${tripId} currency migration to ${dto.currency} used stale/fallback rates for: ${staleCurrencies.join(', ')}`,
+        );
+      }
+    } else {
+      updated = await this.prisma.trip.update({
+        where: { id: tripId },
+        data: updateData,
+      });
+    }
 
     // Convert day numbers to real dates when trip starts
     if (dto.status === TripStatus.ONGOING) {
-      const tripStartDate = updated.startDate ?? autoStartDate ?? now;
-      const itemsToConvert = await this.prisma.tripPlanItem.findMany({
-        where: { tripId, dayNumber: { not: null } },
-      });
-      for (const item of itemsToConvert) {
-        if (item.planDate) continue; // already converted
-        const planDate = new Date(tripStartDate);
-        planDate.setDate(planDate.getDate() + (item.dayNumber! - 1));
-        await this.prisma.tripPlanItem.update({
-          where: { id: item.id },
-          data: { planDate },
-        });
-      }
+      await convertDayNumbersToPlanDates(
+        this.prisma,
+        tripId,
+        updated.startDate ?? autoStartDate ?? now,
+      );
+      // Other members' open apps refresh (same event the auto-start cron emits).
+      this.tripsHandler.sendTripStarted(tripId);
     }
 
     // Shift existing planDates when startDate changes on a trip that already
@@ -409,6 +464,17 @@ export class TripsService {
       },
     );
 
+    // plan_ahead: trips are created without dates on iOS, so the ≥30-days
+    // check re-runs whenever the schedule is set (deduped per trip).
+    if (dto.startDate !== undefined && updated.startDate) {
+      void this.missions.onTripScheduleSet(
+        userId,
+        tripId,
+        updated.createdById,
+        updated.startDate,
+      );
+    }
+
     if (dto.status === TripStatus.ENDED) {
       this.activityService.log(
         tripId,
@@ -420,9 +486,18 @@ export class TripsService {
         },
       );
       this.tripsHandler.sendTripEnded(tripId);
+      // trip_settled re-checks its full predicate (ENDED + expenses all
+      // settled) internally.
+      void this.missions.onTripPossiblySettled(tripId);
     }
 
-    return this.findTripDetail(tripId, userId);
+    const detail = await this.findTripDetail(tripId, userId);
+    if (migrationUsedStaleRates) {
+      // Same contract as ExpenseDto/BudgetDto.rateStale: only set on the
+      // immediate response of the mutation that used a stale rate.
+      detail.rateStale = true;
+    }
+    return detail;
   }
 
   async deleteTrip(tripId: number, userId: number): Promise<void> {
@@ -465,6 +540,7 @@ export class TripsService {
         tripId,
         userId: uid,
         inviteStatus: InviteStatus.PENDING,
+        invitedById: userId,
       })),
       skipDuplicates: true,
     });
@@ -498,6 +574,8 @@ export class TripsService {
         properties: { tripId, invitedUserId: member.userId },
       });
     }
+    // invite_2 counts distinct invitee accounts across all trips.
+    void this.missions.onMemberInvited(userId);
 
     const pendingInvitees = await this.prisma.tripMember.findMany({
       where: {
@@ -583,6 +661,18 @@ export class TripsService {
       throw new NotFoundException('Invalid invite code');
     }
 
+    // Idempotent re-join: an already-ACCEPTED member re-scanning the QR /
+    // re-opening the deep link just lands back in the trip. Checked up
+    // front, before the ongoing-trip conflict check, so re-joining a trip
+    // they're already in never trips that guard.
+    const existingMember = await this.prisma.tripMember.findUnique({
+      where: { tripId_userId: { tripId: trip.id, userId } },
+    });
+
+    if (existingMember?.inviteStatus === InviteStatus.ACCEPTED) {
+      return this.findTripDetail(trip.id, userId);
+    }
+
     // Prevent joining an ongoing trip if user already has one
     if (trip.status === TripStatus.ONGOING) {
       const existingOngoingTrip = await this.prisma.trip.findFirst({
@@ -619,6 +709,12 @@ export class TripsService {
         userId,
         inviteStatus: InviteStatus.ACCEPTED,
         joinedAt: new Date(),
+        // Share-link/QR joins never pass through inviteMembers, but they are
+        // the primary invite flow — credit the code's owner so friend_joined
+        // can pay. (An existing PENDING row keeps its original inviter via the
+        // update branch below.) Deliberately NOT counted toward invite_2,
+        // whose trigger is strictly MEMBER_INVITED.
+        invitedById: trip.createdById !== userId ? trip.createdById : null,
       },
       update: {
         inviteStatus: InviteStatus.ACCEPTED,
@@ -629,16 +725,15 @@ export class TripsService {
     await this.budgetsService.addPaymentsForMember(trip.id, userId);
     await this.planItemsService.addMemberToAllPlanItems(trip.id, userId);
     // A member who is not on chain cannot approve a spend or a settlement, so
-    // a trip with a group wallet adds them as they join. Best effort: a chain
-    // hiccup must not stop someone joining a trip, and syncMembers is
+    // a trip with a group wallet adds them as they join. Fire-and-forget and a
+    // no-op without a vault / with web3 off: chain latency must not sit on the
+    // join request, a hiccup must not stop someone joining, and syncMembers is
     // idempotent, so the next sync picks them up.
-    try {
-      await this.tripVault.syncMembers(trip.id);
-    } catch (error) {
-      TripsService.logger.warn(
+    void this.tripVault.syncMembersIfVault(trip.id).catch((error) => {
+      this.logger.warn(
         `could not sync trip ${trip.id} members on chain: ${String(error)}`,
       );
-    }
+    });
 
     const joiningUser = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -663,10 +758,14 @@ export class TripsService {
     return this.findTripDetail(trip.id, userId);
   }
 
-  async getInvitePreview(inviteCode: string): Promise<InvitePreviewDto> {
+  async getInvitePreview(
+    inviteCode: string,
+    userId?: number,
+  ): Promise<InvitePreviewDto> {
     const trip = await this.prisma.trip.findUnique({
       where: { inviteCode },
       select: {
+        id: true,
         name: true,
         coverImageUrl: true,
         status: true,
@@ -682,11 +781,22 @@ export class TripsService {
       throw new NotFoundException('Invalid invite code');
     }
 
+    let isMember = false;
+    if (userId !== undefined) {
+      const member = await this.prisma.tripMember.findUnique({
+        where: { tripId_userId: { tripId: trip.id, userId } },
+        select: { inviteStatus: true },
+      });
+      isMember = member?.inviteStatus === InviteStatus.ACCEPTED;
+    }
+
     return {
+      tripId: trip.id,
       name: trip.name,
       coverImageUrl: await this.resolveCoverImageUrl(trip.coverImageUrl),
       memberCount: trip._count.members,
       status: trip.status,
+      isMember,
     };
   }
 
@@ -776,7 +886,7 @@ export class TripsService {
     const hasVault = netMicro !== null;
 
     if (hasVault) {
-      const net = netMicro!;
+      const net = netMicro;
       const floored = floorVaultLeaveNet(net);
       const owedMicro = floored < 0n ? -floored : 0n;
       // Sub-cent dust counts as settled — same gate as the iOS leave sheet.
@@ -825,13 +935,20 @@ export class TripsService {
           const share =
             splitEvenly(BigInt(row.amountMicro), participants).get(userId) ??
             0n;
-          signed = `-${share.toString()}`;
+          // A spend this member paid from their own wallet is money the group
+          // owes them: what they fronted less their own share.
+          const fronted = row.paidBy?.userId === userId;
+          signed = fronted
+            ? (BigInt(row.amountMicro) - share).toString()
+            : `-${share.toString()}`;
           // Display share in VND (what the merchant was paid), not USDC×live FX.
           if (row.amountVnd) {
             const vndShare =
               splitEvenly(BigInt(row.amountVnd), participants).get(userId) ??
               0n;
-            amountVnd = `-${vndShare.toString()}`;
+            amountVnd = fronted
+              ? (BigInt(row.amountVnd) - vndShare).toString()
+              : `-${vndShare.toString()}`;
           }
           subtitle =
             !row.shareWith || row.shareWith.length === 0
@@ -990,7 +1107,9 @@ export class TripsService {
       },
     });
     if (member.vaultLeaveRequestedAt) {
-      throw new BadRequestException('Leave already announced; wait for the host');
+      throw new BadRequestException(
+        'Leave already announced; wait for the host',
+      );
     }
 
     // READY: last DEPOSIT in vault history. PAYOUT: live credit to send back.
@@ -1151,10 +1270,7 @@ export class TripsService {
       throw new BadRequestException('This member has not announced leave');
     }
 
-    const net = await this.vaultSettlement.memberNetMicro(
-      tripId,
-      targetUserId,
-    );
+    const net = await this.vaultSettlement.memberNetMicro(tripId, targetUserId);
     if (net === null) {
       throw new BadRequestException('This trip has no group vault');
     }
@@ -1253,7 +1369,7 @@ export class TripsService {
         role === TripMemberRole.CO_HOST,
       );
     } catch (error) {
-      TripsService.logger.warn(
+      this.logger.warn(
         `could not record role for user ${targetUserId} on trip ${tripId}: ${error}`,
       );
     }
@@ -1273,7 +1389,7 @@ export class TripsService {
   ): Promise<LeaveSettlementDto> {
     const trip = await this.prisma.trip.findUnique({
       where: { id: tripId },
-      select: { createdById: true },
+      select: { createdById: true, currency: true },
     });
 
     if (!trip) {
@@ -1401,14 +1517,25 @@ export class TripsService {
 
       for (const expense of tripExpenses) {
         const remainingSharesTotal = expense.shares.reduce(
-          (sum, share) => sum + Number(share.shareAmount),
-          0,
+          (sum, share) => sum.add(share.shareAmount),
+          new Prisma.Decimal(0),
         );
 
-        if (Number(expense.amount) !== remainingSharesTotal) {
+        if (!expense.amount.equals(remainingSharesTotal)) {
+          // Rewriting the total invalidates any stored original-currency
+          // provenance (originalAmount × exchangeRate no longer matches the
+          // new amount, and a later currency migration would re-derive from
+          // the stale originalAmount — resurrecting the removed member's
+          // share). Reset to home-currency defaults, exactly like an
+          // amount-only updateExpense.
           await tx.expense.update({
             where: { id: expense.id },
-            data: { amount: remainingSharesTotal },
+            data: {
+              amount: remainingSharesTotal,
+              originalAmount: remainingSharesTotal,
+              originalCurrency: trip.currency,
+              exchangeRate: 1,
+            },
           });
         }
       }
@@ -1428,10 +1555,7 @@ export class TripsService {
     );
 
     const displayName = targetUser?.displayName ?? 'Unknown';
-    this.tripsHandler.sendTripMemberRemoved(tripId, {
-      userId: targetUserId,
-      displayName,
-    });
+    await this.announceMemberRemoved(tripId, targetUserId, displayName);
 
     // Send push notification to remaining members
     this.notificationsService.sendMemberLeftPush(
@@ -1447,6 +1571,22 @@ export class TripsService {
       netSettlement,
       expenses,
     };
+  }
+
+  /**
+   * Vault trips only: clients react to `tripMemberRemoved` by invalidating trip
+   * detail and, on the removed user's device, navigating home. A classic trip
+   * has never announced a removal, and must not start now.
+   */
+  private async announceMemberRemoved(
+    tripId: number,
+    userId: number,
+    displayName: string,
+  ): Promise<void> {
+    if (!(await this.tripVault.hasVault(tripId))) {
+      return;
+    }
+    this.tripsHandler.sendTripMemberRemoved(tripId, { userId, displayName });
   }
 
   /**

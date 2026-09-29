@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { Currency } from '@prisma/client';
+import { Currency, ExpenseCategory } from '@prisma/client';
 import {
   IsArray,
   IsDefined,
@@ -29,6 +29,15 @@ export class UpdateBudgetDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
   amount?: number;
+
+  @ApiPropertyOptional({
+    enum: ExpenseCategory,
+    enumName: 'ExpenseCategory',
+    description: 'Optional category, mirroring Expense.category.',
+  })
+  @IsOptional()
+  @IsEnum(ExpenseCategory)
+  category?: ExpenseCategory;
 
   @ApiPropertyOptional({
     type: [Number],

@@ -30,4 +30,8 @@ export const CLIENT_EMITTED_EVENTS: ReadonlySet<AnalyticsEventName> = new Set([
   // Client-fired when the user taps an engagement push. ENGAGEMENT_PUSH_SENT is
   // deliberately NOT here — server-emitted only (spoof protection).
   AnalyticsEventName.ENGAGEMENT_PUSH_OPENED,
+  // Client-fired when the missions sheet appears (also reachable via
+  // POST /missions/events). MISSION_COMPLETED / REWARD_REDEEMED /
+  // BOARD_CREATED are deliberately NOT here — server-emitted only.
+  AnalyticsEventName.MISSIONS_SHEET_VIEWED,
 ]);

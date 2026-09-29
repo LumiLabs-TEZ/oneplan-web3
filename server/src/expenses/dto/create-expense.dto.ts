@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayNotEmpty,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsDefined,
   IsEnum,
@@ -44,6 +45,25 @@ export class CreateExpenseDto {
   @ArrayNotEmpty()
   @IsInt({ each: true })
   memberIds: number[];
+
+  @ApiPropertyOptional({
+    type: 'integer',
+    description:
+      'Trip member who paid. Must be an accepted member of the trip. Defaults to the authenticated caller when omitted.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  paidById?: number;
+
+  @ApiPropertyOptional({
+    type: 'boolean',
+    description:
+      'When true, the expense is paid by the shared group wallet (paidById is stored as null). Takes precedence over paidById.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  paidByGroup?: boolean;
 
   @ApiPropertyOptional({ maxLength: 500 })
   @IsOptional()
