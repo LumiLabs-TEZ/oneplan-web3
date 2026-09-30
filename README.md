@@ -78,7 +78,6 @@ Web3 vars:
 |---|---|
 | `WEB3_ENABLED` | Master switch for vault endpoints, crons and vault sync on join (default `false`) |
 | `SOLANA_RPC_URL` | `https://api.devnet.solana.com` |
-| `SOLANA_PROGRAM_ID` | `HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL` (devnet) |
 | `SOLANA_USDC_MINT` | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` (devnet USDC) |
 | `SOLANA_COMMITMENT` | `confirmed` |
 | `SOLANA_FEE_PAYER_SECRET_KEY` | base58 key of the server fee payer; generate your own and fund it with devnet SOL |
@@ -86,6 +85,8 @@ Web3 vars:
 | `SOLANA_TREASURY_OWNER` | treasury owner pubkey |
 | `MOCK_PAYOUT_OUTCOME` | `success \| failed \| timeout \| unknown` |
 | `WALLET_JWT_PRIVATE_KEY_FILE` | PEM used to sign embedded-wallet JWTs |
+
+The program id is not an env var: the server reads it from the bundled IDL (`server/src/solana/idl/`), currently devnet `HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL`.
 
 No keys are committed to this repo.
 

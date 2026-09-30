@@ -7,7 +7,7 @@
  * `src/app/_layout.tsx`) — not a general-purpose hook for feature screens, which should go
  * through `@/features/vault/wallet/walletHandle` instead so wallet resolution only happens once.
  */
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { usePrivy, useEmbeddedSolanaWallet } from '@privy-io/expo';
 import { VersionedTransaction } from '@solana/web3.js';
 
@@ -21,6 +21,10 @@ import { describeUnknownError, WalletError } from './walletError';
  */
 let ensureWalletPromise: Promise<string> | null = null;
 
+/** How long `ensureWallet` waits for Privy to finish initialising; under `WALLET_SETUP_TIMEOUT_MS`. */
+const PRIVY_READY_WAIT_MS = 15_000;
+const PRIVY_READY_POLL_MS = 200;
+
 export interface UseVaultWalletResult {
   isReady: boolean;
   publicKey: string | null;
@@ -32,32 +36,59 @@ export interface UseVaultWalletResult {
 export function useVaultWallet(): UseVaultWalletResult {
   const { user, isReady, logout } = usePrivy();
   const solanaWallet = useEmbeddedSolanaWallet();
+  // Latest render's Privy state, so a wait started in an earlier render sees Privy settle.
+  const latest = useRef({ isReady, solanaWallet });
+  latest.current = { isReady, solanaWallet };
 
-  const primaryWallet = useCallback(() => {
-    if (solanaWallet.status !== 'connected') return null;
+  const primaryWalletOf = useCallback((wallet: typeof solanaWallet) => {
+    if (wallet.status !== 'connected') return null;
     // Lowest address wins, deterministically — see constants.ts / doc comment on WalletService.swift:
     // picking `first` from an unordered list let two devices link two different wallets to the
     // same account, and the server then rejected every transaction as unsigned.
-    return solanaWallet.wallets.reduce<(typeof solanaWallet.wallets)[number] | null>(
+    return wallet.wallets.reduce<(typeof wallet.wallets)[number] | null>(
       (lowest, candidate) =>
         lowest === null || candidate.address < lowest.address ? candidate : lowest,
       null,
     );
-  }, [solanaWallet]);
+  }, []);
+  const primaryWallet = useCallback(
+    () => primaryWalletOf(solanaWallet),
+    [primaryWalletOf, solanaWallet],
+  );
+
+  /**
+   * Right after sign-in Privy is still initialising (`isReady` false, wallet list unresolved), so
+   * the first setup attempt used to fail with `sessionNotReady` and only Retry worked. Wait for it
+   * to settle instead — bounded, and a hard `error` status still fails immediately.
+   */
+  const waitForPrivy = useCallback(async (): Promise<void> => {
+    const deadline = Date.now() + PRIVY_READY_WAIT_MS;
+    for (;;) {
+      const { isReady: ready, solanaWallet: current } = latest.current;
+      const status = current.status;
+      if (status === 'error') return;
+      if (ready && (status === 'connected' || status === 'not-created')) return;
+      if (Date.now() >= deadline) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, PRIVY_READY_POLL_MS));
+    }
+  }, []);
 
   const resolveWallet = useCallback(async (): Promise<string> => {
-    const existing = primaryWallet();
+    await waitForPrivy();
+    // The render this closure captured predates the wait; re-read through the latest state.
+    const current = latest.current.solanaWallet;
+    const existing = primaryWalletOf(current);
     if (existing) return existing.address;
 
-    if (solanaWallet.status !== 'not-created') {
+    if (current.status !== 'not-created') {
       // Privy is still resolving the wallet list (or failed to) — ask again shortly rather than
       // calling `create()` in a status it does not accept from.
       throw WalletError.sessionNotReady();
     }
 
-    let provider: Awaited<ReturnType<typeof solanaWallet.create>>;
+    let provider: Awaited<ReturnType<typeof current.create>>;
     try {
-      provider = await solanaWallet.create();
+      provider = await current.create();
     } catch (error) {
       throw WalletError.creationFailed(describeUnknownError(error));
     }
@@ -71,7 +102,7 @@ export function useVaultWallet(): UseVaultWalletResult {
     // moment: `solanaWallet.wallets` reflects this hook's *own render*, not this `await` — reading
     // through `primaryWallet()` again here would race a re-render that may not have happened yet.
     return provider._publicKey;
-  }, [primaryWallet, solanaWallet]);
+  }, [primaryWalletOf, waitForPrivy]);
 
   const ensureWallet = useCallback((): Promise<string> => {
     if (ensureWalletPromise) return ensureWalletPromise;

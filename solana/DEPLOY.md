@@ -28,12 +28,13 @@ returns it (only possible while you hold the upgrade authority).
 
     SOLANA_CLUSTER=devnet
     SOLANA_RPC_URL=https://api.devnet.solana.com
-    SOLANA_PROGRAM_ID=HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL
 
 Devnet USDC mint: `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`.
 
-The server bundles the IDL (`server/src/solana/idl/oneplan_vault.json`). When cutting over,
-change `SOLANA_PROGRAM_ID` in the VPS `.env` (dev and prod) — nothing else server-side.
+The server has no program-id env var: the program id comes from the bundled IDL
+(`server/src/solana/idl/oneplan_vault.json`). When cutting over to a new program id, regenerate the
+IDL and types (`server/scripts/sync-idl.sh`, after `anchor build` in `solana/`), commit them, and
+redeploy the server (dev and prod). Nothing to change in the VPS `.env`.
 
 ## Verifying
 

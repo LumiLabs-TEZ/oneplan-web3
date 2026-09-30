@@ -1,5 +1,5 @@
 import { useEmbeddedSolanaWallet, usePrivy } from '@privy-io/expo';
-import { renderHook } from '@testing-library/react-native';
+import { act, renderHook, waitFor } from '@testing-library/react-native';
 
 import { WalletError } from './walletError';
 import { _resetEnsureWalletGuardForTests, useVaultWallet } from './useVaultWallet';
@@ -104,17 +104,57 @@ describe('useVaultWallet — ensureWallet', () => {
     await expect(result.current.ensureWallet()).rejects.toMatchObject({ kind: 'creationFailed' });
   });
 
-  it('rejects with sessionNotReady for any non-terminal, non-connected status', async () => {
-    privy();
-    mockedUseEmbeddedSolanaWallet.mockReturnValue({
-      status: 'connecting',
-      create: jest.fn(),
-    } as never);
+  it('rejects with sessionNotReady if Privy never leaves a non-terminal status (after the bounded wait)', async () => {
+    jest.useFakeTimers();
+    try {
+      privy();
+      mockedUseEmbeddedSolanaWallet.mockReturnValue({
+        status: 'connecting',
+        create: jest.fn(),
+      } as never);
 
-    const { result } = await renderHook(() => useVaultWallet());
-    await expect(result.current.ensureWallet()).rejects.toMatchObject({
-      kind: 'sessionNotReady',
-    });
+      const { result } = await renderHook(() => useVaultWallet());
+      const attempt = expect(result.current.ensureWallet()).rejects.toMatchObject({
+        kind: 'sessionNotReady',
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(16_000);
+      });
+      await attempt;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('waits for Privy to finish initialising instead of failing the first attempt', async () => {
+    let ready = false;
+    mockedUsePrivy.mockImplementation(
+      () =>
+        ({
+          user: null,
+          isReady: ready,
+          logout: jest.fn(async () => undefined),
+        }) as never,
+    );
+    const create = jest.fn(async () => ({ _publicKey: 'LATE' }));
+    mockedUseEmbeddedSolanaWallet.mockImplementation(
+      () =>
+        ({
+          status: ready ? 'not-created' : 'connecting',
+          wallets: [],
+          create,
+          getProvider: jest.fn(),
+          recover: jest.fn(),
+        }) as never,
+    );
+
+    const { result, rerender } = await renderHook(() => useVaultWallet());
+    const pending = result.current.ensureWallet();
+    expect(create).not.toHaveBeenCalled();
+    ready = true;
+    await rerender({});
+    await expect(pending).resolves.toBe('LATE');
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
   it('dedupes concurrent ensureWallet callers into one create() call (single-flight)', async () => {
@@ -144,6 +184,7 @@ describe('useVaultWallet — ensureWallet', () => {
     const { result } = await renderHook(() => useVaultWallet());
     const p1 = result.current.ensureWallet();
     const p2 = result.current.ensureWallet();
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     resolveCreate!({ _publicKey: 'SHARED' });
 
     await expect(p1).resolves.toBe('SHARED');

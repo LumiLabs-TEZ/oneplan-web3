@@ -42,9 +42,10 @@ export function isPrivateIp(rawIp: string): boolean {
 }
 
 /**
- * Decides who may CREATE or ENABLE web3 (per request IP, no KYC). It never
- * decides participation: members of an existing web3 trip use its vault
- * whatever IP they are on (see Web3TripGuard).
+ * Decides who gets web3 at all (per request IP, no KYC). A non-eligible IP
+ * sees no web3 anywhere: it cannot create or enable web3, cannot join a web3
+ * trip, and is refused on the vault/wallet/end-trip/leave routes even inside
+ * a web3 trip it already belongs to (see Web3TripGuard); it must use a VPN.
  *
  * Fails closed: unknown country, unparsable IP, or a private IP with no
  * WEB3_DEV_COUNTRY_OVERRIDE all answer "not eligible".

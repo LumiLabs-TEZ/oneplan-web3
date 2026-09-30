@@ -75,26 +75,33 @@ export function PrivyVaultProvider({ children }: PropsWithChildren) {
     return () => setWalletHandle(null);
   }, [isConfigured]);
 
-  if (!isConfigured) return children;
-
+  // `children` stays at a fixed slot: Privy is a SIBLING, not a wrapper. Wrapping children in
+  // `<PrivyProvider>` only once `useWeb3Enabled()` flips true (after `GET /web3/eligibility`)
+  // changed the element type above them and remounted the whole navigator. The bridge is the only
+  // Privy consumer, so it doesn't need the app tree inside the provider.
   return (
-    <PrivyProvider
-      appId={env.privyAppId as string}
-      clientId={env.privyClientId as string}
-      config={{
-        customAuth: {
-          enabled: true,
-          // Privy re-invokes `getCustomAccessToken` itself whenever this flips or the token
-          // needs refreshing — there is no imperative login call to make (unlike the iOS SDK's
-          // `loginWithCustomAccessToken()`). Keep it loading until the app itself is signed in,
-          // so Privy never calls the token endpoint while there is nothing to exchange.
-          isLoading: status !== 'authed',
-          getCustomAccessToken: getWalletToken,
-        },
-      }}
-    >
-      <WalletHandleBridge isConfigured />
+    <>
+      {isConfigured ? (
+        <PrivyProvider
+          appId={env.privyAppId as string}
+          clientId={env.privyClientId as string}
+          config={{
+            customAuth: {
+              enabled: true,
+              // Privy re-invokes `getCustomAccessToken` itself whenever this flips or the token
+              // needs refreshing — there is no imperative login call to make (unlike the iOS
+              // SDK's `loginWithCustomAccessToken()`). Keep it loading until the app itself is
+              // signed in, so Privy never calls the token endpoint while there is nothing to
+              // exchange.
+              isLoading: status !== 'authed',
+              getCustomAccessToken: getWalletToken,
+            },
+          }}
+        >
+          <WalletHandleBridge isConfigured />
+        </PrivyProvider>
+      ) : null}
       {children}
-    </PrivyProvider>
+    </>
   );
 }

@@ -4,9 +4,9 @@
  */
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheetScrollView } from '@gorhom/bottom-sheet';
-import { forwardRef, useImperativeHandle, useRef } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { BackHandler, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { EXPENSE_CATEGORIES, type ExpenseCategory } from '@/features/expense/categories';
 import { useAppLanguage } from '@/i18n';
@@ -36,13 +36,30 @@ export const ExpenseCategoryPickerSheet = forwardRef<
   const { t } = useTranslation();
   const sheetRef = useRef<AppSheetRef>(null);
   useImperativeHandle(ref, () => sheetRef.current as AppSheetRef, []);
+  const [open, setOpen] = useState(false);
+
+  // Android hardware Back closes the picker only. gorhom doesn't intercept it, so it would fall
+  // through to the parent screen's `beforeRemove` ("Discard changes?"). Registered only while open,
+  // so it runs before the navigator's own listener.
+  useEffect(() => {
+    if (!open) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      sheetRef.current?.dismiss();
+      return true;
+    });
+    return () => sub.remove();
+  }, [open]);
 
   return (
     <AppSheet
       ref={sheetRef}
       snapPoints={['85%']}
       preset={nested ? 'nestedList' : undefined}
-      onDismiss={onDismiss}
+      onChange={(index) => setOpen(index >= 0)}
+      onDismiss={() => {
+        setOpen(false);
+        onDismiss?.();
+      }}
     >
       <View style={styles.container}>
         <Text style={styles.title}>{t('Categories')}</Text>

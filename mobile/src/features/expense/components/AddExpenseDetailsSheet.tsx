@@ -130,6 +130,7 @@ export const AddExpenseDetailsSheet = forwardRef<
         ref={picker.ref}
         value={state.category}
         onSelect={(category) => dispatch({ type: 'setCategory', category })}
+        nested
       />
     </AppSheet>
   );
