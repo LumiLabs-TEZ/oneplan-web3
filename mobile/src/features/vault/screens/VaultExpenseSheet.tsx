@@ -8,17 +8,10 @@
  * (`VAULT` = Group, `PERSONAL` = Me) rather than a separate local enum that would just get mapped
  * back at the call site.
  */
+import { BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { components } from '@/api/schema';
 import { categoryOption, type ExpenseCategory } from '@/features/expense/categories';
@@ -50,6 +43,8 @@ export interface VaultExpenseSheetProps {
   currentUser?: UserProfileDto;
   /** USDC in the member's own wallet, shown once "Me" is chosen. `undefined` hides the hint. */
   personalBalanceUsdc?: number;
+  /** `false` greys out "Group" and pays from the member's own wallet. Defaults to `true`. */
+  groupCanCover?: boolean;
   /** Used when the name is left blank. */
   fallbackName?: string;
   /** A payment is in flight: the sheet is the topmost thing on screen, so the progress shows here. */
@@ -65,7 +60,16 @@ export interface VaultExpenseSheetRef {
 
 export const VaultExpenseSheet = forwardRef<VaultExpenseSheetRef, VaultExpenseSheetProps>(
   function VaultExpenseSheet(
-    { members, currentUser, personalBalanceUsdc, fallbackName = '', isWorking = false, onDone, onDismiss },
+    {
+      members,
+      currentUser,
+      personalBalanceUsdc,
+      groupCanCover = true,
+      fallbackName = '',
+      isWorking = false,
+      onDone,
+      onDismiss,
+    },
     ref,
   ) {
     useAppLanguage();
@@ -75,7 +79,10 @@ export const VaultExpenseSheet = forwardRef<VaultExpenseSheetRef, VaultExpenseSh
 
     const [name, setName] = useState('');
     const [category, setCategory] = useState<ExpenseCategory>('COFFEE');
-    const [payer, setPayer] = useState<VaultPayerSource>('VAULT');
+    const [chosenPayer, setPayer] = useState<VaultPayerSource>('VAULT');
+    // Derived, not forced into state: the amount can change between presents, and a group that
+    // can cover the new amount should get the member's earlier choice back.
+    const payer: VaultPayerSource = groupCanCover ? chosenPayer : 'PERSONAL';
     const [isSharedWithAll, setIsSharedWithAll] = useState(true);
     const [shareWithUserIds, setShareWithUserIds] = useState<Set<number>>(new Set());
 
@@ -118,102 +125,116 @@ export const VaultExpenseSheet = forwardRef<VaultExpenseSheetRef, VaultExpenseSh
         <View style={styles.container} testID="vault-expense-sheet">
           <Text style={styles.title}>{t('Add new expenses')}</Text>
 
-          <View style={styles.categoryAndName}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t('Category, {{0}}', { 0: t(categoryOption(category).title) })}
-              onPress={picker.open}
-              testID="vault-expense-category-button"
-              style={styles.categoryButton}
-            >
-              <CategoryIcon category={category} size={36} />
-              <SFSymbol name="chevron.down" fallback="chevron-down" size={11} color={colors.contentM} />
-            </Pressable>
-            <TextInput
-              value={name}
-              onChangeText={setName}
-              placeholder={t('Transaction name')}
-              placeholderTextColor={colors.contentL}
-              style={styles.nameInput}
-              testID="vault-expense-name"
-            />
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>{t('Paid by')}</Text>
-            <View style={styles.chipRow}>
-              <MemberPickerChip
-                label={t('Group')}
-                selected={payer === 'VAULT'}
-                accent="orange"
-                onPress={() => setPayer('VAULT')}
-                testID="vault-expense-payer-group"
-              />
-              <MemberPickerChip
-                avatarUrl={currentUser?.avatarUrl}
-                label={currentUser?.displayName ?? t('Me')}
-                selected={payer === 'PERSONAL'}
-                accent="orange"
-                onPress={() => setPayer('PERSONAL')}
-                testID="vault-expense-payer-me"
+          <View
+            style={[styles.form, isWorking && styles.formLocked]}
+            pointerEvents={isWorking ? 'none' : 'auto'}
+          >
+            <View style={styles.categoryAndName}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('Category, {{0}}', { 0: t(categoryOption(category).title) })}
+                onPress={picker.open}
+                testID="vault-expense-category-button"
+                style={styles.categoryButton}
+              >
+                <CategoryIcon category={category} size={36} />
+                <SFSymbol
+                  name="chevron.down"
+                  fallback="chevron-down"
+                  size={11}
+                  color={colors.contentM}
+                />
+              </Pressable>
+              {/* gorhom's input: `AppSheet`'s keyboardBehavior="interactive" only lifts the sheet
+                above the keyboard for a BottomSheetTextInput — a plain TextInput hid Done. */}
+              <BottomSheetTextInput
+                value={name}
+                onChangeText={setName}
+                placeholder={t('Transaction name')}
+                placeholderTextColor={colors.contentL}
+                style={styles.nameInput}
+                testID="vault-expense-name"
               />
             </View>
-            {payer === 'PERSONAL' && personalBalanceUsdc !== undefined ? (
-              <Text style={styles.walletHint}>
-                {t('My wallet: {{0}}', { 0: `$${personalBalanceUsdc.toFixed(2)}` })}
-              </Text>
-            ) : null}
-          </View>
 
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>{t('Share with')}</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>{t('Paid by')}</Text>
               <View style={styles.chipRow}>
                 <MemberPickerChip
-                  label={t('All')}
-                  selected={isSharedWithAll}
-                  accent="blue"
-                  onPress={() => {
-                    setIsSharedWithAll(true);
-                    setShareWithUserIds(new Set());
-                  }}
-                  testID="vault-expense-share-all"
+                  label={t('Group')}
+                  selected={payer === 'VAULT'}
+                  accent="orange"
+                  onPress={() => setPayer('VAULT')}
+                  disabled={!groupCanCover}
+                  testID="vault-expense-payer-group"
                 />
-                {acceptedMembers.map((member) => (
-                  <MemberPickerChip
-                    key={member.id}
-                    member={member}
-                    selected={!isSharedWithAll && shareWithUserIds.has(member.userId)}
-                    accent="blue"
-                    onPress={() => toggleShare(member.userId)}
-                    testID={`vault-expense-share-${member.userId}`}
-                  />
-                ))}
+                <MemberPickerChip
+                  avatarUrl={currentUser?.avatarUrl}
+                  label={currentUser?.displayName ?? t('Me')}
+                  selected={payer === 'PERSONAL'}
+                  accent="orange"
+                  onPress={() => setPayer('PERSONAL')}
+                  testID="vault-expense-payer-me"
+                />
               </View>
-            </ScrollView>
+              {!groupCanCover ? (
+                <Text style={styles.groupShortNote} testID="vault-expense-group-short">
+                  {t('Group wallet is low on funds')}
+                </Text>
+              ) : null}
+              {payer === 'PERSONAL' && personalBalanceUsdc !== undefined ? (
+                <Text style={styles.walletHint}>
+                  {t('My wallet: {{0}}', { 0: `$${personalBalanceUsdc.toFixed(2)}` })}
+                </Text>
+              ) : null}
+            </View>
+
+            <View style={styles.section}>
+              <Text style={styles.sectionLabel}>{t('Share with')}</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <View style={styles.chipRow}>
+                  <MemberPickerChip
+                    label={t('All')}
+                    selected={isSharedWithAll}
+                    accent="blue"
+                    onPress={() => {
+                      setIsSharedWithAll(true);
+                      setShareWithUserIds(new Set());
+                    }}
+                    testID="vault-expense-share-all"
+                  />
+                  {acceptedMembers.map((member) => (
+                    <MemberPickerChip
+                      key={member.id}
+                      member={member}
+                      selected={!isSharedWithAll && shareWithUserIds.has(member.userId)}
+                      accent="blue"
+                      onPress={() => toggleShare(member.userId)}
+                      testID={`vault-expense-share-${member.userId}`}
+                    />
+                  ))}
+                </View>
+              </ScrollView>
+            </View>
           </View>
 
+          {/* Progress lives in the button (spinner + "Paying…") at full strength; only the form
+              above dims and locks, so the sheet never gets a grey scrim over it. */}
           <Button
-            title={t('Done')}
+            title={isWorking ? t('Paying…') : t('Done')}
+            icon={
+              isWorking ? (
+                <ActivityIndicator color={colors.white} testID="vault-expense-working" />
+              ) : undefined
+            }
             onPress={handleDone}
             disabled={isWorking}
             testID="vault-expense-done"
-            style={styles.done}
+            style={[styles.done, isWorking && styles.doneWorking]}
           />
-
-          {isWorking ? (
-            <View style={styles.working} testID="vault-expense-working">
-              <ActivityIndicator size="large" color={colors.white} />
-              <Text style={styles.workingText}>{t('Paying…')}</Text>
-            </View>
-          ) : null}
         </View>
 
-        <CategoryPickerSheet
-          ref={picker.ref}
-          value={category}
-          onSelect={setCategory}
-        />
+        <CategoryPickerSheet ref={picker.ref} value={category} onSelect={setCategory} />
       </AppSheet>
     );
   },
@@ -251,13 +272,10 @@ const styles = StyleSheet.create({
   sectionLabel: { ...beVietnamPro(14), color: colors.contentM },
   chipRow: { flexDirection: 'row', gap: 14, paddingVertical: 4 },
   walletHint: { ...beVietnamPro(13), color: colors.contentM },
+  groupShortNote: { ...beVietnamPro(13), color: colors.secondary },
+  form: { gap: spacing.lg },
+  formLocked: { opacity: 0.4 },
   done: { backgroundColor: colors.blueBase },
-  working: {
-    ...StyleSheet.absoluteFill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.35)',
-  },
-  workingText: { ...beVietnamPro(15), color: colors.white },
+  // Button dims itself when disabled; while paying it is the progress indicator, so keep it solid.
+  doneWorking: { opacity: 1 },
 });

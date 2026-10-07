@@ -52,6 +52,10 @@ export default function TripDetailLayout() {
             options={{ presentation: 'fullScreenModal', gestureEnabled: false }}
           />
           <Stack.Screen name="vault/deposit-result" options={{ presentation: 'fullScreenModal' }} />
+          <Stack.Screen
+            name="vault/transaction/[transactionId]"
+            options={{ presentation: 'fullScreenModal' }}
+          />
         </Stack.Protected>
       </Stack>
     </TripDetailProvider>

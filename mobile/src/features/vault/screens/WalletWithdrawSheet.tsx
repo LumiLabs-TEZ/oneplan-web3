@@ -5,36 +5,31 @@
  * rather than navigating.
  */
 import { Ionicons } from '@expo/vector-icons';
+import { BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import * as Clipboard from 'expo-clipboard';
-import { useEffect, useState } from 'react';
+import { useEffect, useReducer, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { mutationErrorMessage } from '@/api/mutationError';
+import { initialKeypadState, keypadReducer } from '@/features/expense/keypad/keypadReducer';
 import { useAppLanguage } from '@/i18n';
+import { CURRENCIES } from '@/lib/currency';
+import { AmountKeypad } from '@/ui/components/AmountKeypad';
 import { colors } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
 import { useWallet } from '../api/queries';
 import { useInspectWithdrawRecipient } from '../api/walletWithdraw';
-import { AmountKeypad } from '../components/AmountKeypad';
 import { microUSDC } from '../depositMath';
 import { shortenAddress } from '../shortenAddress';
-import { useAmountDigits } from '../components/useAmountDigits';
 import { useWithdrawFromWallet } from '../signing/withdrawFlow';
 import type { WalletWithdrawResult } from './WalletWithdrawResultScreen';
-import { WalletWithdrawResultScreen } from './WalletWithdrawResultScreen';
+import { walletErrorMessage } from './walletErrorMessage';
 
 export interface WalletWithdrawSheetProps {
-  onFinished: () => void;
+  /** Called once the withdraw is sent; the host shows the result (a full-screen route). */
+  onSubmitted: (result: WalletWithdrawResult) => void;
   /** Prefill from settlement Send (creditor wallet + cash-debt amount) — Wave D. */
   prefilledAddress?: string;
   prefilledAmountMicro?: bigint;
@@ -45,7 +40,7 @@ function trimmedAmount(usdc: number): string {
 }
 
 export function WalletWithdrawSheet({
-  onFinished,
+  onSubmitted,
   prefilledAddress = '',
   prefilledAmountMicro,
 }: WalletWithdrawSheetProps) {
@@ -55,28 +50,29 @@ export function WalletWithdrawSheet({
   const [address, setAddress] = useState(prefilledAddress);
   const [isEditingAddress, setIsEditingAddress] = useState(false);
   const [addressDraft, setAddressDraft] = useState(prefilledAddress);
-  const digits = useAmountDigits(
-    true,
-    prefilledAmountMicro && prefilledAmountMicro > 0n
-      ? trimmedAmount(Number(prefilledAmountMicro) / 1_000_000)
-      : '',
+  // Same keypad (and input rules) as add-expense / add-budget / Contribute; USD caps at 2 decimals.
+  const [keypad, dispatch] = useReducer(keypadReducer, prefilledAmountMicro, (prefill) =>
+    initialKeypadState(
+      CURRENCIES.USD,
+      prefill && prefill > 0n ? trimmedAmount(Number(prefill) / 1_000_000) : '',
+    ),
   );
+  const digits = keypad.raw;
   const [recipientIsNew, setRecipientIsNew] = useState(false);
   const [addressError, setAddressError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [result, setResult] = useState<WalletWithdrawResult | null>(null);
 
   const walletQuery = useWallet();
   const inspectRecipient = useInspectWithdrawRecipient();
   const withdraw = useWithdrawFromWallet();
 
   const balanceMicro = walletQuery.data ? BigInt(walletQuery.data.balanceMicro) : 0n;
-  const amountMicro = microUSDC(digits.digits);
+  const amountMicro = microUSDC(digits);
   const hasAddress = address.trim() !== '';
   const overCapacity = amountMicro > balanceMicro;
   const canSend =
     hasAddress && addressError === null && amountMicro > 0n && !overCapacity && !withdraw.isPending;
-  const displayAmount = digits.digits === '' ? '$0' : `$${digits.digits}`;
+  const displayAmount = digits === '' ? '$0' : `$${digits}`;
 
   useEffect(() => {
     if (hasAddress) void checkAddress(address);
@@ -118,7 +114,7 @@ export function WalletWithdrawSheet({
     setErrorMessage(null);
     try {
       const outcome = await withdraw.mutateAsync({ address, amountMicro });
-      setResult({
+      onSubmitted({
         status: outcome.status === 'CONFIRMED' ? 'completed' : 'processing',
         amountMicro,
         recipient: address,
@@ -126,24 +122,14 @@ export function WalletWithdrawSheet({
         date: new Date(),
       });
     } catch (err) {
-      setErrorMessage(mutationErrorMessage(err, t('Withdrawal failed')));
+      setErrorMessage(
+        walletErrorMessage(t, err) ?? mutationErrorMessage(err, t('Withdrawal failed')),
+      );
     }
-  }
-
-  if (result) {
-    return (
-      <WalletWithdrawResultScreen
-        result={result}
-        onDone={onFinished}
-        onSendAgain={() => setResult(null)}
-      />
-    );
   }
 
   return (
     <View style={styles.container}>
-      <View style={styles.handle} />
-
       <View style={styles.header}>
         <Text style={styles.headerLine}>
           <Text style={styles.headerLineNormal}>{t('Withdraw from ')}</Text>
@@ -152,23 +138,23 @@ export function WalletWithdrawSheet({
         <Text style={styles.headerSubtitle}>{t('Withdrawing to your personal Solana wallet')}</Text>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.amountBlock}>
-          <Text style={styles.amountCaption}>{t('Withdraw amount')}</Text>
-          <Text
-            style={[
-              styles.amount,
-              overCapacity ? styles.amountOver : digits.digits === '' ? styles.amountEmpty : null,
-            ]}
-            numberOfLines={1}
-          >
-            {displayAmount}
-          </Text>
-        </View>
+      <View style={styles.amountBlock}>
+        <Text
+          style={[
+            styles.amount,
+            overCapacity ? styles.amountOver : digits === '' ? styles.amountEmpty : null,
+          ]}
+          numberOfLines={1}
+        >
+          {displayAmount}
+        </Text>
+      </View>
 
+      <View style={styles.footer}>
         {isEditingAddress ? (
           <View style={styles.addressEditor}>
-            <TextInput
+            {/* gorhom only lifts the sheet for its own input (it registers the focus target). */}
+            <BottomSheetTextInput
               value={addressDraft}
               onChangeText={setAddressDraft}
               placeholder={t('Wallet address')}
@@ -219,7 +205,7 @@ export function WalletWithdrawSheet({
           </Text>
         ) : null}
 
-        <AmountKeypad allowsDecimal onAppend={digits.append} onDelete={digits.delete} />
+        <AmountKeypad state={keypad} dispatch={dispatch} />
 
         {overCapacity ? (
           <Text style={styles.overCapacityText}>{t('Insufficient balance')}</Text>
@@ -240,22 +226,16 @@ export function WalletWithdrawSheet({
         </Pressable>
 
         <Text style={styles.feeNote}>{t('Network fees are covered by One Plan.')}</Text>
-      </ScrollView>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.white, paddingHorizontal: 16 },
-  handle: {
-    alignSelf: 'center',
-    width: 35,
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: 'rgba(60,60,67,0.3)',
-    marginTop: 12,
-  },
-  header: { alignItems: 'center', gap: 3, paddingTop: 16 },
+  // Sized to its content: the host's sheet uses dynamic sizing (same as Contribute). No
+  // background — the sheet's rounded one shows; a fill here pokes square corners past it.
+  container: { paddingHorizontal: 16 },
+  header: { alignItems: 'center', gap: 3, marginTop: 12 },
   headerLine: { ...beVietnamPro(20), letterSpacing: -0.8, textAlign: 'center' },
   headerLineNormal: { color: colors.neutral950 },
   headerLineAccent: { color: colors.blueBase, fontStyle: 'italic' },
@@ -265,9 +245,8 @@ const styles = StyleSheet.create({
     color: colors.contentM,
     textAlign: 'center',
   },
-  scrollContent: { paddingBottom: 32, gap: 12 },
-  amountBlock: { alignItems: 'center', gap: 12, paddingVertical: 16 },
-  amountCaption: { ...beVietnamPro(14), letterSpacing: -0.7, color: colors.neutral950 },
+  amountBlock: { alignItems: 'center', justifyContent: 'center', paddingVertical: 24 },
+  footer: { gap: 16, paddingTop: 8, paddingBottom: 32 },
   amount: { ...beVietnamPro(48), letterSpacing: -2.4, color: colors.neutral950 },
   amountEmpty: { color: 'rgba(54, 54, 54, 0.2)' },
   amountOver: { color: colors.secondary },

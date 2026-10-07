@@ -4,11 +4,12 @@
  *
  * Presentational (like `TripVaultCard`): the caller passes the `VaultLeaveRequestDto` to confirm
  * and owns the `confirmVaultLeave` mutation, so this component has no network dependency of its
- * own and is easy to drive from a fixture in `(dev)/vault-leave`.
+ * own and is easy to drive from a test fixture.
  */
+import { BottomSheetView } from '@gorhom/bottom-sheet';
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 
 import type { components } from '@/api/schema';
 import { useAppLanguage } from '@/i18n';
@@ -20,7 +21,6 @@ import { beVietnamPro } from '@/ui/typography';
 
 import {
   hostLeaveDisplay,
-  hostLeaveSheetHeight,
   type HostLeavePhase,
   microToUsdc,
   shortenAddress,
@@ -73,8 +73,10 @@ export const VaultLeaveHostSheet = forwardRef<VaultLeaveHostSheetRef, VaultLeave
 
     if (!request) {
       return (
-        <AppSheet ref={sheetRef} snapPoints={[420]} onDismiss={onDismiss}>
-          <View />
+        <AppSheet ref={sheetRef} enableDynamicSizing onDismiss={onDismiss}>
+          <BottomSheetView>
+            <View />
+          </BottomSheetView>
         </AppSheet>
       );
     }
@@ -105,22 +107,9 @@ export const VaultLeaveHostSheet = forwardRef<VaultLeaveHostSheetRef, VaultLeave
     };
 
     return (
-      <AppSheet
-        ref={sheetRef}
-        snapPoints={[hostLeaveSheetHeight(display.isPayout)]}
-        onDismiss={onDismiss}
-      >
-        <View style={styles.container} testID="vault-leave-host-sheet">
-          <Pressable
-            onPress={() => sheetRef.current?.dismiss()}
-            accessibilityRole="button"
-            accessibilityLabel={t('Back')}
-            hitSlop={12}
-            style={styles.backButton}
-          >
-            <svg.vault.leaveBackArrow width={28} height={28} style={styles.backIcon} />
-          </Pressable>
-
+      // Content-sized (dismiss by swiping down — no back button).
+      <AppSheet ref={sheetRef} enableDynamicSizing onDismiss={onDismiss}>
+        <BottomSheetView style={styles.container} testID="vault-leave-host-sheet">
           <View style={styles.body}>
             <Text style={styles.title}>{titleText}</Text>
             <BodyCopy phase={phase} isPayout={display.isPayout} displayName={request.displayName} />
@@ -159,7 +148,7 @@ export const VaultLeaveHostSheet = forwardRef<VaultLeaveHostSheetRef, VaultLeave
               <Button title={ctaTitle} variant="dark" onPress={() => void handleCta()} testID="vault-leave-host-cta" />
             )}
           </View>
-        </View>
+        </BottomSheetView>
       </AppSheet>
     );
   },
@@ -217,16 +206,7 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingTop: spacing.md, paddingBottom: spacing.xl, gap: spacing.md },
-  backButton: {
-    alignSelf: 'flex-start',
-    marginLeft: spacing.lg,
-    width: 28,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  backIcon: { width: 28, height: 28, transform: [{ rotate: '90deg' }] },
+  container: { paddingTop: spacing.md, paddingBottom: spacing.xl, gap: spacing.md },
   body: { alignItems: 'center', gap: 16, paddingHorizontal: spacing.lg },
   title: { ...beVietnamPro(16, 'medium'), color: colors.contentB, textAlign: 'center' },
   bodyCopy: { ...beVietnamPro(14), color: colors.contentM, textAlign: 'center' },
@@ -263,5 +243,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   statusPillText: { ...beVietnamPro(14), color: colors.neutral700 },
-  ctaRow: { marginHorizontal: spacing.lg, marginTop: 'auto' },
+  ctaRow: { marginHorizontal: spacing.lg, marginTop: spacing.sm },
 });

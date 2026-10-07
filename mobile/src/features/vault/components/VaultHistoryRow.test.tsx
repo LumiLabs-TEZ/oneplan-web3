@@ -101,6 +101,28 @@ describe('VaultHistoryRow', () => {
     expect(screen.queryByText('08:18')).toBeNull();
   });
 
+  it('draws the VND face value before the time under a USDC spend', async () => {
+    const screen = await render(
+      <VaultHistoryRow entry={entry({ amount: -0.38, currency: 'USD', secondaryVnd: 10_000 })} />,
+    );
+    expect(screen.getByText('-$0.38')).toBeTruthy();
+    expect(screen.getByText('10,000đ · 08:18')).toBeTruthy();
+  });
+
+  it('keeps the VND face value next to "Needs approval"', async () => {
+    const screen = await render(
+      <VaultHistoryRow
+        entry={entry({
+          amount: -0.38,
+          currency: 'USD',
+          secondaryVnd: 10_000,
+          isAwaitingApproval: true,
+        })}
+      />,
+    );
+    expect(screen.getByText('10,000đ · Needs approval')).toBeTruthy();
+  });
+
   it('calls onPress only for tappable rows and is disabled without one', async () => {
     const onPress = jest.fn();
     const screen = await render(<VaultHistoryRow entry={entry()} onPress={onPress} testID="row" />);

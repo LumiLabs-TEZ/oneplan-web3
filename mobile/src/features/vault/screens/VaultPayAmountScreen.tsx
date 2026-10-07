@@ -11,15 +11,19 @@
  * payer who they are paying, so it starts as `…` rather than blocking the screen (Swift doc
  * comment, same rationale).
  */
-import { useEffect } from 'react';
+import { useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AmountKeypad, useAmountDigits, VaultHeaderChip } from '@/features/vault/components';
 import { useAppLanguage } from '@/i18n';
-import { SFSymbol } from '@/ui/components';
-import { applyLiveFormatting, formatWhole } from '@/lib/currency';
-import { colors } from '@/ui/theme';
+import { AmountKeypad, BackPillButton, GlassSurface } from '@/ui/components';
+import {
+  initialKeypadState,
+  keypadReducer,
+} from '@/features/expense/keypad/keypadReducer';
+import { applyLiveFormatting, CURRENCIES, formatWhole } from '@/lib/currency';
+import { colors, spacing } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
 const vietnamFlag = require('@/assets/images/vault/flagVietnam.png') as number;
@@ -27,14 +31,12 @@ const vietnamFlag = require('@/assets/images/vault/flagVietnam.png') as number;
 export interface VaultPayAmountScreenProps {
   /** `'…'` while `lookupVaultRecipient` is still in flight — never blocks the screen. */
   recipientName: string;
-  /** The group's money, shown in the header "Balance" chip. */
-  balanceVnd: number;
   /**
-   * What the keypad refuses to go above. Defaults to `balanceVnd`, but a member may go on to pay
-   * from their own (larger) wallet — the cap is then the larger of the two; the server has the
-   * final word.
+   * The group's money, shown in the header "Balance" chip. An amount above it is only tinted, never
+   * blocked: the payer is chosen on the next step, where the group is greyed out if it can't cover
+   * the amount.
    */
-  capVnd?: number;
+  balanceVnd: number;
   /** Amount already carried by the QR code, if any. */
   prefilledAmountVnd?: bigint | null;
   /** VND per USDC, for the indicative line only. */
@@ -47,7 +49,6 @@ export interface VaultPayAmountScreenProps {
 export function VaultPayAmountScreen({
   recipientName,
   balanceVnd,
-  capVnd,
   prefilledAmountVnd,
   indicativeRate,
   onBack,
@@ -55,54 +56,36 @@ export function VaultPayAmountScreen({
 }: VaultPayAmountScreenProps) {
   useAppLanguage();
   const { t } = useTranslation();
-  const { digits, append, delete: del, setDigits } = useAmountDigits(false);
-
-  useEffect(() => {
-    if (prefilledAmountVnd != null && digits === '') setDigits(prefilledAmountVnd.toString());
-    // Only ever applies once, on mount — matches Swift's `.onAppear` guard `digits.isEmpty`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // Shown inside the pay flow's full-screen modal, so the header clears the status bar itself.
+  const insets = useSafeAreaInsets();
+  // Same keypad (and input rules) as add-expense / add-budget. VND has no decimals, so the dot
+  // key is disabled. A prefill only applies on mount, as Swift's `.onAppear` did.
+  const [keypad, dispatch] = useReducer(keypadReducer, prefilledAmountVnd, (prefill) =>
+    initialKeypadState(CURRENCIES.VND, prefill != null ? prefill.toString() : ''),
+  );
+  const digits = keypad.raw;
+  // A code that carries an amount is a bill: the server always charges that amount (VietQR
+  // semantics), so letting the payer type another one only ends in a failed quote.
+  const amountLocked = prefilledAmountVnd != null;
 
   const amountVnd = digits === '' ? 0 : Number(digits);
   const formattedAmount = digits === '' ? '0' : applyLiveFormatting(digits, 0);
   const usdcText = indicativeRate > 0 ? `$${(amountVnd / indicativeRate).toFixed(2)}` : '';
-  const cap = capVnd ?? balanceVnd;
-  const overBalance = amountVnd > 0 && amountVnd > cap;
-  const canContinue = amountVnd > 0 && !overBalance;
+  const overBalance = amountVnd > balanceVnd;
+  const canContinue = amountVnd > 0;
 
   return (
     <View style={styles.root} testID="vault-pay-amount-screen">
-      <View style={styles.header}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t('Back')}
-          onPress={onBack}
-          testID="vault-pay-amount-back-icon"
-        >
-          <VaultHeaderChip>
-            <View style={styles.backIcon}>
-              <SFSymbol name="arrow.left" fallback="arrow-back" size={14} color={colors.neutral900} />
-            </View>
-          </VaultHeaderChip>
-        </Pressable>
-        <Pressable
-          accessibilityRole="button"
-          onPress={onBack}
-          testID="vault-pay-amount-back-label"
-        >
-          <VaultHeaderChip>
-            <Text style={styles.backLabel}>{t('Back')}</Text>
-          </VaultHeaderChip>
-        </Pressable>
-
-        <View style={styles.spacer} />
-
-        <VaultHeaderChip cornerRadius={17}>
-          <View style={styles.balanceRow}>
-            <Text style={styles.balanceLabel}>{t('Balance')}</Text>
-            <Text style={styles.balanceValue}>{`đ${formatWhole(balanceVnd)}`}</Text>
-          </View>
-        </VaultHeaderChip>
+      <View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+        {/* Same header as the web2 keypad screens (add expense / add budget). */}
+        <BackPillButton onPress={onBack} testID="vault-pay-amount-back" />
+        <View style={styles.balanceShadow}>
+          <GlassSurface preset="control" radius={999} style={styles.balancePill}>
+            <Text style={styles.balanceText}>
+              {`${t('Balance')} đ${formatWhole(balanceVnd)}`}
+            </Text>
+          </GlassSurface>
+        </View>
       </View>
 
       <View style={styles.amountBlock} pointerEvents="none">
@@ -129,11 +112,13 @@ export function VaultPayAmountScreen({
         </View>
 
         <View style={styles.keypadCard}>
-          <AmountKeypad allowsDecimal={false} onAppend={append} onDelete={del} />
-
-          {overBalance ? (
-            <Text style={styles.insufficientText}>{t('Insufficient balance')}</Text>
-          ) : null}
+          {amountLocked ? (
+            <Text style={styles.lockedNote} testID="vault-pay-amount-locked">
+              {t('This QR code sets the amount.')}
+            </Text>
+          ) : (
+            <AmountKeypad state={keypad} dispatch={dispatch} />
+          )}
 
           <Pressable
             accessibilityRole="button"
@@ -156,24 +141,12 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 16,
-    paddingTop: 4,
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
   },
-  backIcon: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  backLabel: {
-    ...beVietnamPro(15),
-    letterSpacing: -0.3,
-    color: colors.neutral900,
-    width: 61,
-    height: 34,
-    textAlign: 'center',
-    textAlignVertical: 'center',
-  },
-  spacer: { flex: 1 },
-  balanceRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 34 },
-  balanceLabel: { ...beVietnamPro(15), letterSpacing: -0.3, color: colors.neutral900 },
-  balanceValue: { ...beVietnamPro(15), letterSpacing: -0.6, color: colors.neutral900 },
+  balanceShadow: { borderRadius: 999, boxShadow: '0px 2px 8px rgba(0, 0, 0, 0.12)' },
+  balancePill: { paddingHorizontal: 12, paddingVertical: 8 },
+  balanceText: { ...beVietnamPro(15, 'regular'), letterSpacing: -0.3, color: colors.neutral900 },
   amountBlock: {
     flex: 1,
     alignItems: 'center',
@@ -210,7 +183,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.09,
     shadowRadius: 4.5,
   },
-  insufficientText: { ...beVietnamPro(13), color: colors.secondary, textAlign: 'center' },
+  lockedNote: {
+    ...beVietnamPro(14),
+    color: colors.neutral600,
+    textAlign: 'center',
+    paddingVertical: 16,
+  },
   nextButton: {
     marginHorizontal: 16,
     minHeight: 52,

@@ -64,6 +64,6 @@ describe('ContributeToVaultSheet', () => {
     );
     expect(screen.getByText('$2.50')).toBeTruthy();
     expect(screen.getByText('Amount is fixed to clear your leave balance.')).toBeTruthy();
-    expect(screen.queryByTestId('vault-amount-keypad')).toBeNull();
+    expect(screen.queryByTestId('amount-keypad')).toBeNull();
   });
 });

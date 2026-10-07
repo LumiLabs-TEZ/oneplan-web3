@@ -119,10 +119,14 @@ const REQUEST: PayRequest = {
 
 function stubWallet(publicKey = SIGNER) {
   const sign = jest.fn(async (base64Tx: string) => `signed:${base64Tx}`);
+  const ensureWallet = jest.fn(async () => publicKey);
   setWalletHandle({
+    kind: 'privy',
     isConfigured: true,
     isReady: true,
-    ensureWallet: jest.fn(async () => publicKey),
+    connectedAddress: null,
+    ensureWallet,
+    connect: ensureWallet,
     sign,
     reset: jest.fn(async () => undefined),
   });

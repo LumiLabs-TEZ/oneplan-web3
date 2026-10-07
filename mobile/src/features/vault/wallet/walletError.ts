@@ -13,7 +13,11 @@ export type WalletErrorKind =
   | 'sessionFailed'
   | 'creationFailed'
   | 'malformedTransaction'
-  | 'signingFailed';
+  | 'signingFailed'
+  | 'cancelled'
+  | 'walletNotInstalled'
+  | 'walletTimedOut'
+  | 'network';
 
 export class WalletError extends Error {
   readonly kind: WalletErrorKind;
@@ -51,12 +55,28 @@ export class WalletError extends Error {
     return new WalletError('malformedTransaction');
   }
   /**
-   * Any signing failure: SDK error, user declined, or a client-side timeout waiting for the
-   * signing UI to resolve. Swift lumps all three into `signingFailed(reason)` too — there is no
-   * separate "user rejected" case on either platform.
+   * Any signing failure: SDK error, or a client-side timeout waiting for the signing UI to
+   * resolve. On the Privy path (and in Swift) a user decline also lands here; the Android MWA
+   * path reports a decline as `cancelled()` instead.
    */
   static signingFailed(reason: string): WalletError {
     return new WalletError('signingFailed', reason);
+  }
+  /** The member dismissed the wallet's prompt. Screens treat this as a no-op, not a failure. */
+  static cancelled(): WalletError {
+    return new WalletError('cancelled');
+  }
+  /** Android only: no MWA-compatible wallet app (Phantom, Solflare, Seed Vault…) is installed. */
+  static walletNotInstalled(): WalletError {
+    return new WalletError('walletNotInstalled');
+  }
+  /** Android only: the wallet session timed out (wallet silent, or Android froze OnePlan meanwhile). */
+  static walletTimedOut(): WalletError {
+    return new WalletError('walletTimedOut');
+  }
+  /** The wallet answered, but OnePlan's own request (SIWS challenge/link) never reached the server. */
+  static network(): WalletError {
+    return new WalletError('network');
   }
 }
 
@@ -77,6 +97,14 @@ export function walletErrorMessageKey(error: WalletError): string {
       return 'The server returned a transaction this app cannot read.';
     case 'signingFailed':
       return 'Could not sign: %@';
+    case 'cancelled':
+      return 'Cancelled in your wallet.';
+    case 'walletNotInstalled':
+      return 'Install a Solana wallet app to continue.';
+    case 'walletTimedOut':
+      return 'Your wallet took too long to respond. Go back to OnePlan and try again.';
+    case 'network':
+      return 'Please check your connection and try again.';
   }
 }
 

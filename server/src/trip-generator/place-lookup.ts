@@ -650,7 +650,7 @@ export async function bingImageUrls(query: string): Promise<ImageResult[]> {
 // the relevance gate needs. Weak on hawker dishes, strong on venues and
 // landmarks. Commons asks for an identifying User-Agent.
 const WIKIMEDIA_UA =
-  'OnePlanTripGenerator/1.0 (https://oneplan.space)';
+  'OnePlanTripGenerator/1.0 (https://oneplan.space; dev@lumilabs.space)';
 const WIKIMEDIA_THUMB_WIDTH = 1600;
 
 interface CommonsPage {

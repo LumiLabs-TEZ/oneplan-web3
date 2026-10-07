@@ -1,0 +1,20 @@
+# Open the "Web3 E2E" trip from wherever the app is (Home card) unless it is already showing.
+appId: local.lumilabs.oneplan
+---
+- runFlow:
+    when:
+      notVisible:
+        id: "trip-vault-card-scan-qr"
+    commands:
+      - runFlow:
+          when:
+            notVisible: "Web3 E2E"
+          commands:
+            - runFlow: launch.yaml
+      - tapOn: "Web3 E2E"
+      - extendedWaitUntil:
+          visible:
+            id: "trip-vault-card-scan-qr"
+          timeout: 20000
+      - waitForAnimationToEnd:
+          timeout: 2000

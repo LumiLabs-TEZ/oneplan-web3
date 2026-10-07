@@ -1,0 +1,26 @@
+# B (spike): the end request opens Review on its own (realtime) → Deny → Denied screen. A's
+# Waiting screen moves to Denied by itself at the same moment.
+appId: local.lumilabs.oneplan
+---
+- extendedWaitUntil:
+    visible:
+      id: "trip-end-review-deny"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 3000
+- tapOn:
+    id: "trip-end-review-deny"
+- extendedWaitUntil:
+    visible:
+      id: "trip-end-denied-screen"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 4000
+- tapOn:
+    id: "trip-end-denied-go-back"
+- extendedWaitUntil:
+    visible:
+      id: "trip-vault-card-scan-qr"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 2000

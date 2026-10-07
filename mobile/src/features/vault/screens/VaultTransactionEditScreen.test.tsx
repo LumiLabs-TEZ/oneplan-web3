@@ -50,7 +50,6 @@ describe('VaultTransactionEditScreen', () => {
         initialName="Cafe"
         initialCategory="COFFEE"
         initialShareWithUserIds={[]}
-        onBack={jest.fn()}
         onSaved={onSaved}
       />,
     );
@@ -79,7 +78,6 @@ describe('VaultTransactionEditScreen', () => {
         initialName="Cafe"
         initialCategory="COFFEE"
         initialShareWithUserIds={[]}
-        onBack={jest.fn()}
         onSaved={jest.fn()}
       />,
     );
@@ -108,7 +106,6 @@ describe('VaultTransactionEditScreen', () => {
         initialName="Cafe"
         initialCategory="COFFEE"
         initialShareWithUserIds={[]}
-        onBack={jest.fn()}
         onSaved={jest.fn()}
       />,
     );

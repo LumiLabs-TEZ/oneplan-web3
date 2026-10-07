@@ -16,13 +16,16 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
 
 import { mutationErrorMessage } from '@/api/mutationError';
+import { keys } from '@/api/keys';
 import { useFriends } from '@/features/friends/api/queries';
+import { isWeb3UnavailableError } from '@/features/invite/helpers/joinConflict';
 import { inviteMembers } from '@/features/trip/api/inviteMembers';
 import { invalidateTrip, useCreateTrip } from '@/features/trip/api/mutations';
 import { useTrips } from '@/features/trip/api/queries';
@@ -38,6 +41,7 @@ import { formatMonthDay } from '@/features/trip/helpers/dateRange';
 import { partitionTrips } from '@/features/trip/helpers/partitionTrips';
 import { locationSelectionText } from '@/features/location/helpers/locationLabel';
 import { useIsPro } from '@/features/me/useMe';
+import { useWeb3Enabled } from '@/features/vault/web3Flag';
 import { useAppLanguage } from '@/i18n';
 import { pickImage } from '@/native/imagePick';
 import { requireOnline } from '@/offline/guardOnline';
@@ -55,6 +59,9 @@ export default function NewTripScreen() {
   const language = useAppLanguage();
   const { t } = useTranslation();
   const isPro = useIsPro();
+  // Account-level eligibility (non-VN IP or admin allowlist, server kill switch on) — the group
+  // wallet switch is only offered to eligible users.
+  const web3Enabled = useWeb3Enabled();
   const trips = useTrips();
   const createTrip = useCreateTrip();
   const friends = useFriends();
@@ -72,6 +79,8 @@ export default function NewTripScreen() {
   const setName = useCreateTripStore((s) => s.setName);
   const setRange = useCreateTripStore((s) => s.setRange);
   const setCoverUri = useCreateTripStore((s) => s.setCoverUri);
+  const web3 = useCreateTripStore((s) => s.web3);
+  const setWeb3 = useCreateTripStore((s) => s.setWeb3);
 
   // Discard the draft whenever this screen goes away — dismiss button, swipe-down, hardware
   // back, or (harmlessly, since it's already reset) the success path's `router.replace`. The
@@ -82,7 +91,14 @@ export default function NewTripScreen() {
     return () => createTripStore.reset();
   }, []);
 
-  const body = buildCreateTripBody({ name, location, range, hasSelectedDuration });
+  // Never ask for a group wallet if eligibility turned off after the switch was flipped.
+  const body = buildCreateTripBody({
+    name,
+    location,
+    range,
+    hasSelectedDuration,
+    web3: web3Enabled && web3,
+  });
   const friendRows = friends.data ?? [];
   const createDisabled = submitting || !body;
 
@@ -164,6 +180,13 @@ export default function NewTripScreen() {
         openTrip();
       }
     } catch (err) {
+      if (isWeb3UnavailableError(err)) {
+        // Server says not eligible (e.g. network changed): drop the switch and let them retry.
+        setWeb3(false);
+        void queryClient.invalidateQueries({ queryKey: keys.web3Eligibility });
+        setError(t('Group wallet is not available in your region. Create the trip without it.'));
+        return;
+      }
       setError(mutationErrorMessage(err, t('Failed to create trip')));
     } finally {
       setSubmitting(false);
@@ -245,6 +268,31 @@ export default function NewTripScreen() {
           {durationText ? <Text style={styles.rowValue}>{durationText}</Text> : null}
           <Ionicons name="chevron-forward" size={14} color={colors.contentM} />
         </Pressable>
+
+        {web3Enabled ? (
+          <View style={styles.row} testID="group-wallet-row">
+            <SFSymbol
+              name="wallet.bifold"
+              fallback="wallet-outline"
+              size={16}
+              frame={20}
+              color={colors.blueBase}
+            />
+            <View style={styles.walletText}>
+              <Text style={styles.rowText}>{t('Group wallet')}</Text>
+              <Text style={styles.rowSubtitle}>
+                {t('Pool money in USDC and approve spending together')}
+              </Text>
+            </View>
+            <Switch
+              value={web3}
+              onValueChange={setWeb3}
+              trackColor={{ true: colors.blueBase }}
+              accessibilityLabel={t('Group wallet')}
+              testID="group-wallet-toggle"
+            />
+          </View>
+        ) : null}
 
         <View style={styles.friendsCard}>
           {friendRows.length === 0 ? (
@@ -337,6 +385,8 @@ const styles = StyleSheet.create({
   locationText: { ...beVietnamPro(14), flexShrink: 1 },
   rowText: { ...beVietnamPro(15), color: colors.contentB, flexShrink: 1 },
   rowSpacer: { flex: 1 },
+  walletText: { flex: 1, gap: 2 },
+  rowSubtitle: { ...beVietnamPro(13), color: colors.contentM },
   rowValue: { ...beVietnamPro(16), color: colors.contentB },
   friendsCard: {
     paddingVertical: spacing.lg,

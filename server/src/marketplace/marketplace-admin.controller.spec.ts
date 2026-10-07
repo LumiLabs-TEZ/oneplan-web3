@@ -90,19 +90,19 @@ describe('AdminGuard', () => {
   }
 
   it('allows admins (case-insensitive)', () => {
-    const guard = buildGuard(['dev@example.com']);
+    const guard = buildGuard(['dev@lumilabs.space']);
     expect(guard.canActivate(buildContext('Dev@LumiLabs.Space'))).toBe(true);
   });
 
   it('rejects non-admins with ForbiddenException', () => {
-    const guard = buildGuard(['dev@example.com']);
+    const guard = buildGuard(['dev@lumilabs.space']);
     expect(() => guard.canActivate(buildContext('user@example.com'))).toThrow(
       ForbiddenException,
     );
   });
 
   it('rejects unauthenticated requests with UnauthorizedException', () => {
-    const guard = buildGuard(['dev@example.com']);
+    const guard = buildGuard(['dev@lumilabs.space']);
     expect(() => guard.canActivate(buildContext(undefined))).toThrow();
   });
 });

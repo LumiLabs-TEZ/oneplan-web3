@@ -126,6 +126,18 @@ describe('buildCreateTripBody', () => {
     expect(reversed?.endDate).toBe('2026-01-20');
   });
 
+  it('sends web3: true only when the group wallet is on', () => {
+    const draft = {
+      name: 'Trip',
+      location: cityResult,
+      range: baseRange,
+      hasSelectedDuration: false,
+    };
+    expect(buildCreateTripBody({ ...draft, web3: true })?.web3).toBe(true);
+    expect(buildCreateTripBody({ ...draft, web3: false })).not.toHaveProperty('web3');
+    expect(buildCreateTripBody(draft)).not.toHaveProperty('web3');
+  });
+
   it('uses ids from toTripLocationIds, omitting cityId for a state-only result', () => {
     const body = buildCreateTripBody({
       name: 'Bali Trip',

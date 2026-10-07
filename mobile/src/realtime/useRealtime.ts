@@ -55,9 +55,7 @@ export function applyRealtimeEvent(event: RealtimeEvent): void {
   if (!effect) return;
   if (effect.type === 'inviteReceived') emitInviteReceived(effect.invite);
   else if (effect.type === 'friendRequestReceived') liveRequests.add(effect.requestId);
-  else if (effect.type === 'tripMemberRemoved')
-    realtimeStore.pushEffect({ type: 'tripMemberRemoved', tripId: effect.tripId, userId: effect.userId });
-  else realtimeStore.pushEffect({ type: effect.type, tripId: effect.tripId });
+  else realtimeStore.pushEffect(effect);
 }
 
 /**

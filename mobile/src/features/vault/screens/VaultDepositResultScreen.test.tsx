@@ -1,4 +1,5 @@
-import { render } from '@testing-library/react-native';
+import { fireEvent, render } from '@testing-library/react-native';
+import { router } from 'expo-router';
 
 import { initI18n } from '@/i18n';
 
@@ -7,7 +8,13 @@ jest.mock('expo-router', () => ({ router: { back: jest.fn() } }));
 // eslint-disable-next-line import/first -- must follow the jest.mock hoist target
 import { VaultDepositResultScreen } from './VaultDepositResultScreen';
 // eslint-disable-next-line import/first
-import type { VaultDepositFlow } from '../vaultDepositFlowStore';
+import { useVaultDepositFlowStore, type VaultDepositFlow } from '../vaultDepositFlowStore';
+
+// Rendered without a SafeAreaProvider; the screen reads the top inset for its header.
+jest.mock('react-native-safe-area-context', () => ({
+  ...jest.requireActual('react-native-safe-area-context'),
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 
 const processingFlow: VaultDepositFlow = {
   amountMicro: 5_000_000n,
@@ -46,5 +53,23 @@ describe('VaultDepositResultScreen', () => {
     expect(screen.getByText('Completed')).toBeTruthy();
     expect(screen.getByText('Check on explorer')).toBeTruthy();
     expect(screen.getByText('Deposit again')).toBeTruthy();
+  });
+
+  it('Deposit again closes the receipt and asks the trip vault to reopen the sheet', async () => {
+    const completedFlow: VaultDepositFlow = {
+      ...processingFlow,
+      status: 'completed',
+      signature: 'h42fjh24abcdefghijklmnop',
+    };
+    const screen = await render(<VaultDepositResultScreen flow={completedFlow} />);
+    await fireEvent.press(screen.getByText('Deposit again'));
+    expect(useVaultDepositFlowStore.getState().depositAgainRequested).toBe(true);
+    expect(router.back).toHaveBeenCalled();
+    useVaultDepositFlowStore.getState().consumeDepositAgain();
+  });
+
+  it('has no "Move money" title', async () => {
+    const screen = await render(<VaultDepositResultScreen flow={processingFlow} />);
+    expect(screen.queryByText('Move money')).toBeNull();
   });
 });

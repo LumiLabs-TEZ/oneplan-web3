@@ -12,25 +12,27 @@ export function web3RootScreens(enabled: boolean) {
   return (
     <Stack.Protected guard={enabled}>
       {/* HowMoneyIsHeldView.swift: `.presentationDetents([.large])
-          .presentationCornerRadius(38).presentationDragIndicator(.hidden)`. */}
+          .presentationCornerRadius(38)`. Swift hid the drag indicator and drew an X; here the
+          grabber is the only dismiss affordance (owner call, 2026-10-03). */}
       <Stack.Screen
         name="how-money-is-held"
         options={{
           presentation: 'formSheet',
           sheetAllowedDetents: [1],
           sheetCornerRadius: 38,
-          sheetGrabberVisible: false,
+          sheetGrabberVisible: true,
         }}
       />
-      {/* WelcomeTripWalletView.swift preview: `.presentationDetents([.large])
-          .presentationCornerRadius(38)` (grabber shown — no `.hidden` modifier). */}
+      {/* WelcomeTripWalletView.swift: `.presentationDetents([.large])
+          .presentationCornerRadius(38)`. No X (owner call, 2026-10-03): the grabber + swipe is the
+          dismiss path, so the sheet marks itself seen on unmount. */}
       <Stack.Screen
         name="web3-welcome"
         options={{
           presentation: 'formSheet',
           sheetAllowedDetents: [1],
           sheetCornerRadius: 38,
-          gestureEnabled: false,
+          sheetGrabberVisible: true,
         }}
       />
       {/* DepositToOnePlanWalletView.swift's ContributeToVaultView call site:
@@ -39,10 +41,13 @@ export function web3RootScreens(enabled: boolean) {
         name="wallet/deposit"
         options={{
           presentation: 'formSheet',
-          sheetAllowedDetents: [0.8],
+          // Swift used `.fraction(0.8)`; fitting the content avoids a dead gap above Go back.
+          sheetAllowedDetents: 'fitToContents',
           sheetCornerRadius: 48,
+          sheetGrabberVisible: true,
         }}
       />
+      <Stack.Screen name="wallet/withdraw-result" options={{ presentation: 'fullScreenModal' }} />
     </Stack.Protected>
   );
 }

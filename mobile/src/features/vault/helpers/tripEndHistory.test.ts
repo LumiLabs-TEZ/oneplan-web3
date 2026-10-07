@@ -1,4 +1,4 @@
-import { historyCurrencyOf, historyTotalOf, mapHistoryEntry } from './tripEndHistory';
+import { historyTotalOf, mapHistoryEntry } from './tripEndHistory';
 import type { VaultHistoryEntryDto } from '../api/queries';
 
 function entry(over: Partial<VaultHistoryEntryDto> = {}): VaultHistoryEntryDto {
@@ -29,7 +29,7 @@ describe('mapHistoryEntry', () => {
     );
     expect(mapped.kind).toBe('deposit');
     expect(mapped.amount).toBe(2);
-    expect(mapped.currency).toBe('USD');
+    expect(mapped.secondaryVnd).toBeNull();
   });
 
   it('a settlement is positive, in USD, and carries the recipient name', () => {
@@ -47,17 +47,17 @@ describe('mapHistoryEntry', () => {
     expect(mapped.recipientName).toBe('Shin');
   });
 
-  it('an expense with a VND face value is negative, in VND', () => {
-    const mapped = mapHistoryEntry(entry({ amountVnd: '1000000' }), true);
+  it('an expense is negative USDC and keeps its VND face value as secondary', () => {
+    const mapped = mapHistoryEntry(entry({ amountVnd: '1000000', amountMicro: '38000000' }), true);
     expect(mapped.kind).toBe('expense');
-    expect(mapped.amount).toBe(-1000000);
-    expect(mapped.currency).toBe('VND');
+    expect(mapped.amount).toBe(-38);
+    expect(mapped.secondaryVnd).toBe(1000000);
   });
 
-  it('an expense with no VND face value falls back to the negative USDC amount', () => {
+  it('an expense with no VND face value has no secondary', () => {
     const mapped = mapHistoryEntry(entry({ amountVnd: null, amountMicro: '3000000' }), true);
     expect(mapped.amount).toBe(-3);
-    expect(mapped.currency).toBe('USD');
+    expect(mapped.secondaryVnd).toBeNull();
   });
 
   it('formats the time from createdAt', () => {
@@ -66,19 +66,14 @@ describe('mapHistoryEntry', () => {
   });
 });
 
-describe('historyCurrencyOf / historyTotalOf', () => {
-  it('picks the first non-USD currency, falling back to VND for an all-USD list', () => {
-    const usd = mapHistoryEntry(entry({ kind: 'DEPOSIT', amountVnd: null }), true);
-    const vnd = mapHistoryEntry(entry({ amountVnd: '1000000' }), true);
-    expect(historyCurrencyOf([usd, vnd])).toBe('VND');
-    expect(historyCurrencyOf([usd])).toBe('USD');
-    expect(historyCurrencyOf([])).toBe('VND');
-  });
-
-  it('sums every entry amount regardless of unit (ported iOS behaviour, not real conversion)', () => {
-    const usd = mapHistoryEntry(entry({ kind: 'DEPOSIT', amountMicro: '2000000', amountVnd: null }), true);
-    const vnd = mapHistoryEntry(entry({ amountVnd: '1000000' }), true);
-    expect(historyTotalOf([usd, vnd])).toBe(2 + -1000000);
+describe('historyTotalOf', () => {
+  it('sums deposits and spends in USDC', () => {
+    const deposit = mapHistoryEntry(
+      entry({ kind: 'DEPOSIT', amountMicro: '2000000', amountVnd: null }),
+      true,
+    );
+    const spend = mapHistoryEntry(entry({ amountVnd: '26500000', amountMicro: '1000000' }), true);
+    expect(historyTotalOf([deposit, spend])).toBe(1);
   });
 
   it('returns 0 for an empty ledger', () => {

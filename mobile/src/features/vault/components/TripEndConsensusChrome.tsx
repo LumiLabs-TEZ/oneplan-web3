@@ -2,13 +2,13 @@
  * Shared chrome for the 3 end-trip consensus screens (Review/Waiting/Denied) — port of
  * `ios/OnePlan/OnePlan/View/Trip/TripEnd/TripEndConsensusChrome.swift`.
  */
-import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { VaultHeaderChip } from '@/features/vault/components/VaultHeaderChip';
 import { useAppLanguage } from '@/i18n';
+import { BackPillButton } from '@/ui/components';
 import { colors, spacing } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
@@ -16,22 +16,21 @@ export interface TripEndBackHeaderProps {
   onBack: () => void;
 }
 
-/** Arrow chip + "Back" chip pair, top-left of the 3 consensus screens. */
+/** Top of the back pill below the status bar — content under it must start past this + 32. */
+export const TRIP_END_BACK_TOP_GAP = 8;
+
+/**
+ * Web2 back pill (glass arrow + "Back"), floating top-left over the 3 consensus screens' content
+ * (same as the wallet / vault result screens).
+ */
 export function TripEndBackHeader({ onBack }: TripEndBackHeaderProps) {
-  useAppLanguage();
-  const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
   return (
-    <View style={styles.backHeaderRow}>
-      <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel={t('Back')}>
-        <VaultHeaderChip style={styles.backArrowChip}>
-          <Ionicons name="arrow-back" size={14} color={colors.neutral950} />
-        </VaultHeaderChip>
-      </Pressable>
-      <Pressable onPress={onBack} accessibilityRole="button" testID="trip-end-back">
-        <VaultHeaderChip style={styles.backLabelChip}>
-          <Text style={styles.backLabelText}>{t('Back')}</Text>
-        </VaultHeaderChip>
-      </Pressable>
+    <View
+      pointerEvents="box-none"
+      style={[styles.backHeaderRow, { top: insets.top + TRIP_END_BACK_TOP_GAP }]}
+    >
+      <BackPillButton onPress={onBack} testID="trip-end-back" />
     </View>
   );
 }
@@ -100,20 +99,10 @@ const ORANGE = 'rgb(255, 140, 64)';
 
 const styles = StyleSheet.create({
   backHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
+    position: 'absolute',
+    left: spacing.lg,
+    zIndex: 1,
   },
-  backArrowChip: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  backLabelChip: {
-    height: 32,
-    paddingHorizontal: spacing.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  backLabelText: { ...beVietnamPro(15), color: colors.neutral950, letterSpacing: -0.3 },
   goBackWrap: { paddingHorizontal: spacing.xxl, paddingBottom: spacing.xxl },
   goBackButton: {
     minHeight: 52,

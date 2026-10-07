@@ -1,0 +1,24 @@
+# B (spike): trip menu → Leave group → the vault leave sheet shows the ledger (spike is owed back
+# their deposit) → Announce leaving → pending state, waiting for the host.
+appId: local.lumilabs.oneplan
+---
+- tapOn:
+    id: "trip-menu-button"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn: "Leave group"
+- extendedWaitUntil:
+    visible:
+      id: "vault-leave-sheet"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: b22-leave-sheet
+- tapOn:
+    id: "vault-leave-cta-announce"
+- extendedWaitUntil:
+    visible:
+      id: "vault-leave-cta-pending"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 3000

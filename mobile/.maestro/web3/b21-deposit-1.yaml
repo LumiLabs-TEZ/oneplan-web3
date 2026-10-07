@@ -1,0 +1,56 @@
+# B (spike): on the second trip, deposit 1 USDC — the first deposit, made by a member, creates the
+# vault with the default limits.
+appId: local.lumilabs.oneplan
+---
+- runFlow:
+    when:
+      visible:
+        id: "trip-invite-card"
+    commands:
+      - tapOn:
+          point: "50%,8%"
+      - waitForAnimationToEnd:
+          timeout: 2000
+- tapOn:
+    id: "trip-vault-card-deposit"
+- extendedWaitUntil:
+    visible:
+      id: "deposit-option-oneplan-wallet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "deposit-option-oneplan-wallet"
+- extendedWaitUntil:
+    visible:
+      id: "contribute-to-vault-sheet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "key-1"
+- waitForAnimationToEnd:
+    timeout: 1000
+- tapOn:
+    id: "contribute-submit"
+- extendedWaitUntil:
+    visible:
+      id: "vault-depositing-details"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 4000
+- tapOn:
+    id: "vault-depositing-details"
+- extendedWaitUntil:
+    visible: "Completed"
+    timeout: 120000
+- waitForAnimationToEnd:
+    timeout: 3000
+- tapOn:
+    id: "vault-deposit-result-go-back"
+- extendedWaitUntil:
+    visible:
+      id: "trip-vault-card-deposit"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 3000

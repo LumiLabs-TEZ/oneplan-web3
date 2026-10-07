@@ -158,13 +158,16 @@ export class TripVaultReconcileService {
 
     for (const row of rows) {
       const landed = await this.solana.signatureLanded(row.signature!);
-      await this.prisma.vaultTransaction.update({
-        where: { id: row.id },
+      // Guarded on PENDING: a live submit may have settled the row since it
+      // was read (confirmed it, or failed it on an expired blockhash), and the
+      // answer it got is newer than this one.
+      const settled = await this.prisma.vaultTransaction.updateMany({
+        where: { id: row.id, status: VaultTxStatus.PENDING },
         data: {
           status: landed ? VaultTxStatus.CONFIRMED : VaultTxStatus.FAILED,
         },
       });
-      report.confirmed += landed ? 1 : 0;
+      report.confirmed += landed && settled.count > 0 ? 1 : 0;
     }
   }
 
@@ -293,6 +296,11 @@ export class TripVaultReconcileService {
   ): Promise<void> {
     const rows = await this.prisma.vaultTransaction.findMany({
       where: {
+        // Only a spend moved USDC out that can be put back. A FAILED deposit
+        // moved nothing out of the vault, and reverting one would pay out
+        // money that was never spent. Its failureCode is NULL, which the
+        // NOT IN below happens to exclude; this does not rely on that.
+        kind: VaultTxKind.SPEND,
         status: VaultTxStatus.FAILED,
         signature: { not: null },
         // A cancelled proposal carries the cancel transaction's signature but

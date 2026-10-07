@@ -1,8 +1,6 @@
 import {
   grossDeposit,
   hostLeaveDisplay,
-  hostLeaveSheetHeight,
-  memberLeaveSheetHeight,
   memberLeaveState,
   oldestPendingRequest,
   shortenAddress,
@@ -150,19 +148,6 @@ describe('shortenAddress', () => {
     expect(shortenAddress('abc123')).toBe('abc123');
     expect(shortenAddress(null)).toBeNull();
     expect(shortenAddress(undefined)).toBeNull();
-  });
-});
-
-describe('sheet heights', () => {
-  it('member sheet grows with line count, clamped 520-720', () => {
-    expect(memberLeaveSheetHeight(0)).toBe(520);
-    expect(memberLeaveSheetHeight(1)).toBe(520);
-    expect(memberLeaveSheetHeight(20)).toBe(720);
-  });
-
-  it('host sheet is a fixed 560/420 by payout state', () => {
-    expect(hostLeaveSheetHeight(true)).toBe(560);
-    expect(hostLeaveSheetHeight(false)).toBe(420);
   });
 });
 

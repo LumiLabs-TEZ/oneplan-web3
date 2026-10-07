@@ -9,7 +9,6 @@ describe('SETTING_SECTIONS', () => {
     const rowIds = SETTING_SECTIONS.flatMap((s) => s.rows.map((r) => r.id));
     expect(rowIds).toEqual([
       'displayName',
-      'myWallet',
       'currency',
       'language',
       'tripTips',
@@ -34,12 +33,11 @@ describe('SETTING_SECTIONS', () => {
     expect(destructiveIds).toEqual(['delete']);
   });
 
-  it('marks disclosure on myWallet/currency/language/privacy/terms/rate/support only', () => {
+  it('marks disclosure on currency/language/privacy/terms/rate/support only', () => {
     const disclosureIds = SETTING_SECTIONS.flatMap((s) =>
       s.rows.filter((r) => r.disclosure).map((r) => r.id),
     );
     expect(disclosureIds).toEqual([
-      'myWallet',
       'currency',
       'language',
       'privacy',

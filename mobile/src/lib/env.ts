@@ -15,6 +15,7 @@ interface Extra {
   privyClientId?: string;
   googleMapsAndroidConfigured?: boolean;
   googleMapsIosConfigured?: boolean;
+  hideDevSignIn?: boolean;
   adUnits?: {
     ios: { rewarded: string; endTrip: string; market: string };
     android: { rewarded: string; endTrip: string; market: string };
@@ -66,6 +67,11 @@ interface Env {
   googleMapsAndroidConfigured: boolean;
   /** Whether `GOOGLE_MAPS_IOS_API_KEY` was set at build time (iOS Google MapView needs it). */
   googleMapsIosConfigured: boolean;
+  /**
+   * Hides the shared "Dev sign-in (email)" login link on a dev-variant build handed to outsiders
+   * (the hackathon APK sets `HIDE_DEV_SIGN_IN=1` in its eas.json profile).
+   */
+  hideDevSignIn: boolean;
   /** Public Google OAuth client ids baked in by app.config.ts (see auth/google.ts). */
   google: {
     /** Web client id — audience the server's `GOOGLE_CLIENT_ID` verifies. */
@@ -87,6 +93,7 @@ export const env: Readonly<Env> = Object.freeze({
   privyClientId,
   googleMapsAndroidConfigured: extra.googleMapsAndroidConfigured ?? false,
   googleMapsIosConfigured: extra.googleMapsIosConfigured ?? false,
+  hideDevSignIn: extra.hideDevSignIn ?? false,
   google: {
     webClientId: extra.googleWebClientId,
     iosClientId: extra.googleIosClientId,
@@ -99,6 +106,9 @@ export const env: Readonly<Env> = Object.freeze({
 });
 
 export const isProd = env.variant === 'prod';
+
+/** Whether the login screen offers the shared dev email sign-in (never on prod or the hackathon APK). */
+export const showDevSignIn = !isProd && !env.hideDevSignIn;
 
 /** wss:// URL on the API host (mirrors APIClient.webSocketURL). */
 export function webSocketUrl(path: string): string {

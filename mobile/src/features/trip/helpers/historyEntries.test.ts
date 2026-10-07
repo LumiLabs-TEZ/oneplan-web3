@@ -201,9 +201,11 @@ describe('buildHistorySections', () => {
       });
     });
 
-    it('drops fraction digits for USD too (0 dp, truncated)', () => {
+    it('keeps cents for USD, so a $1.89 spend never reads as -1$', () => {
       const [section] = build([expense({ id: 1, amount: 1234.56 })], [], 'USD');
-      expect(section?.entries[0]?.amountLabel).toBe('-1,234$');
+      expect(section?.entries[0]?.amountLabel).toBe('-1,234.56$');
+      const [small] = build([expense({ id: 2, amount: 1.889 })], [], 'USD');
+      expect(small?.entries[0]?.amountLabel).toBe('-1.89$');
     });
 
     it('formats budgets as +sum of payments', () => {

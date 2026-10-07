@@ -30,16 +30,21 @@ describe('useTripVaultCard — flag off must equal develop (H1)', () => {
     mockWeb3Enabled = false;
     const { result } = await renderHook(() => useTripVaultCard(5, 'VND'));
 
-    expect(result.current).toEqual({ hasVaultCard: false, balanceInHomeCurrency: 0 });
+    expect(result.current).toEqual({
+      hasVaultCard: false,
+      hasVault: false,
+      balanceInHomeCurrency: 0,
+    });
     expect(mockUseVaultBalance).toHaveBeenCalledWith(5, { enabled: false });
     expect(mockUseConvertedAmount).toHaveBeenCalledWith(0, null, 'VND');
   });
 
-  it('flag ON but the trip has no vault (404): still no USD source currency', async () => {
+  it('flag ON but the trip has no vault (404): card shows at 0, still no USD source currency', async () => {
     mockBalance = { isSuccess: false };
     const { result } = await renderHook(() => useTripVaultCard(5, 'VND'));
 
-    expect(result.current.hasVaultCard).toBe(false);
+    expect(result.current.hasVaultCard).toBe(true);
+    expect(result.current.hasVault).toBe(false);
     expect(mockUseConvertedAmount).toHaveBeenCalledWith(0, null, 'VND');
   });
 
@@ -48,7 +53,11 @@ describe('useTripVaultCard — flag off must equal develop (H1)', () => {
     mockUseConvertedAmount.mockReturnValue({ amount: 330_000, rate: 26_400, isStale: false });
     const { result } = await renderHook(() => useTripVaultCard(5, 'VND'));
 
-    expect(result.current).toEqual({ hasVaultCard: true, balanceInHomeCurrency: 330_000 });
+    expect(result.current).toEqual({
+      hasVaultCard: true,
+      hasVault: true,
+      balanceInHomeCurrency: 330_000,
+    });
     expect(mockUseConvertedAmount).toHaveBeenCalledWith(12.5, 'USD', 'VND');
   });
 });

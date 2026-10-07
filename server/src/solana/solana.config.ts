@@ -46,4 +46,27 @@ export const solanaConfigSchema = {
     .integer()
     .min(0)
     .default(1_000_000_000),
+  /** SIWS domain the wallet shows and the server verifies (no scheme). */
+  SIWS_DOMAIN: Joi.string().hostname().allow('').default('oneplan.space'),
+  /** CAIP-2-ish chain id put in the SIWS message; matches the money cluster. */
+  SIWS_CHAIN_ID: Joi.string().allow('').default('solana:devnet'),
+  /** Devnet-only test-USDC faucet for the hackathon build. Off by default. */
+  WEB3_FAUCET_ENABLED: Joi.boolean().default(false),
+  /**
+   * Android signs with the member's own wallet over Mobile Wallet Adapter when true, the Privy
+   * embedded wallet when false (served as `GET /web3/eligibility` `mwaEnabled`). iOS is always Privy.
+   */
+  WEB3_MWA_ENABLED: Joi.boolean().default(true),
+  /** bs58 secret key of the wallet that holds the faucet's devnet USDC. */
+  SOLANA_FAUCET_SECRET_KEY: Joi.string().allow('').default(''),
+  FAUCET_USDC_MICRO: Joi.number()
+    .integer()
+    .min(1)
+    .max(1_000_000_000)
+    .default(5_000_000),
+  /** Mainnet read-only RPC for Seeker Genesis Token / .skr lookups. Empty = identity features off. */
+  SOLANA_MAINNET_RPC_URL: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .allow('')
+    .default(''),
 };

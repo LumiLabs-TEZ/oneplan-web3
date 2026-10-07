@@ -10,6 +10,11 @@ import type { TripEndRequestDto } from '../api/endTrip';
 
 let mockRequestData: TripEndRequestDto | undefined;
 
+// Rendered without a SafeAreaProvider; the floating back pill reads the top inset.
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+
 jest.mock('@/features/vault/api/endTrip', () => ({
   useTripEndRequest: () => ({ data: mockRequestData }),
 }));

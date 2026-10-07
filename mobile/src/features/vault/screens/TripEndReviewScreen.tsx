@@ -17,6 +17,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { deviceUses24hourClock, useAppLanguage } from '@/i18n';
 import { formatUsdc, formatWhole } from '@/lib/currency';
@@ -26,7 +27,10 @@ import { useExchangeRate } from '@/features/exchange/useExchangeRate';
 import { PioneerAvatar } from '@/features/settlement/components/PioneerAvatar';
 import { CategoryIcon } from '@/features/vault/components/CategoryIcon';
 import { PersonAvatar } from '@/features/vault/components/PersonAvatar';
-import { TripEndBackHeader } from '@/features/vault/components/TripEndConsensusChrome';
+import {
+  TRIP_END_BACK_TOP_GAP,
+  TripEndBackHeader,
+} from '@/features/vault/components/TripEndConsensusChrome';
 import {
   useCastTripEndVote,
   useTripEndReview,
@@ -34,7 +38,6 @@ import {
   type TripEndRequestDto,
 } from '@/features/vault/api/endTrip';
 import {
-  historyCurrencyOf,
   historyTotalOf,
   mapHistoryEntry,
   type ReviewHistoryEntry,
@@ -56,11 +59,6 @@ export interface TripEndReviewScreenProps {
 function formatSignedUsd(value: number): string {
   const sign = value < 0 ? '-' : value > 0 ? '+' : '';
   return `${sign}$${formatUsdc(Math.abs(value))}`;
-}
-
-function formatSignedVnd(value: number): string {
-  const sign = value < 0 ? '-' : value > 0 ? '+' : '';
-  return `${sign}đ${formatWhole(Math.abs(value))}`;
 }
 
 export function TripEndReviewScreen({
@@ -90,11 +88,12 @@ export function TripEndReviewScreen({
   const historyEntries: ReviewHistoryEntry[] = (review.data?.history ?? []).map((entry) =>
     mapHistoryEntry(entry, uses24hourClock),
   );
-  const historyCurrency = historyCurrencyOf(historyEntries);
   const historyTotal = historyTotalOf(historyEntries);
   const mySettlement = review.data?.mySettlement ?? [];
   const settlementTotal = settlementNetUsdc(mySettlement, myUserId ?? 0);
   const isWorking = vote.isPending;
+  const insets = useSafeAreaInsets();
+  const voteBarBottom = Math.max(insets.bottom, spacing.md);
 
   const handleVote = (decision: 'APPROVED' | 'DENIED') => {
     vote.mutate(decision, {
@@ -116,7 +115,16 @@ export function TripEndReviewScreen({
         </View>
       ) : (
         <>
-          <ScrollView contentContainerStyle={styles.scrollContent}>
+          <ScrollView
+            contentContainerStyle={[
+              styles.scrollContent,
+              // Starts below the floating back pill (32pt tall).
+              { paddingTop: insets.top + TRIP_END_BACK_TOP_GAP + 32 + spacing.md },
+              // Clear the floating vote bar so the last row can scroll above it.
+              { paddingBottom: VOTE_BUTTON_HEIGHT + voteBarBottom + spacing.xxl },
+            ]}
+            showsVerticalScrollIndicator={false}
+          >
             <View style={styles.hero}>
               <PioneerAvatar imageUrl={coverImageUrl} size={140} />
               <View style={styles.heroCopy}>
@@ -132,11 +140,7 @@ export function TripEndReviewScreen({
             <View style={styles.sections}>
               <SectionCaption
                 title={t('History')}
-                total={
-                  historyCurrency === 'USD'
-                    ? formatSignedUsd(historyTotal)
-                    : formatSignedVnd(historyTotal)
-                }
+                total={formatSignedUsd(historyTotal)}
               />
               {historyEntries.length === 0 ? (
                 <Text style={styles.emptyText}>{t('No vault activity yet')}</Text>
@@ -170,7 +174,8 @@ export function TripEndReviewScreen({
             </View>
           </ScrollView>
 
-          <View style={styles.voteBar}>
+          {/* Floats over the scroll content (no bar background), like the vault result screens. */}
+          <View pointerEvents="box-none" style={[styles.voteBar, { paddingBottom: voteBarBottom }]}>
             <VoteButton
               label={t('Deny')}
               tone="black"
@@ -211,10 +216,7 @@ function ReviewHistoryRow({ entry }: { entry: ReviewHistoryEntry }) {
         ? t('Settlement')
         : t('Payment'));
   const sign = entry.amount < 0 ? '-' : '+';
-  const amountLabel =
-    entry.currency === 'USD'
-      ? `${sign}${formatUsdc(Math.abs(entry.amount))} USDC`
-      : `${sign}${formatWhole(Math.abs(entry.amount))}đ`;
+  const amountLabel = `${sign}${formatUsdc(Math.abs(entry.amount))} USDC`;
 
   return (
     <View style={styles.historyRow} testID="trip-end-review-history-row">
@@ -232,6 +234,7 @@ function ReviewHistoryRow({ entry }: { entry: ReviewHistoryEntry }) {
           {title}
         </Text>
         <Text style={styles.historyRowTime}>
+          {entry.secondaryVnd != null ? `${formatWhole(entry.secondaryVnd)}đ · ` : null}
           {entry.isAwaitingApproval ? t('Needs approval') : entry.time}
         </Text>
       </View>
@@ -268,7 +271,7 @@ function SettlementRow({
 
   return (
     <View style={styles.settlementRow} testID="trip-end-review-settlement-row">
-      <PersonAvatar uri={avatarUrl} name={counterpartName} size={52} />
+      <PersonAvatar uri={avatarUrl} size={52} />
       <View style={styles.settlementRowBody}>
         <Text style={styles.settlementRowLabel}>{isReceiving ? t('Receive from') : t('Pay')}</Text>
         <Text style={styles.settlementRowName} numberOfLines={1}>
@@ -315,10 +318,12 @@ function VoteButton({
   );
 }
 
+const VOTE_BUTTON_HEIGHT = 52;
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  scrollContent: { paddingHorizontal: 12, paddingTop: spacing.sm, paddingBottom: spacing.xxl, gap: 28 },
+  scrollContent: { paddingHorizontal: 12, gap: 28 },
   hero: { alignItems: 'center', gap: 28 },
   heroCopy: { gap: 3, alignItems: 'center' },
   heroTitle: {
@@ -373,15 +378,18 @@ const styles = StyleSheet.create({
   settlementUsdcUnit: { ...beVietnamPro(18), color: colors.contentL, letterSpacing: -0.36 },
   settlementVnd: { ...beVietnamPro(14), color: colors.contentM, letterSpacing: -0.28 },
   voteBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
     flexDirection: 'row',
     gap: 7,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-    backgroundColor: colors.background,
   },
   voteButton: {
     flex: 1,
-    minHeight: 52,
+    minHeight: VOTE_BUTTON_HEIGHT,
+    boxShadow: '0px 6px 12px rgba(0, 0, 0, 0.07), 0px 10px 18px rgba(204, 219, 240, 0.35)',
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',

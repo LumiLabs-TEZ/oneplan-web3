@@ -4,7 +4,7 @@
  * `tripMemberRemoved` observers in `TripDetailView.swift`. `realtimeStore.consumeEffect` makes
  * each effect one-shot, so only the mounted screen for that trip acts on it.
  */
-import { router } from 'expo-router';
+import { router, usePathname } from 'expo-router';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert } from 'react-native';
@@ -32,6 +32,14 @@ export function tripRealtimeAction(input: {
   return null;
 }
 
+/**
+ * The end-trip screens route themselves when the trip ends (Waiting's own `onAllApproved`, the
+ * last voter's Review), so a second `replace('/end')` from here would stack a duplicate.
+ */
+export function isInEndFlow(pathname: string): boolean {
+  return /\/end(-waiting|-review)?$/.test(pathname);
+}
+
 export function useTripRealtimeEffects(
   tripId: number,
   isCreator: boolean,
@@ -43,6 +51,7 @@ export function useTripRealtimeEffects(
   const endedAt = useRealtimeStore((s) => s.lastTripEnded);
   const deletedAt = useRealtimeStore((s) => s.lastTripDeleted);
   const memberRemovedAt = useRealtimeStore((s) => s.lastTripMemberRemoved);
+  const pathname = usePathname();
 
   useEffect(() => {
     const { consumeEffect } = useRealtimeStore.getState();
@@ -58,6 +67,7 @@ export function useTripRealtimeEffects(
     const action = tripRealtimeAction({ ended, deleted, removedMe, isCreator });
 
     if (action === 'openEnd') {
+      if (isInEndFlow(pathname)) return;
       router.replace({
         pathname: '/trip/[tripId]/end',
         params: { tripId: String(tripId), mode: 'flow' },
@@ -68,5 +78,7 @@ export function useTripRealtimeEffects(
     } else if (action === 'leftByRemoval') {
       router.dismissTo('/(tabs)/home');
     }
+    // `pathname` is read, not reacted to: navigating must never re-run the effects above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endedAt, deletedAt, memberRemovedAt, tripId, isCreator, currentUserId, web3Enabled, t]);
 }

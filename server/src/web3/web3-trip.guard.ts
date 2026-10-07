@@ -5,14 +5,16 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
+import type { JwtPayload } from '../auth/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { assertWeb3Eligible } from './web3-eligible.guard';
 import { Web3EligibilityService } from './web3-eligibility.service';
 
 /**
- * Vault routes need a web3 trip AND a web3-eligible request IP (403
+ * Vault routes need a web3 trip AND a web3-eligible caller (403
  * `web3_unavailable` otherwise — a Vietnamese member of a foreigner's web3 trip
- * sees no web3). Membership is left to the service layer (assertMember).
+ * sees no web3 unless allowlisted). Membership is left to the service layer
+ * (assertMember).
  */
 @Injectable()
 export class Web3TripGuard implements CanActivate {
@@ -24,8 +26,10 @@ export class Web3TripGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const req = context
       .switchToHttp()
-      .getRequest<FastifyRequest<{ Params: { tripId?: string } }>>();
-    assertWeb3Eligible(this.eligibility, req.ip);
+      .getRequest<
+        FastifyRequest<{ Params: { tripId?: string } }> & { user?: JwtPayload }
+      >();
+    await assertWeb3Eligible(this.eligibility, req.ip, req.user?.sub);
     const tripId = Number(req.params?.tripId);
     if (!Number.isInteger(tripId)) return true; // ParseIntPipe answers 400
     const trip = await this.prisma.trip.findUnique({

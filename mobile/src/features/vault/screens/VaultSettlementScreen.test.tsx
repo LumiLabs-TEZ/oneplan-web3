@@ -22,9 +22,25 @@ const mockConfirmState = { isPending: false, variables: undefined as number | un
 jest.mock('@/features/vault/api/queries', () => ({
   useVaultSettlement: () => mockSettlementState,
 }));
+let mockIdentities: Map<number, { userId: number; skrDomain: string | null; isSeeker: boolean }> | undefined;
+jest.mock('@/features/vault/api/mwa', () => ({
+  useMemberIdentities: () => ({ data: mockIdentities }),
+}));
 jest.mock('@/features/vault/api/endTrip', () => ({
   useConfirmVaultCashDebt: () => ({ mutate: mockConfirmMutate, ...mockConfirmState }),
 }));
+const mockPush = jest.fn();
+jest.mock('expo-router', () => ({ router: { push: (...a: unknown[]) => mockPush(...a) } }));
+const mockPresentWithdraw = jest.fn();
+jest.mock('@/features/vault/screens/WalletWithdrawSheetHost', () => {
+  const { forwardRef, useImperativeHandle } = jest.requireActual<typeof import('react')>('react');
+  return {
+    WalletWithdrawSheetHost: forwardRef(function MockHost(_props, ref) {
+      useImperativeHandle(ref, () => ({ present: mockPresentWithdraw }));
+      return null;
+    }),
+  };
+});
 jest.mock('@/features/exchange/useExchangeRate', () => ({
   useExchangeRate: () => ({ data: undefined }),
 }));
@@ -74,9 +90,24 @@ describe('VaultSettlementScreen', () => {
   beforeEach(() => {
     mockSettlementState.data = undefined;
     mockSettlementState.isError = false;
+    mockIdentities = undefined;
     mockConfirmMutate.mockClear();
+    mockPush.mockClear();
+    mockPresentWithdraw.mockClear();
     mockConfirmState.isPending = false;
     mockConfirmState.variables = undefined;
+  });
+
+  it("overlays the creditor's .skr name and Seeker badge by user id", async () => {
+    mockIdentities = new Map([[3, { userId: 3, skrDomain: 'bob', isSeeker: true }]]);
+    mockSettlementState.data = preview({
+      cashDebts: [
+        debt({ fromUserId: 1, toUserId: 3, toDisplayName: 'Bob', canConfirm: false, toWalletAddress: 'CreditorWallet111' }),
+      ],
+    });
+    const screen = await render(<VaultSettlementScreen {...props} />);
+    expect(screen.getByText(/bob\.skr/)).toBeTruthy();
+    expect(screen.getByTestId('seeker-badge')).toBeTruthy();
   });
 
   it('shows the settling banner while the vault has not wound up yet', async () => {
@@ -113,5 +144,36 @@ describe('VaultSettlementScreen', () => {
     expect(screen.getByTestId('vault-settlement-error')).toBeTruthy();
     await fireEvent.press(screen.getByText('Retry'));
     expect(mockSettlementState.refetch).toHaveBeenCalled();
+  });
+
+  it('Show QR opens the wallet Receive QR', async () => {
+    mockSettlementState.data = preview({ cashDebts: [debt({ canConfirm: true })] });
+    const screen = await render(<VaultSettlementScreen {...props} />);
+    await fireEvent.press(screen.getByTestId('vault-settlement-row-toggle'));
+    await fireEvent.press(screen.getByTestId('vault-settlement-show-qr'));
+    expect(mockPush).toHaveBeenCalledWith({
+      pathname: '/wallet/deposit',
+      params: { mode: 'receive' },
+    });
+  });
+
+  it("Send opens the withdraw sheet prefilled with the creditor's wallet and the debt", async () => {
+    mockSettlementState.data = preview({
+      cashDebts: [
+        debt({
+          fromUserId: 1,
+          toUserId: 3,
+          canConfirm: false,
+          toWalletAddress: 'CreditorWallet111',
+        }),
+      ],
+    });
+    const screen = await render(<VaultSettlementScreen {...props} />);
+    await fireEvent.press(screen.getByTestId('vault-settlement-row-toggle'));
+    await fireEvent.press(screen.getByTestId('vault-settlement-send'));
+    expect(mockPresentWithdraw).toHaveBeenCalledWith({
+      address: 'CreditorWallet111',
+      amountMicro: 1_500_000n,
+    });
   });
 });

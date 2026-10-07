@@ -1,9 +1,15 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { InviteStatus, Prisma, TripMemberRole } from '@prisma/client';
+import {
+  InviteStatus,
+  Prisma,
+  TripMemberRole,
+  WalletProvider,
+} from '@prisma/client';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import { Keypair, PublicKey } from '@solana/web3.js';
 
@@ -28,11 +34,16 @@ const PROGRAM_ID = new PublicKey(
 function makeDeps() {
   const prisma = {
     trip: { findUnique: jest.fn().mockResolvedValue({ id: 42 }) },
-    tripVault: { findUnique: jest.fn(), create: jest.fn() },
+    tripVault: {
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
     walletAccount: {
       upsert: jest.fn(),
       findMany: jest.fn(),
-      findUnique: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue(null),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     tripMember: {
       findMany: jest.fn(),
@@ -44,7 +55,12 @@ function makeDeps() {
       update: jest.fn(),
     },
     user: { findUnique: jest.fn() },
+    // Interactive transactions run against the same mocks.
+    $transaction: jest.fn(),
   };
+  prisma.$transaction.mockImplementation(
+    (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma),
+  );
   const vaultPda = Keypair.generate().publicKey;
   const instruction = jest.fn().mockResolvedValue({
     programId: PROGRAM_ID,
@@ -85,7 +101,11 @@ function makeDeps() {
     sendAsFeePayer: jest.fn().mockResolvedValue('sig'),
   };
   const trips = { sendVaultBalanceChanged: jest.fn() };
-  return { prisma, solana, trips, vaultPda, instruction };
+  const identity = {
+    refreshInBackground: jest.fn(),
+    refreshStaleInBackground: jest.fn(),
+  };
+  return { prisma, solana, trips, identity, vaultPda, instruction };
 }
 
 function makeService(deps: ReturnType<typeof makeDeps>) {
@@ -94,6 +114,7 @@ function makeService(deps: ReturnType<typeof makeDeps>) {
     deps.solana as never,
     deps.trips as never,
     new VaultSafetyService(deps.prisma as never, deps.solana as never),
+    deps.identity as never,
   );
 }
 
@@ -462,25 +483,26 @@ describe('TripVaultService', () => {
         deps.vaultPda,
         true,
       ).toBase58();
-      Object.assign(deps.solana, {
+      const chain = Object.assign(deps.solana, {
         feePayer: real.feePayer,
         usdcMint: real.usdcMint,
         treasuryAta: () => real.treasuryAta(),
         broadcastSigned: jest.fn().mockResolvedValue('broadcast'),
         confirmSigned: jest.fn().mockResolvedValue(undefined),
+        signatureLanded: jest.fn().mockResolvedValue(false),
       });
       deps.solana.program.programId = real.program.programId;
       deps.prisma.tripVault.findUnique.mockResolvedValue(vault);
       deps.prisma.walletAccount.findUnique.mockResolvedValue({
         publicKey: member.publicKey.toBase58(),
       });
-      Object.assign(deps.prisma.vaultTransaction, {
+      const vaultTx = Object.assign(deps.prisma.vaultTransaction, {
         create: jest.fn().mockResolvedValue({ id: 5 }),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         findFirst: jest.fn(),
       });
       deps.prisma.user.findUnique.mockResolvedValue({ displayName: 'Ana' });
-      return { deps, service: makeService(deps), vault };
+      return { deps, service: makeService(deps), vault, chain, vaultTx };
     }
 
     async function depositTx(
@@ -524,7 +546,7 @@ describe('TripVaultService', () => {
         }),
       });
       expect(deps.prisma.vaultTransaction.updateMany).toHaveBeenCalledWith({
-        where: { id: 5, status: 'PENDING' },
+        where: { id: 5, status: { in: ['PENDING', 'FAILED'] } },
         data: { status: 'CONFIRMED' },
       });
       expect(deps.trips.sendVaultBalanceChanged).toHaveBeenCalledWith(
@@ -637,6 +659,44 @@ describe('TripVaultService', () => {
       expect(deps.trips.sendVaultBalanceChanged).not.toHaveBeenCalled();
     });
 
+    it('I2: an expired blockhash fails the row this submit created and surfaces the 409', async () => {
+      const { deps, service } = setup();
+      const tx = await depositTx(deps.vaultPda, 1_000_000n);
+      const expired = new ConflictException({
+        code: 'tx_expired',
+        message: 'expired',
+      });
+      const confirmSigned = jest.fn();
+      Object.assign(deps.solana, {
+        broadcastSigned: jest.fn().mockRejectedValue(expired),
+        confirmSigned,
+      });
+
+      await expect(service.submitDeposit(42, 7, tx)).rejects.toBe(expired);
+
+      // The transaction can never land, so the row is settled now rather than
+      // left PENDING for the reconcile job to discover.
+      expect(deps.prisma.vaultTransaction.updateMany).toHaveBeenCalledWith({
+        where: { id: 5, status: 'PENDING' },
+        data: { status: 'FAILED' },
+      });
+      expect(confirmSigned).not.toHaveBeenCalled();
+      expect(deps.trips.sendVaultBalanceChanged).not.toHaveBeenCalled();
+    });
+
+    it('leaves the row PENDING for reconcile on any other broadcast failure', async () => {
+      const { deps, service } = setup();
+      const tx = await depositTx(deps.vaultPda, 1_000_000n);
+      Object.assign(deps.solana, {
+        broadcastSigned: jest.fn().mockRejectedValue(new Error('rpc down')),
+      });
+
+      await expect(service.submitDeposit(42, 7, tx)).rejects.toThrow(
+        'rpc down',
+      );
+      expect(deps.prisma.vaultTransaction.updateMany).not.toHaveBeenCalled();
+    });
+
     describe('S7: idempotent under the transaction signature', () => {
       const duplicate = () =>
         new Prisma.PrismaClientKnownRequestError('dup', {
@@ -660,6 +720,8 @@ describe('TripVaultService', () => {
 
         expect(signature).toBe(transactionSignature(tx));
         expect(deps.solana.broadcastSigned).not.toHaveBeenCalled();
+        expect(deps.solana.signatureLanded).not.toHaveBeenCalled();
+        expect(deps.prisma.vaultTransaction.updateMany).not.toHaveBeenCalled();
         expect(deps.trips.sendVaultBalanceChanged).not.toHaveBeenCalled();
       });
 
@@ -680,6 +742,152 @@ describe('TripVaultService', () => {
         await service.submitDeposit(42, 7, tx);
 
         expect(deps.solana.broadcastSigned).toHaveBeenCalledTimes(1);
+        expect(deps.trips.sendVaultBalanceChanged).not.toHaveBeenCalled();
+      });
+
+      // Submit A created the row and got a false "blockhash not found" from a
+      // lagging RPC node, so it failed the row. Submit B, which had already
+      // claimed the row as PENDING, broadcast the same bytes through a healthy
+      // node and they landed. B's confirmation is proof, so B corrects the
+      // FAILED row; otherwise the vault holds money settlement never counts.
+      it('a confirmed broadcast also corrects a row a concurrent submit failed', async () => {
+        const { deps, service, chain, vaultTx } = setup();
+        const tx = await depositTx(deps.vaultPda, 1_000_000n);
+        vaultTx.create.mockRejectedValue(duplicate());
+        vaultTx.findFirst.mockResolvedValue({
+          id: 5,
+          userId: 7,
+          tripVaultId: 1,
+          kind: 'DEPOSIT',
+          status: 'PENDING',
+        });
+        // Only the FAILED -> CONFIRMED move matches by the time B writes.
+        vaultTx.updateMany.mockImplementation(
+          (args: { where: { status: { in?: string[] } | string } }) =>
+            Promise.resolve({
+              count:
+                typeof args.where.status === 'object' &&
+                args.where.status.in?.includes('FAILED')
+                  ? 1
+                  : 0,
+            }),
+        );
+
+        const signature = await service.submitDeposit(42, 7, tx);
+
+        expect(signature).toBe(transactionSignature(tx));
+        expect(chain.confirmSigned).toHaveBeenCalledTimes(1);
+        expect(vaultTx.updateMany).toHaveBeenCalledTimes(1);
+        expect(vaultTx.updateMany).toHaveBeenCalledWith({
+          where: { id: 5, status: { in: ['PENDING', 'FAILED'] } },
+          data: { status: 'CONFIRMED' },
+        });
+        expect(deps.trips.sendVaultBalanceChanged).toHaveBeenCalledWith(
+          42,
+          expect.objectContaining({ kind: 'DEPOSIT', amountMicro: '1000000' }),
+        );
+      });
+
+      // A replay's broadcast can come back "blockhash not found" even though
+      // the first submit's broadcast landed. Only the chain knows, so the
+      // reused row is left PENDING for the reconcile job to ask.
+      it('an expired blockhash on a replay leaves the reused PENDING row for reconcile', async () => {
+        const { deps, service, chain, vaultTx } = setup();
+        const tx = await depositTx(deps.vaultPda, 1_000_000n);
+        vaultTx.create.mockRejectedValue(duplicate());
+        vaultTx.findFirst.mockResolvedValue({
+          id: 5,
+          userId: 7,
+          tripVaultId: 1,
+          kind: 'DEPOSIT',
+          status: 'PENDING',
+        });
+        const expired = new ConflictException({
+          code: 'tx_expired',
+          message: 'expired',
+        });
+        chain.broadcastSigned.mockRejectedValue(expired);
+
+        await expect(service.submitDeposit(42, 7, tx)).rejects.toBe(expired);
+
+        expect(vaultTx.updateMany).not.toHaveBeenCalled();
+        expect(chain.confirmSigned).not.toHaveBeenCalled();
+      });
+
+      it('a resubmit of a FAILED deposit the chain shows landed confirms it once', async () => {
+        const { deps, service, chain, vaultTx } = setup();
+        const tx = await depositTx(deps.vaultPda, 1_000_000n);
+        vaultTx.create.mockRejectedValue(duplicate());
+        vaultTx.findFirst.mockResolvedValue({
+          id: 5,
+          userId: 7,
+          tripVaultId: 1,
+          kind: 'DEPOSIT',
+          status: 'FAILED',
+        });
+        chain.signatureLanded.mockResolvedValue(true);
+
+        const signature = await service.submitDeposit(42, 7, tx);
+
+        expect(signature).toBe(transactionSignature(tx));
+        expect(chain.signatureLanded).toHaveBeenCalledWith(signature);
+        expect(vaultTx.updateMany).toHaveBeenCalledTimes(1);
+        expect(vaultTx.updateMany).toHaveBeenCalledWith({
+          where: { id: 5, status: 'FAILED' },
+          data: { status: 'CONFIRMED' },
+        });
+        // Nothing to send: the transaction is already on chain.
+        expect(chain.broadcastSigned).not.toHaveBeenCalled();
+        expect(deps.trips.sendVaultBalanceChanged).toHaveBeenCalledWith(
+          42,
+          expect.objectContaining({ kind: 'DEPOSIT', amountMicro: '1000000' }),
+        );
+      });
+
+      it('a landed FAILED resubmit that loses the flip race announces nothing', async () => {
+        const { deps, service, chain, vaultTx } = setup();
+        const tx = await depositTx(deps.vaultPda, 1_000_000n);
+        vaultTx.create.mockRejectedValue(duplicate());
+        vaultTx.findFirst.mockResolvedValue({
+          id: 5,
+          userId: 7,
+          tripVaultId: 1,
+          kind: 'DEPOSIT',
+          status: 'FAILED',
+        });
+        chain.signatureLanded.mockResolvedValue(true);
+        vaultTx.updateMany.mockResolvedValue({ count: 0 });
+
+        await expect(service.submitDeposit(42, 7, tx)).resolves.toBe(
+          transactionSignature(tx),
+        );
+        expect(deps.trips.sendVaultBalanceChanged).not.toHaveBeenCalled();
+      });
+
+      it('a resubmit of a FAILED deposit that never landed is a 409 tx_expired', async () => {
+        const { deps, service, chain, vaultTx } = setup();
+        const tx = await depositTx(deps.vaultPda, 1_000_000n);
+        vaultTx.create.mockRejectedValue(duplicate());
+        vaultTx.findFirst.mockResolvedValue({
+          id: 5,
+          userId: 7,
+          tripVaultId: 1,
+          kind: 'DEPOSIT',
+          status: 'FAILED',
+        });
+        chain.signatureLanded.mockResolvedValue(false);
+
+        const error: unknown = await service
+          .submitDeposit(42, 7, tx)
+          .catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(
+          ((error as ConflictException).getResponse() as { code?: string })
+            .code,
+        ).toBe('tx_expired');
+        expect(vaultTx.updateMany).not.toHaveBeenCalled();
+        expect(chain.broadcastSigned).not.toHaveBeenCalled();
         expect(deps.trips.sendVaultBalanceChanged).not.toHaveBeenCalled();
       });
 
@@ -715,5 +923,433 @@ describe('TripVaultService', () => {
     await expect(
       makeService(deps).linkWallet(7, Keypair.generate().publicKey.toBase58()),
     ).rejects.toThrow(/already linked/);
+  });
+
+  it('linkWallet stores the provider it was given', async () => {
+    const deps = makeDeps();
+    const key = Keypair.generate().publicKey.toBase58();
+    deps.prisma.walletAccount.findUnique.mockResolvedValue(null);
+    deps.prisma.walletAccount.upsert.mockResolvedValue({
+      userId: 7,
+      publicKey: key,
+    });
+    await makeService(deps).linkWallet(7, key, WalletProvider.MWA);
+    expect(deps.prisma.walletAccount.upsert).toHaveBeenCalledTimes(1);
+    const [args] = deps.prisma.walletAccount.upsert.mock.calls[0] as [
+      {
+        create: { provider?: WalletProvider };
+        update: { provider?: WalletProvider };
+      },
+    ];
+    expect(args.create.provider).toBe(WalletProvider.MWA);
+    expect(args.update.provider).toBe(WalletProvider.MWA);
+  });
+
+  it('linkWallet re-linking the same key is idempotent even inside an open vault', async () => {
+    const deps = makeDeps();
+    const key = Keypair.generate().publicKey.toBase58();
+    deps.prisma.walletAccount.findUnique.mockResolvedValue({
+      userId: 7,
+      publicKey: key,
+    });
+    deps.prisma.tripVault.findFirst.mockResolvedValue({ tripId: 42 });
+    deps.prisma.walletAccount.upsert.mockResolvedValue({
+      userId: 7,
+      publicKey: key,
+    });
+    await expect(makeService(deps).linkWallet(7, key)).resolves.toMatchObject({
+      publicKey: key,
+    });
+    expect(deps.prisma.tripVault.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('linkWallet re-linking the same key keeps the stored provider', async () => {
+    const deps = makeDeps();
+    const key = Keypair.generate().publicKey.toBase58();
+    deps.prisma.walletAccount.findUnique.mockResolvedValue({
+      userId: 7,
+      publicKey: key,
+      provider: WalletProvider.MWA,
+    });
+    deps.prisma.walletAccount.upsert.mockResolvedValue({
+      userId: 7,
+      publicKey: key,
+    });
+    // Default provider (PRIVY), as the Android deposit flow's POST /trips/:id/vault/wallet sends.
+    await makeService(deps).linkWallet(7, key);
+    const [args] = deps.prisma.walletAccount.upsert.mock.calls[0] as [
+      { update: unknown },
+    ];
+    expect(args.update).toEqual({ publicKey: key });
+  });
+
+  it('linkWallet with a SIWS-proven MWA link upgrades a same-key PRIVY row', async () => {
+    const deps = makeDeps();
+    const key = Keypair.generate().publicKey.toBase58();
+    deps.prisma.walletAccount.findUnique.mockResolvedValue({
+      userId: 7,
+      publicKey: key,
+      provider: WalletProvider.PRIVY,
+    });
+    deps.prisma.walletAccount.upsert.mockResolvedValue({
+      userId: 7,
+      publicKey: key,
+    });
+    await makeService(deps).linkWallet(7, key, WalletProvider.MWA);
+    const [args] = deps.prisma.walletAccount.upsert.mock.calls[0] as [
+      { update: unknown },
+    ];
+    expect(args.update).toEqual({
+      publicKey: key,
+      provider: WalletProvider.MWA,
+    });
+  });
+
+  it('linkWallet refuses switching keys while the user is in an open vault', async () => {
+    const deps = makeDeps();
+    deps.prisma.walletAccount.findUnique.mockResolvedValue({
+      userId: 7,
+      publicKey: Keypair.generate().publicKey.toBase58(),
+    });
+    deps.prisma.tripVault.findFirst.mockResolvedValue({ tripId: 42 });
+    const err = await makeService(deps)
+      .linkWallet(
+        7,
+        Keypair.generate().publicKey.toBase58(),
+        WalletProvider.MWA,
+      )
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConflictException);
+    expect((err as ConflictException).getResponse()).toMatchObject({
+      code: 'wallet_locked_by_vault',
+      tripId: 42,
+    });
+    expect(deps.prisma.walletAccount.upsert).not.toHaveBeenCalled();
+  });
+
+  it('linkWallet allows switching keys when no open vault holds the old one', async () => {
+    const deps = makeDeps();
+    const key = Keypair.generate().publicKey.toBase58();
+    deps.prisma.walletAccount.findUnique.mockResolvedValue({
+      userId: 7,
+      publicKey: Keypair.generate().publicKey.toBase58(),
+    });
+    deps.prisma.tripVault.findFirst.mockResolvedValue(null);
+    deps.prisma.walletAccount.upsert.mockResolvedValue({
+      userId: 7,
+      publicKey: key,
+    });
+    await expect(makeService(deps).linkWallet(7, key)).resolves.toMatchObject({
+      publicKey: key,
+    });
+  });
+  it('linkWallet switching keys drops the old key Seeker identity', async () => {
+    const deps = makeDeps();
+    const key = Keypair.generate().publicKey.toBase58();
+    deps.prisma.walletAccount.findUnique.mockResolvedValue({
+      userId: 7,
+      publicKey: Keypair.generate().publicKey.toBase58(),
+      provider: WalletProvider.MWA,
+      seekerGenesisMint: 'OldMint',
+      skrDomain: 'old',
+    });
+    deps.prisma.walletAccount.upsert.mockResolvedValue({
+      userId: 7,
+      publicKey: key,
+    });
+    await makeService(deps).linkWallet(7, key, WalletProvider.MWA);
+    const [args] = deps.prisma.walletAccount.upsert.mock.calls[0] as [
+      { update: unknown },
+    ];
+    expect(args.update).toEqual({
+      publicKey: key,
+      provider: WalletProvider.MWA,
+      seekerGenesisMint: null,
+      seekerCheckedAt: null,
+      skrDomain: null,
+      skrCheckedAt: null,
+    });
+  });
+
+  describe('linkWallet reclaiming a key another account linked without proof', () => {
+    const CALLER = 7;
+    const OTHER = 9;
+
+    /** findUnique answers by userId (the caller's row) or by publicKey (the key's holder). */
+    function setup(opts: {
+      holder?: { userId: number; provider: WalletProvider } | null;
+      callerRow?: { publicKey: string } | null;
+      openVaultFor?: number[];
+    }) {
+      const deps = makeDeps();
+      const key = Keypair.generate().publicKey.toBase58();
+      const holderRow = opts.holder
+        ? { ...opts.holder, publicKey: key, seekerGenesisMint: 'TheirMint' }
+        : null;
+      deps.prisma.walletAccount.findUnique.mockImplementation(
+        ({ where }: { where: { userId?: number; publicKey?: string } }) =>
+          Promise.resolve(
+            where.publicKey !== undefined
+              ? holderRow
+              : opts.callerRow
+                ? { userId: CALLER, ...opts.callerRow }
+                : null,
+          ),
+      );
+      deps.prisma.tripVault.findFirst.mockImplementation(
+        (args: {
+          where: { trip: { members: { some: { userId: number } } } };
+        }) =>
+          Promise.resolve(
+            opts.openVaultFor?.includes(args.where.trip.members.some.userId)
+              ? { tripId: 77 }
+              : null,
+          ),
+      );
+      deps.prisma.walletAccount.upsert.mockResolvedValue({
+        userId: CALLER,
+        publicKey: key,
+      });
+      const service = makeService(deps);
+      const warn = jest
+        .spyOn(
+          (service as unknown as { logger: { warn: () => void } }).logger,
+          'warn',
+        )
+        .mockImplementation(() => undefined);
+      return { deps, key, service, warn };
+    }
+
+    it('keeps the 409 when another account proved the key with SIWS (MWA)', async () => {
+      const { deps, key, service } = setup({
+        holder: { userId: OTHER, provider: WalletProvider.MWA },
+      });
+      const err = await service
+        .linkWallet(CALLER, key, WalletProvider.MWA)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      expect((err as Error).message).toMatch(/already linked/);
+      expect(deps.prisma.walletAccount.deleteMany).not.toHaveBeenCalled();
+      expect(deps.prisma.walletAccount.upsert).not.toHaveBeenCalled();
+    });
+
+    it('refuses with wallet_claimed_in_open_vault when the unproven holder is in an open vault', async () => {
+      const { deps, key, service, warn } = setup({
+        holder: { userId: OTHER, provider: WalletProvider.PRIVY },
+        openVaultFor: [OTHER],
+      });
+      const err = await service
+        .linkWallet(CALLER, key, WalletProvider.MWA)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      const body = (err as ConflictException).getResponse();
+      expect(body).toMatchObject({ code: 'wallet_claimed_in_open_vault' });
+      // The other user's trip is none of the caller's business.
+      expect(body).not.toHaveProperty('tripId');
+      const [vaultQuery] = deps.prisma.tripVault.findFirst.mock.calls[0] as [
+        { where: { trip: unknown } },
+      ];
+      expect(vaultQuery.where.trip).toEqual({
+        members: {
+          some: { userId: OTHER, inviteStatus: InviteStatus.ACCEPTED },
+        },
+      });
+      expect(deps.prisma.walletAccount.deleteMany).not.toHaveBeenCalled();
+      expect(deps.prisma.walletAccount.upsert).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('deletes the unproven row and links the caller in one transaction when no open vault holds it', async () => {
+      const { deps, key, service, warn } = setup({
+        holder: { userId: OTHER, provider: WalletProvider.PRIVY },
+      });
+      await expect(
+        service.linkWallet(CALLER, key, WalletProvider.MWA),
+      ).resolves.toMatchObject({ userId: CALLER, publicKey: key });
+      expect(deps.prisma.$transaction).toHaveBeenCalledTimes(1);
+      // Only that user's still-unproven row for this key: an upgrade to MWA in between wins.
+      expect(deps.prisma.walletAccount.deleteMany).toHaveBeenCalledWith({
+        where: {
+          userId: OTHER,
+          publicKey: key,
+          provider: WalletProvider.PRIVY,
+        },
+      });
+      const [args] = deps.prisma.walletAccount.upsert.mock.calls[0] as [
+        {
+          where: { userId: number };
+          create: Record<string, unknown>;
+        },
+      ];
+      expect(args.where).toEqual({ userId: CALLER });
+      // A fresh row: the old holder's Seeker identity does not carry over.
+      expect(args.create).toEqual({
+        userId: CALLER,
+        publicKey: key,
+        provider: WalletProvider.MWA,
+      });
+      expect(
+        deps.prisma.walletAccount.deleteMany.mock.invocationCallOrder[0],
+      ).toBeLessThan(
+        deps.prisma.walletAccount.upsert.mock.invocationCallOrder[0],
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [line] = warn.mock.calls[0] as unknown as [string];
+      expect(line).toContain(`userId ${OTHER}`);
+      expect(line).toContain(`userId ${CALLER}`);
+      expect(line).toContain(key);
+      expect(line).toContain('SIWS');
+    });
+
+    it('maps a P2002 race inside the reclaim transaction to the existing 409', async () => {
+      const { deps, key, service, warn } = setup({
+        holder: { userId: OTHER, provider: WalletProvider.PRIVY },
+      });
+      deps.prisma.walletAccount.deleteMany.mockResolvedValue({ count: 0 });
+      deps.prisma.walletAccount.upsert.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('dup', {
+          code: 'P2002',
+          clientVersion: 'test',
+        }),
+      );
+      await expect(
+        service.linkWallet(CALLER, key, WalletProvider.MWA),
+      ).rejects.toThrow(/already linked/);
+      expect(deps.prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('links without an audit line when the holder released the key in the meantime', async () => {
+      const { deps, key, service, warn } = setup({
+        holder: { userId: OTHER, provider: WalletProvider.PRIVY },
+      });
+      deps.prisma.walletAccount.deleteMany.mockResolvedValue({ count: 0 });
+      await expect(
+        service.linkWallet(CALLER, key, WalletProvider.MWA),
+      ).resolves.toMatchObject({ userId: CALLER, publicKey: key });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('never reclaims through the PRIVY-default routes', async () => {
+      const { deps, key, service } = setup({
+        holder: { userId: OTHER, provider: WalletProvider.PRIVY },
+      });
+      deps.prisma.walletAccount.upsert.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('dup', {
+          code: 'P2002',
+          clientVersion: 'test',
+        }),
+      );
+      await expect(service.linkWallet(CALLER, key)).rejects.toThrow(
+        /already linked/,
+      );
+      expect(deps.prisma.walletAccount.deleteMany).not.toHaveBeenCalled();
+      expect(deps.prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("still applies the caller's own re-link guard before reclaiming", async () => {
+      const { deps, key, service } = setup({
+        holder: { userId: OTHER, provider: WalletProvider.PRIVY },
+        callerRow: { publicKey: Keypair.generate().publicKey.toBase58() },
+        openVaultFor: [CALLER],
+      });
+      const err = await service
+        .linkWallet(CALLER, key, WalletProvider.MWA)
+        .catch((e: unknown) => e);
+      expect((err as ConflictException).getResponse()).toMatchObject({
+        code: 'wallet_locked_by_vault',
+      });
+      expect(deps.prisma.walletAccount.deleteMany).not.toHaveBeenCalled();
+      expect(deps.prisma.walletAccount.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  it('walletBalance exposes the Seeker identity of an MWA wallet', async () => {
+    const deps = makeDeps();
+    const row = {
+      userId: 7,
+      publicKey: Keypair.generate().publicKey.toBase58(),
+      provider: WalletProvider.MWA,
+      seekerGenesisMint: 'SgtMint',
+      seekerCheckedAt: null,
+      skrDomain: 'alice',
+    };
+    deps.prisma.walletAccount.findUnique.mockResolvedValue(row);
+    await expect(makeService(deps).walletBalance(7)).resolves.toMatchObject({
+      skrDomain: 'alice',
+      isSeeker: true,
+    });
+    expect(deps.identity.refreshStaleInBackground).toHaveBeenCalledWith([row]);
+  });
+
+  it('walletBalance hides stored identity on a PRIVY wallet (linked without proof)', async () => {
+    const deps = makeDeps();
+    deps.prisma.walletAccount.findUnique.mockResolvedValue({
+      userId: 7,
+      publicKey: Keypair.generate().publicKey.toBase58(),
+      provider: WalletProvider.PRIVY,
+      seekerGenesisMint: 'SgtMint',
+      seekerCheckedAt: new Date(),
+      skrDomain: 'alice',
+    });
+    // Even on the no-token-account path.
+    deps.solana.getTokenBalance.mockRejectedValue(new Error('no ata'));
+    await expect(makeService(deps).walletBalance(7)).resolves.toMatchObject({
+      balanceMicro: 0n,
+      skrDomain: null,
+      isSeeker: false,
+    });
+  });
+
+  it('walletBalance without a wallet reports no identity', async () => {
+    const deps = makeDeps();
+    await expect(makeService(deps).walletBalance(7)).resolves.toEqual({
+      publicKey: null,
+      usdcAta: null,
+      balanceMicro: 0n,
+      skrDomain: null,
+      isSeeker: false,
+    });
+    expect(deps.identity.refreshStaleInBackground).not.toHaveBeenCalled();
+  });
+
+  it('identitiesForTrip gates identity on MWA and refreshes stale rows', async () => {
+    const deps = makeDeps();
+    deps.prisma.tripMember.findMany.mockResolvedValue([
+      { userId: 7 },
+      { userId: 8 },
+    ]);
+    const wallets = [
+      {
+        userId: 7,
+        provider: WalletProvider.MWA,
+        skrDomain: 'alice',
+        seekerGenesisMint: 'SgtMint',
+        seekerCheckedAt: null,
+      },
+      {
+        userId: 8,
+        provider: WalletProvider.PRIVY,
+        skrDomain: 'mallory',
+        seekerGenesisMint: 'StolenMint',
+        seekerCheckedAt: new Date(),
+      },
+    ];
+    deps.prisma.walletAccount.findMany.mockResolvedValue(wallets);
+    await expect(makeService(deps).identitiesForTrip(42)).resolves.toEqual([
+      { userId: 7, skrDomain: 'alice', isSeeker: true },
+      { userId: 8, skrDomain: null, isSeeker: false },
+    ]);
+    expect(deps.prisma.tripMember.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tripId: 42, inviteStatus: InviteStatus.ACCEPTED },
+      }),
+    );
+    expect(deps.prisma.walletAccount.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: { in: [7, 8] } } }),
+    );
+    expect(deps.identity.refreshStaleInBackground).toHaveBeenCalledWith(
+      wallets,
+    );
   });
 });

@@ -18,6 +18,7 @@ import { useTranslation } from 'react-i18next';
 import { Alert, RefreshControl, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { mutationErrorMessage } from '@/api/mutationError';
 import { TripInviteCard } from '@/features/invite/components';
 import { useFirstOpenInviteSheet } from '@/features/invite/useFirstOpenInviteSheet';
 import { useIsPro, useMe } from '@/features/me/useMe';
@@ -35,6 +36,9 @@ import { useLeavePreview } from '@/features/trip/api/leave';
 import { invalidateTrip, useUpdateTrip } from '@/features/trip/api/mutations';
 import { useTripVaultCard } from '@/features/vault/api/tripVaultCard';
 import { TripVaultSection } from '@/features/vault/screens/TripVaultSection';
+import { VaultHistoryView } from '@/features/vault/screens/VaultHistoryView';
+import { useAnnounceVaultLeave } from '@/features/vault/api/leave';
+import { useTripEndConsensus } from '@/features/vault/useTripEndConsensus';
 import { useWeb3Enabled } from '@/features/vault/web3Flag';
 import {
   HomeCard,
@@ -140,10 +144,15 @@ export default function TripDetailScreen() {
   // decides the leave sheet/members prop) — both ultimately answer "does this trip have a vault",
   // via different endpoints; kept separate rather than unified across waves to avoid a cross-wave
   // behavior change here.
-  const { hasVaultCard, balanceInHomeCurrency: vaultBalanceInHome } = useTripVaultCard(
-    tripId,
-    detail.homeCurrency.code,
-  );
+  const {
+    hasVaultCard,
+    hasVault: vaultExists,
+    balanceInHomeCurrency: vaultBalanceInHome,
+  } = useTripVaultCard(tripId, detail.homeCurrency.code);
+  // Every member reaches end-trip Review/Waiting/Denied from here (card + realtime), not only the
+  // host who raised the request from the menu.
+  const endConsensus = useTripEndConsensus(tripId, vaultExists, me.data?.id);
+  const announceLeave = useAnnounceVaultLeave(tripId);
 
   const handleRename = (name: string) => {
     updateTrip.mutate({ name });
@@ -212,9 +221,12 @@ export default function TripDetailScreen() {
       params: { tripId: String(tripId) },
     });
 
+  // A vault trip's History tab is the vault's own ledger (deposits + payments, with approvals),
+  // like iOS `TripDetailView.historyTab` — it renders as the single `tab` row below.
+  const showsVaultHistory = tab === 'history' && vaultExists;
   // History with entries → one list row per day header / entry; anything else → one `tab` row.
   const rows: DetailRow[] =
-    tab === 'history' && historyRows.length > 0
+    tab === 'history' && !showsVaultHistory && historyRows.length > 0
       ? historyRows
       : [{ type: 'tab', key: `tab:${tab}` }];
   // One native read per render for every row's time label.
@@ -226,60 +238,65 @@ export default function TripDetailScreen() {
   // card, the empty-history card) stretches to the bottom (TripDetailView.swift:282-285).
   const tabMinHeight = Math.max(0, listHeight - contentTop - listHeaderHeight - contentBottom);
 
-  const tabBody =
-    tab === 'history' ? (
-      // Only reached with no sections: the spinner or the empty card.
-      <TripHistorySection
-        sections={sections}
-        isLoading={detail.expensesLoading}
-        onExpensePress={openExpense}
-        onBudgetPress={openBudgets}
-        expensePressDisabled={access.isOffline}
-      />
-    ) : tab === 'plan' ? (
-      <TripPlanSection
-        detail={detail}
-        planDay={planDay}
-        onNewPlan={({ day, date }) =>
-          router.push({
-            pathname: '/trip/[tripId]/plan/new',
-            params: {
-              tripId: String(tripId),
-              day: day != null ? String(day) : undefined,
-              date: date ?? undefined,
-            },
-          })
-        }
-        onItemPress={(item: PlanItemDto) =>
-          router.push({
-            pathname: '/trip/[tripId]/plan/[itemId]',
-            params: { tripId: String(tripId), itemId: String(item.id) },
-          })
-        }
-        onRearrange={() => rearrangeSheetRef.current?.present()}
-        onAddDay={() => void dayOps.addDay(planDay.ctx)}
-        readOnly={!access.canEdit}
-      />
-    ) : tab === 'note' ? (
-      <TripNoteSection tripId={tripId} armed={notesArmed} canEdit={access.canEdit} />
-    ) : tab === 'members' ? (
-      <MembersSection
-        members={detail.members}
-        currentUserId={me.data?.id}
-        tripId={tripId}
-        isCreator={isCreator}
-        hasVault={hasVault}
-      />
-    ) : (
-      <TripInsightSection
-        breakdown={detail.breakdown}
-        expenses={detail.expenses}
-        budgets={detail.budgets}
-        currency={detail.homeCurrency}
-        currentUserId={me.data?.id}
-        localCurrencyCode={trip?.localCurrencies?.[0]}
-      />
-    );
+  const tabBody = showsVaultHistory ? (
+    <VaultHistoryView
+      tripId={tripId}
+      allowsEditing={access.canEdit}
+      embedsInParentScroll
+    />
+  ) : tab === 'history' ? (
+    // Only reached with no sections: the spinner or the empty card.
+    <TripHistorySection
+      sections={sections}
+      isLoading={detail.expensesLoading}
+      onExpensePress={openExpense}
+      onBudgetPress={openBudgets}
+      expensePressDisabled={access.isOffline}
+    />
+  ) : tab === 'plan' ? (
+    <TripPlanSection
+      detail={detail}
+      planDay={planDay}
+      onNewPlan={({ day, date }) =>
+        router.push({
+          pathname: '/trip/[tripId]/plan/new',
+          params: {
+            tripId: String(tripId),
+            day: day != null ? String(day) : undefined,
+            date: date ?? undefined,
+          },
+        })
+      }
+      onItemPress={(item: PlanItemDto) =>
+        router.push({
+          pathname: '/trip/[tripId]/plan/[itemId]',
+          params: { tripId: String(tripId), itemId: String(item.id) },
+        })
+      }
+      onRearrange={() => rearrangeSheetRef.current?.present()}
+      onAddDay={() => void dayOps.addDay(planDay.ctx)}
+      readOnly={!access.canEdit}
+    />
+  ) : tab === 'note' ? (
+    <TripNoteSection tripId={tripId} armed={notesArmed} canEdit={access.canEdit} />
+  ) : tab === 'members' ? (
+    <MembersSection
+      members={detail.members}
+      currentUserId={me.data?.id}
+      tripId={tripId}
+      isCreator={isCreator}
+      hasVault={hasVault}
+    />
+  ) : (
+    <TripInsightSection
+      breakdown={detail.breakdown}
+      expenses={detail.expenses}
+      budgets={detail.budgets}
+      currency={detail.homeCurrency}
+      currentUserId={me.data?.id}
+      localCurrencyCode={trip?.localCurrencies?.[0]}
+    />
+  );
 
   return (
     <View style={styles.root}>
@@ -370,6 +387,15 @@ export default function TripDetailScreen() {
                   coverImageUrl={trip?.coverImageUrl}
                   balanceInHomeCurrency={vaultBalanceInHome}
                   homeCurrency={detail.homeCurrency}
+                  isWaitingForEndApproval={endConsensus.isPending}
+                  onWaitingForApproval={endConsensus.open}
+                  onLeaveDepositCompleted={() =>
+                    announceLeave.mutate(undefined, {
+                      onSuccess: () => vaultLeaveSheetRef.current?.present(),
+                      onError: (err) =>
+                        Alert.alert(mutationErrorMessage(err, t('Something went wrong'))),
+                    })
+                  }
                 />
               ) : (
                 <HomeCard

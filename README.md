@@ -8,7 +8,8 @@ OnePlan is a group trip planner (itinerary, expenses, bill splitting, chat) with
 
 ```
  Expo / React Native app (mobile/)
-   │  Privy embedded wallet (Solana)
+   │  Android: member's own wallet via Mobile Wallet Adapter (Phantom, Solflare, Seed Vault)
+   │  iOS: Privy embedded wallet
    │  REST + JWT
    ▼
  NestJS API (server/) ──── PostgreSQL (Prisma)
@@ -19,6 +20,24 @@ OnePlan is a group trip planner (itinerary, expenses, bill splitting, chat) with
  Anchor program oneplan-vault (solana/) on Solana devnet
    USDC vault per trip · member roles · spend / propose / approve · settlement
 ```
+
+## Solana Mobile integration
+
+- **Mobile Wallet Adapter on Android.** Members connect their own wallet app. Every vault deposit, payment, approval and withdrawal is signed there with `signTransactions`; it only signs, never sends. The server builds every transaction, is the fee payer (members never need SOL), re-verifies the exact signed bytes and broadcasts.
+- **Sign-In With Solana.** Connecting is one SIWS prompt. The server verifies it before linking the address to the OnePlan account, so nobody can link a wallet they don't own.
+- **Seeker identity.** A Seeker Genesis Token badge (verified on mainnet using Solana Mobile's SGT checks) and `.skr` names (AllDomains) replace raw addresses on the wallet card and in settlements.
+- **Devnet faucet.** "Get test USDC" sends 5 devnet USDC (once per 24 h) so the full flow can be tried right away.
+- **Server switch.** `WEB3_MWA_ENABLED` picks MWA or the embedded wallet for Android without a new app build.
+
+| Piece | Location |
+|---|---|
+| MWA session (connect, sign, error mapping) | `mobile/src/features/vault/wallet/mwa/` |
+| Wallet provider selection | `mobile/src/features/vault/wallet/VaultWalletProvider.tsx` |
+| SIWS challenge + verification | `server/src/trip-vault/siws.service.ts`, `server/src/trip-vault/wallet.controller.ts` |
+| Devnet faucet | `server/src/web3/faucet.service.ts` |
+| Seeker Genesis Token + `.skr` lookup | `server/src/web3/seeker-identity.service.ts` |
+
+**Try it (Android APK, devnet):** sign in → Profile → Wallet → **Connect wallet** (approve in your wallet app, set to devnet) → **Get test USDC** → open a group-wallet trip → **Deposit**.
 
 ## Repo layout
 
@@ -85,6 +104,10 @@ Web3 vars:
 | `SOLANA_TREASURY_OWNER` | treasury owner pubkey |
 | `MOCK_PAYOUT_OUTCOME` | `success \| failed \| timeout \| unknown` |
 | `WALLET_JWT_PRIVATE_KEY_FILE` | PEM used to sign embedded-wallet JWTs |
+| `WEB3_MWA_ENABLED` | Android signs with Mobile Wallet Adapter when `true` (default), the embedded wallet when `false` |
+| `SIWS_DOMAIN` / `SIWS_CHAIN_ID` | Sign-In With Solana domain and chain (defaults `oneplan.space`, `solana:devnet`) |
+| `WEB3_FAUCET_ENABLED` / `SOLANA_FAUCET_SECRET_KEY` / `FAUCET_USDC_MICRO` | Devnet test-USDC faucet (off by default; 5 USDC per claim) |
+| `SOLANA_MAINNET_RPC_URL` | Read-only mainnet RPC for Seeker Genesis Token / `.skr` lookups (must allow `getProgramAccounts`); empty = off |
 
 The program id is not an env var: the server reads it from the bundled IDL (`server/src/solana/idl/`), currently devnet `HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL`.
 

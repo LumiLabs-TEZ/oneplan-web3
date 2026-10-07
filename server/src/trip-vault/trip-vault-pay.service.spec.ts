@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -902,6 +903,72 @@ describe('TripVaultPayService', () => {
 
         expect(d.solana.broadcastSigned).toHaveBeenCalledTimes(1);
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // I2: the blockhash expired while the member was approving in the wallet
+  // ---------------------------------------------------------------------
+  describe('I2: an expired blockhash on submit', () => {
+    const expired = () =>
+      new ConflictException({ code: 'tx_expired', message: 'expired' });
+
+    it('retires the unsigned row as abandoned and surfaces the 409', async () => {
+      const d = deps();
+      d.seed(pendingRow({ signature: null, proposalPda: null }));
+      const error = expired();
+      d.solana.broadcastSigned.mockRejectedValue(error);
+
+      await expect(
+        build(d).submitPayment(9, await spendTx(), TRIP_ID, 7),
+      ).rejects.toBe(error);
+
+      // Nothing reached the chain, so this is the same retirement the client's
+      // abandon call makes — the client skips it once a signature exists.
+      expect(d.prisma.vaultTransaction.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 9,
+          status: VaultTxStatus.PENDING,
+          signature: null,
+          proposalPda: null,
+        },
+        data: { status: VaultTxStatus.FAILED, failureCode: 'abandoned' },
+      });
+      expect(d.payout.payout).not.toHaveBeenCalled();
+    });
+
+    it('keeps an open proposal PENDING when the approval expired', async () => {
+      const d = deps();
+      d.seed(
+        pendingRow({
+          amountMicro: 20_000_000n,
+          proposalPda: `${VAULT_PDA.toBase58()}:0`,
+          signature: 'proposal-sig',
+        }),
+      );
+      const approver = Keypair.generate();
+      d.prisma.walletAccount.findUnique.mockResolvedValue({
+        publicKey: approver.publicKey.toBase58(),
+      });
+      d.vaultService.approverUserIds.mockResolvedValue([8]);
+      d.solana.broadcastSigned.mockRejectedValue(expired());
+
+      await expect(
+        build(d).submitPayment(9, await approveTx(approver), TRIP_ID, 8),
+      ).rejects.toThrow(ConflictException);
+      // The proposal is still on chain and can be approved again.
+      expect(d.prisma.vaultTransaction.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('leaves the row alone on any other broadcast failure', async () => {
+      const d = deps();
+      d.seed(pendingRow({ signature: null, proposalPda: null }));
+      d.solana.broadcastSigned.mockRejectedValue(new Error('rpc down'));
+
+      await expect(
+        build(d).submitPayment(9, await spendTx(), TRIP_ID, 7),
+      ).rejects.toThrow('rpc down');
+      expect(d.prisma.vaultTransaction.updateMany).not.toHaveBeenCalled();
     });
   });
 

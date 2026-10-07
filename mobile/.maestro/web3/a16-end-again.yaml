@@ -1,0 +1,39 @@
+# A (host): Go back from Denied, then trip menu → End trip → confirm → Review (vault ledger) → Approve → Waiting for others.
+appId: local.lumilabs.oneplan
+---
+- runFlow:
+    when:
+      visible:
+        id: "trip-end-denied-go-back"
+    commands:
+      - tapOn:
+          id: "trip-end-denied-go-back"
+      - waitForAnimationToEnd:
+          timeout: 2000
+- runFlow: common/open-trip.yaml
+- tapOn:
+    id: "trip-menu-button"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn: "^End trip$"
+- extendedWaitUntil:
+    visible: "End trip\\?"
+    timeout: 10000
+- tapOn: "^End trip$"
+- extendedWaitUntil:
+    visible:
+      id: "trip-end-review-approve"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 3000
+- scroll
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "trip-end-review-approve"
+- extendedWaitUntil:
+    visible:
+      id: "trip-end-waiting-screen"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 2500

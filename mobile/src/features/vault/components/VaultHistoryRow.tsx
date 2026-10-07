@@ -15,7 +15,7 @@ import type { ExpenseCategory } from '@/features/expense/categories';
 import { useAppLanguage } from '@/i18n';
 import { CurrencyFormatter } from '@/lib/currency';
 import { images } from '@/ui/assets';
-import { CachedImage } from '@/ui/components';
+import { Avatar } from '@/ui/components';
 import { colors } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
@@ -40,6 +40,8 @@ export interface VaultHistoryEntry {
   /** Negative for money out, positive for money in. */
   amount: number;
   currency: 'VND' | 'USD';
+  /** Dong the merchant was handed, drawn under a USDC spend (`10,000đ · 23:25`). */
+  secondaryVnd?: number | null;
   time: string;
   /** Above the trip limit, no second approval yet — the money hasn't moved. */
   isAwaitingApproval?: boolean;
@@ -107,11 +109,13 @@ export function VaultHistoryRow({
         <Text style={[styles.amount, { color: amountColor }]} numberOfLines={1}>
           {amountText(entry, placesCurrencySymbolAfter)}
         </Text>
-        <Text
-          style={[styles.time, { color: isAwaitingApproval ? colors.warning500 : colors.contentM }]}
-          numberOfLines={1}
-        >
-          {isAwaitingApproval ? t('Needs approval') : entry.time}
+        <Text style={[styles.time, { color: colors.contentM }]} numberOfLines={1}>
+          {entry.secondaryVnd != null
+            ? `${CurrencyFormatter.formatWhole(entry.secondaryVnd)}đ · `
+            : null}
+          <Text style={{ color: isAwaitingApproval ? colors.warning500 : colors.contentM }}>
+            {isAwaitingApproval ? t('Needs approval') : entry.time}
+          </Text>
         </Text>
       </View>
     </Pressable>
@@ -211,23 +215,11 @@ function ShareChip({
   );
 }
 
+/** Same default silhouette as the web2 history pills (`TripHistoryList` `PillAvatar`). */
 function PersonAvatar({ person }: { person: VaultHistoryPerson }) {
-  if (person.avatarUrl) {
-    return (
-      <CachedImage
-        uri={person.avatarUrl}
-        style={styles.avatar}
-        placeholder={<InitialAvatar name={person.name} />}
-      />
-    );
-  }
-  return <InitialAvatar name={person.name} />;
-}
-
-function InitialAvatar({ name }: { name: string }) {
   return (
-    <View style={[styles.avatar, styles.initialAvatar]}>
-      <Text style={styles.initialAvatarText}>{name.slice(0, 1).toUpperCase()}</Text>
+    <View style={styles.avatar}>
+      <Avatar uri={person.avatarUrl ?? null} size={AVATAR_SIZE - 2} />
     </View>
   );
 }
@@ -316,10 +308,4 @@ const styles = StyleSheet.create({
     borderColor: colors.white,
     overflow: 'hidden',
   },
-  initialAvatar: {
-    backgroundColor: colors.neutral200,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  initialAvatarText: { ...beVietnamPro(9), color: colors.contentM },
 });

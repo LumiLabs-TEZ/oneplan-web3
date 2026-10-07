@@ -1,0 +1,166 @@
+# Solana Mobile hackathon (Android emulator, Local variant + local server, fakewallet installed):
+# connect the member's own wallet via MWA + SIWS → claim devnet test USDC → deposit 4 USDC into the
+# "Web3 E2E" trip vault, signed in fakewallet.
+#
+# Preconditions (local server, see task-13 report):
+# - The app is already signed in as the member (Google sign-in; Dev sign-in is the Spike account,
+#   whose key can't be switched while it sits in an open vault). The member has fakewallet's key
+#   linked, or no key yet, and isn't seated in another open vault with a different key.
+# - The member is an accepted member of a web3 trip named "Web3 E2E" (listed under Trip → Planning).
+# - The faucet's 24h cooldown is cleared: DELETE FROM web3_faucet_claim WHERE user_id = <member id>;
+# - Server env: WEB3_DEV_COUNTRY_OVERRIDE=US (or the member on the web3 allowlist),
+#   WEB3_FAUCET_ENABLED=true + SOLANA_FAUCET_SECRET_KEY, and a funded faucet USDC account.
+# - Metro started with API_URL=http://localhost:3000 and `adb reverse tcp:3000 tcp:3000`.
+#
+# Run from mobile/: maestro --device emulator-5554 test .maestro/web3/hackathon-mwa.yaml
+appId: com.oneplan.android.local
+---
+- launchApp:
+    stopApp: true
+- runFlow:
+    when:
+      visible: "DEVELOPMENT SERVERS"
+    commands:
+      - tapOn: ".*8081.*"
+- repeat:
+    times: 8
+    while:
+      notVisible:
+        id: "header-avatar"
+    commands:
+      # Signed out: this flow can't sign the member in (see preconditions), so fail here.
+      - runFlow:
+          when:
+            visible: "Continue with Google"
+          commands:
+            - assertNotVisible: "Continue with Google"
+      - runFlow:
+          when:
+            visible:
+              id: "welcome-trip-wallet-sheet"
+          commands:
+            - tapOn:
+                id: "welcome-trip-wallet-continue"
+      - runFlow:
+          when:
+            visible:
+              id: "free-trial-screen"
+          commands:
+            - tapOn:
+                id: "trial-close"
+      - waitForAnimationToEnd:
+          timeout: 2500
+- tapOn:
+    id: "header-avatar"
+- extendedWaitUntil:
+    visible:
+      id: "profile-wallet-card"
+    timeout: 15000
+- tapOn:
+    id: "profile-wallet-card-open"
+- extendedWaitUntil:
+    visible:
+      id: "wallet-screen-back"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 2500
+# Connect when there's no cached MWA connection (fresh install or after Disconnect); otherwise
+# the card already shows the connected wallet.
+- runFlow:
+    when:
+      visible:
+        id: "connect-wallet-button"
+    commands:
+      - tapOn:
+          id: "connect-wallet-button"
+      - extendedWaitUntil:
+          visible:
+            id: "com.solana.mobilewalletadapter.fakewallet:id/btn_sign_in"
+          timeout: 20000
+      - tapOn:
+          id: "com.solana.mobilewalletadapter.fakewallet:id/btn_sign_in" # fakewallet SIWS "SIGN IN"
+- extendedWaitUntil:
+    visible:
+      id: "connect-wallet-disconnect"
+    timeout: 30000
+- extendedWaitUntil:
+    visible:
+      id: "wallet-screen-faucet"
+    timeout: 15000
+- tapOn:
+    id: "wallet-screen-faucet"
+- extendedWaitUntil:
+    visible: "Test USDC sent"
+    timeout: 60000
+- takeScreenshot: hackathon-mwa-faucet
+- tapOn:
+    id: "wallet-screen-back"
+- extendedWaitUntil:
+    visible:
+      id: "profile-back"
+    timeout: 10000
+- tapOn:
+    id: "profile-back"
+- extendedWaitUntil:
+    visible:
+      id: "tab-trip"
+    timeout: 10000
+- tapOn:
+    id: "tab-trip"
+- extendedWaitUntil:
+    visible: "Web3 E2E"
+    timeout: 15000
+- tapOn: "Web3 E2E"
+- extendedWaitUntil:
+    visible:
+      id: "trip-vault-card-deposit"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "trip-vault-card-deposit"
+- extendedWaitUntil:
+    visible:
+      id: "deposit-option-oneplan-wallet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "deposit-option-oneplan-wallet"
+- extendedWaitUntil:
+    visible:
+      id: "contribute-to-vault-sheet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "key-4"
+- waitForAnimationToEnd:
+    timeout: 1000
+- tapOn:
+    id: "contribute-submit"
+# fakewallet's signTransactions screen ("SIGN TRANSACTION(S)"); its approve button is "AUTHORIZE".
+- extendedWaitUntil:
+    visible:
+      id: "com.solana.mobilewalletadapter.fakewallet:id/sign_payloads"
+    timeout: 30000
+- tapOn:
+    id: "com.solana.mobilewalletadapter.fakewallet:id/btn_authorize"
+- extendedWaitUntil:
+    visible:
+      id: "vault-depositing-details"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 4000
+- tapOn:
+    id: "vault-depositing-details"
+- extendedWaitUntil:
+    visible: "Completed"
+    timeout: 120000
+- takeScreenshot: hackathon-mwa-deposit
+- tapOn:
+    id: "vault-deposit-result-go-back"
+- extendedWaitUntil:
+    visible:
+      id: "trip-vault-card-deposit"
+    timeout: 10000

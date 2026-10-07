@@ -362,6 +362,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/web3/faucet": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send devnet test USDC to the caller wallet */
+        post: operations["claimWeb3Faucet"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/web3/admin/allowlist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Web3 allowlist, newest first. */
+        get: operations["adminListWeb3Allowlist"];
+        put?: never;
+        /** Allowlist an existing user by email: web3 is available to them from any IP. */
+        post: operations["adminAddWeb3Allowlist"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/web3/admin/allowlist/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove a user from the web3 allowlist. */
+        delete: operations["adminRemoveWeb3Allowlist"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/scan-credit/app-launch": {
         parameters: {
             query?: never;
@@ -1207,6 +1259,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/trips/{tripId}/vault/identities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Seeker badge and .skr name per member */
+        get: operations["getVaultMemberIdentities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/trips/{tripId}/vault/balance": {
         parameters: {
             query?: never;
@@ -1508,6 +1577,40 @@ export interface paths {
         put?: never;
         /** Link the caller embedded wallet public key */
         post: operations["linkWallet"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wallet/siws/challenge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sign-In-With-Solana input for linking a wallet the user brings (MWA) */
+        post: operations["createSiwsChallenge"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/wallet/link/siws": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Link a wallet after verifying its Sign-In-With-Solana signature */
+        post: operations["linkWalletSiws"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3561,10 +3664,39 @@ export interface components {
             expiresIn: number;
         };
         Web3EligibilityDto: {
-            /** @description Caller may create/enable web3 trips: server web3 is on and configured, and the request IP is not in a blocked country. */
+            /** @description Caller may create/enable web3 trips: server web3 is on and configured, and the request IP is not in a blocked country or the caller is on the admin allowlist. */
             eligible: boolean;
             /** @description Informational only (UI copy): caller belongs to a web3 trip. Never grants web3 access; only `eligible` does. */
             hasWeb3Trip: boolean;
+            /** @description A devnet test-USDC faucet is available to this caller (POST /web3/faucet). */
+            faucetEnabled: boolean;
+            /** @description Wallet choice, not an access grant: Android signs with the member's own wallet app over Mobile Wallet Adapter when true, with the Privy embedded wallet when false. iOS ignores it (always Privy). */
+            mwaEnabled: boolean;
+        };
+        FaucetClaimDto: {
+            /** @description Devnet transaction signature */
+            signature: string;
+            /** @description Micro-USDC sent, decimal string */
+            amountMicro: string;
+        };
+        Web3AllowlistEntryDto: {
+            userId: number;
+            email: string;
+            displayName: string;
+            note?: string | null;
+            /** @description Admin who added the user */
+            addedByEmail: string;
+            /** @description ISO timestamp */
+            createdAt: string;
+        };
+        AddWeb3AllowlistDto: {
+            /**
+             * @description Email of an existing account
+             * @example user@example.com
+             */
+            email: string;
+            /** @description Why this user is allowlisted (e.g. "Demo Day phone") */
+            note?: string;
         };
         AppLaunchDto: {
             /**
@@ -3698,6 +3830,8 @@ export interface components {
             currency?: components["schemas"]["Currency"];
             /** @description Additional local currencies used on the trip. If omitted, a single currency is auto-suggested from the trip country when it differs from the home currency. Up to 5 entries. */
             localCurrencies?: components["schemas"]["Currency"][];
+            /** @description Create the trip with a group wallet (web3). Fixed at creation. Requires web3 eligibility (403 web3_unavailable otherwise). */
+            web3?: boolean;
         };
         /** @enum {string} */
         TripStatus: "PLANNING" | "ONGOING" | "ENDED";
@@ -4417,6 +4551,17 @@ export interface components {
             usdcAta?: string | null;
             /** @description USDC held by the caller, in micro-USDC */
             balanceMicro: string;
+            /** @description Primary .skr name without the suffix (mainnet); null unless the wallet was linked with a SIWS proof */
+            skrDomain?: string | null;
+            /** @description The linked key holds a Seeker Genesis Token (mainnet); false unless linked with a SIWS proof */
+            isSeeker: boolean;
+        };
+        MemberIdentityDto: {
+            userId: number;
+            /** @description Primary .skr name without the suffix (mainnet) */
+            skrDomain?: string | null;
+            /** @description The linked key holds a Seeker Genesis Token (mainnet) */
+            isSeeker: boolean;
         };
         VaultBalanceDto: {
             /** @description Vault PDA in base58 */
@@ -4609,6 +4754,33 @@ export interface components {
         ConfirmCashDebtDto: {
             /** @description Who paid the caller */
             fromUserId: number;
+        };
+        SiwsInputDto: {
+            domain: string;
+            statement: string;
+            uri: string;
+            version: string;
+            chainId: string;
+            nonce: string;
+            /** @description ISO-8601 */
+            issuedAt: string;
+            /** @description ISO-8601 */
+            expirationTime: string;
+        };
+        SiwsChallengeDto: {
+            /** @description Pass verbatim as MWA sign_in_payload */
+            input: components["schemas"]["SiwsInputDto"];
+            /** @description Opaque; send back unchanged to POST /wallet/link/siws */
+            challengeToken: string;
+        };
+        LinkWalletSiwsDto: {
+            challengeToken: string;
+            /** @description MWA sign_in_result.address (base64 public key) */
+            address: string;
+            /** @description MWA sign_in_result.signed_message (base64) */
+            signedMessage: string;
+            /** @description MWA sign_in_result.signature (base64) */
+            signature: string;
         };
         WalletHistoryEntryDto: {
             /** @description Solana transaction signature (unique id) */
@@ -7032,6 +7204,122 @@ export interface operations {
             };
         };
     };
+    claimWeb3Faucet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FaucetClaimDto"];
+                };
+            };
+        };
+    };
+    adminListWeb3Allowlist: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Web3AllowlistEntryDto"][];
+                };
+            };
+            /** @description Admin access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    adminAddWeb3Allowlist: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddWeb3AllowlistDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Web3AllowlistEntryDto"];
+                };
+            };
+            /** @description Admin access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No user with that email */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    adminRemoveWeb3Allowlist: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin access required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description User is not on the allowlist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     reportAppLaunch: {
         parameters: {
             query?: never;
@@ -8764,6 +9052,27 @@ export interface operations {
             };
         };
     };
+    getVaultMemberIdentities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tripId: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemberIdentityDto"][];
+                };
+            };
+        };
+    };
     getVaultBalance: {
         parameters: {
             query?: never;
@@ -9189,6 +9498,48 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["LinkWalletDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LinkWalletResponseDto"];
+                };
+            };
+        };
+    };
+    createSiwsChallenge: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiwsChallengeDto"];
+                };
+            };
+        };
+    };
+    linkWalletSiws: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LinkWalletSiwsDto"];
             };
         };
         responses: {

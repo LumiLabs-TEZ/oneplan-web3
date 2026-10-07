@@ -1,12 +1,12 @@
-import { resolveWeb3Enabled, useWeb3FlagStore } from './web3Flag';
+import { resolveUsesMwa, resolveWeb3Enabled, useWeb3FlagStore } from './web3Flag';
 
 beforeEach(() => {
   useWeb3FlagStore.setState({ override: null });
 });
 
-const ELIGIBLE = { eligible: true, hasWeb3Trip: false };
-const MEMBER_ONLY = { eligible: false, hasWeb3Trip: true };
-const NEITHER = { eligible: false, hasWeb3Trip: false };
+const ELIGIBLE = { eligible: true, hasWeb3Trip: false, faucetEnabled: false, mwaEnabled: false };
+const MEMBER_ONLY = { eligible: false, hasWeb3Trip: true, faucetEnabled: false, mwaEnabled: false };
+const NEITHER = { eligible: false, hasWeb3Trip: false, faucetEnabled: false, mwaEnabled: false };
 
 describe('resolveWeb3Enabled', () => {
   it('is ON for an eligible account on local/dev', () => {
@@ -36,6 +36,24 @@ describe('resolveWeb3Enabled', () => {
   it('prod is forced OFF whatever the server says', () => {
     expect(resolveWeb3Enabled('prod', null, ELIGIBLE)).toBe(false);
     expect(resolveWeb3Enabled('prod', true, ELIGIBLE)).toBe(false);
+  });
+});
+
+describe('resolveUsesMwa', () => {
+  const MWA_ON = { ...ELIGIBLE, mwaEnabled: true };
+
+  it('uses MWA only on Android when the server says so', () => {
+    expect(resolveUsesMwa('android', MWA_ON)).toBe(true);
+    expect(resolveUsesMwa('android', ELIGIBLE)).toBe(false);
+  });
+
+  it('falls back to Privy until the server has answered', () => {
+    expect(resolveUsesMwa('android', undefined)).toBe(false);
+    expect(resolveUsesMwa('android', null)).toBe(false);
+  });
+
+  it('never uses MWA on iOS', () => {
+    expect(resolveUsesMwa('ios', MWA_ON)).toBe(false);
   });
 });
 

@@ -20,11 +20,14 @@ interface CreateTripState {
   coverUri: string | null;
   /** Friends tapped `Invite` on — invited right after the trip is created (`CreateTripView.swift:377`). */
   selectedFriendIds: number[];
+  /** Opt-in group wallet (web3 trip). Only offered to web3-eligible users; fixed at creation. */
+  web3: boolean;
   setName: (name: string) => void;
   setLocation: (location: LocationSearchResultDto | null) => void;
   setRange: (range: DateRange) => void;
   setCoverUri: (coverUri: string | null) => void;
   addFriend: (userId: number) => void;
+  setWeb3: (web3: boolean) => void;
   reset: () => void;
 }
 
@@ -35,6 +38,7 @@ const initialDraft = {
   hasSelectedDuration: false,
   coverUri: null as string | null,
   selectedFriendIds: [] as number[],
+  web3: false,
 };
 
 export const useCreateTripStore = create<CreateTripState>()((set) => ({
@@ -49,6 +53,7 @@ export const useCreateTripStore = create<CreateTripState>()((set) => ({
         ? s
         : { selectedFriendIds: [...s.selectedFriendIds, userId] },
     ),
+  setWeb3: (web3) => set({ web3 }),
   reset: () => set({ ...initialDraft }),
 }));
 
@@ -61,5 +66,6 @@ export const createTripStore = {
   setRange: (range: DateRange) => useCreateTripStore.getState().setRange(range),
   setCoverUri: (coverUri: string | null) => useCreateTripStore.getState().setCoverUri(coverUri),
   addFriend: (userId: number) => useCreateTripStore.getState().addFriend(userId),
+  setWeb3: (web3: boolean) => useCreateTripStore.getState().setWeb3(web3),
   reset: () => useCreateTripStore.getState().reset(),
 };

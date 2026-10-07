@@ -80,7 +80,7 @@ describe('invalidationFor', () => {
     ).toEqual({ queryKeys: [{ queryKey: keys.trips.detail(12), exact: true }] });
   });
 
-  it('vaultApprovalRequested invalidates vault balance + history, no effect (Wave B owns the alert)', () => {
+  it('vaultApprovalRequested invalidates vault balance + history and raises the approval effect', () => {
     expect(
       invalidationFor({
         event: 'vaultApprovalRequested',
@@ -93,18 +93,28 @@ describe('invalidationFor', () => {
           approverUserIds: null,
         },
       }),
-    ).toEqual({ queryKeys: [keys.vault.balance(12), keys.vault.history(12)] });
+    ).toEqual({
+      queryKeys: [keys.vault.balance(12), keys.vault.history(12)],
+      effect: {
+        type: 'vaultApprovalRequested',
+        tripId: 12,
+        vaultTransactionId: 99,
+        amountVnd: '500000',
+        recipientName: 'A',
+        proposedByUserId: 3,
+        approverUserIds: null,
+      },
+    });
   });
 
-  it('vaultBalanceChanged invalidates vault balance/history/myWallet/settlement', () => {
-    expect(
-      invalidationFor({ event: 'vaultBalanceChanged', data: { tripId: 12 } }),
-    ).toEqual({
+  it('vaultBalanceChanged invalidates vault balance/history/myWallet/settlement + leave preview', () => {
+    expect(invalidationFor({ event: 'vaultBalanceChanged', data: { tripId: 12 } })).toEqual({
       queryKeys: [
         keys.vault.balance(12),
         keys.vault.history(12),
         keys.vault.myWallet(12),
         keys.vault.settlement(12),
+        keys.trips.leavePreview(12),
       ],
     });
   });
@@ -117,13 +127,15 @@ describe('invalidationFor', () => {
     });
   });
 
-  it('tripEndRequestUpdated invalidates the trip detail', () => {
+  it('tripEndRequestUpdated invalidates the trip detail and the end request', () => {
     expect(
       invalidationFor({
         event: 'tripEndRequestUpdated',
         data: { tripId: 12, status: 'PENDING', approvedCount: 1, memberCount: 3 },
       }),
-    ).toEqual({ queryKeys: [{ queryKey: keys.trips.detail(12), exact: true }] });
+    ).toEqual({
+      queryKeys: [{ queryKey: keys.trips.detail(12), exact: true }, keys.vault.endRequest(12)],
+    });
   });
 
   it('vaultLeaveRequested invalidates the trip detail, the host-side requests list, and the leave preview', () => {

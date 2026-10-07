@@ -13,7 +13,6 @@ import { useAppLanguage } from '@/i18n';
 import { colors } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
-import { VaultHeaderChip } from '../components/VaultHeaderChip';
 import { VaultSkyGradient } from '../components/VaultSkyGradient';
 
 export type WalletWithdrawStatus = 'completed' | 'processing' | 'failed';
@@ -30,6 +29,8 @@ export interface WalletWithdrawResultScreenProps {
   result: WalletWithdrawResult;
   onDone: () => void;
   onSendAgain?: () => void;
+  /** Status-bar clearance — the screen is a full-screen route. */
+  topInset?: number;
 }
 
 const GRADIENT_BY_STATUS: Record<WalletWithdrawStatus, readonly [string, string, string]> = {
@@ -42,6 +43,7 @@ export function WalletWithdrawResultScreen({
   result,
   onDone,
   onSendAgain,
+  topInset = 0,
 }: WalletWithdrawResultScreenProps) {
   useAppLanguage();
   const { t } = useTranslation();
@@ -57,17 +59,7 @@ export function WalletWithdrawResultScreen({
           unlike SwiftUI's `.background { gradient }` which paints behind its content. */}
       <VaultSkyGradient colors={GRADIENT_BY_STATUS[result.status]} />
 
-      <View style={styles.header}>
-        <Pressable onPress={onDone} accessibilityRole="button" accessibilityLabel={t('Back')}>
-          <VaultHeaderChip>
-            <View style={styles.headerIconWrap}>
-              <Ionicons name="arrow-back" size={14} color={colors.neutral900} />
-            </View>
-          </VaultHeaderChip>
-        </Pressable>
-        <Text style={styles.headerTitle}>{t('Move money')}</Text>
-        <View style={styles.headerSpacer} />
-      </View>
+      <View style={{ height: topInset }} />
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.amountBlock}>
@@ -75,15 +67,6 @@ export function WalletWithdrawResultScreen({
           <Text style={styles.amount} numberOfLines={1}>
             {amountText(result.amountMicro)}
           </Text>
-          {result.status === 'completed' && onSendAgain ? (
-            <Pressable
-              onPress={onSendAgain}
-              style={styles.sendAgainButton}
-              testID="withdraw-result-send-again"
-            >
-              <Text style={styles.sendAgainLabel}>{t('Send again')}</Text>
-            </Pressable>
-          ) : null}
         </View>
 
         <View style={styles.detailsShell}>
@@ -135,9 +118,27 @@ export function WalletWithdrawResultScreen({
         </View>
       </ScrollView>
 
-      <Pressable onPress={onDone} style={styles.doneButton} testID="withdraw-result-go-back">
-        <Text style={styles.doneLabel}>{t('Go back')}</Text>
-      </Pressable>
+      {/* Same bottom bar as the deposit receipt. */}
+      <View style={styles.bottomBar}>
+        {result.status === 'completed' && onSendAgain ? (
+          <Pressable
+            onPress={onSendAgain}
+            style={styles.sendAgainButton}
+            accessibilityRole="button"
+            testID="withdraw-result-send-again"
+          >
+            <Text style={styles.sendAgainLabel}>{t('Send again')}</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          onPress={onDone}
+          style={styles.doneButton}
+          accessibilityRole="button"
+          testID="withdraw-result-go-back"
+        >
+          <Text style={styles.doneLabel}>{t('Go back')}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -210,29 +211,22 @@ function formatDate(date: Date): string {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8 },
-  headerIconWrap: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    ...beVietnamPro(14),
-    letterSpacing: -0.28,
-    color: colors.contentB,
-  },
-  headerSpacer: { width: 32 },
   scrollContent: { paddingBottom: 24 },
   amountBlock: { alignItems: 'center', gap: 20, paddingTop: 48, paddingBottom: 28 },
   amountLabel: { ...beVietnamPro(18), letterSpacing: -0.36, color: 'rgb(136, 136, 136)' },
   amount: { ...beVietnamPro(48), letterSpacing: -2.4, color: colors.neutral950 },
+  bottomBar: { flexDirection: 'row', gap: 12, marginHorizontal: 24, marginBottom: 32 },
   sendAgainButton: {
-    width: 147,
-    height: 44,
+    flex: 1,
+    minHeight: 52,
     borderRadius: 999,
-    backgroundColor: colors.onSurface,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: '#EFEFEF',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sendAgainLabel: { ...beVietnamPro(15), letterSpacing: -0.75, color: colors.contentB },
+  sendAgainLabel: { ...beVietnamPro(17, 'regular'), letterSpacing: -0.68, color: colors.contentB },
   detailsShell: {
     marginHorizontal: 15,
     marginTop: 8,
@@ -259,8 +253,7 @@ const styles = StyleSheet.create({
   },
   explorerText: { ...beVietnamPro(16), letterSpacing: -0.32, color: 'rgb(57, 57, 57)' },
   doneButton: {
-    marginHorizontal: 24,
-    marginBottom: 32,
+    flex: 1,
     minHeight: 52,
     borderRadius: 999,
     backgroundColor: colors.neutral900,

@@ -26,6 +26,7 @@ import { Alert, StyleSheet, Text, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { mutationErrorMessage } from '@/api/mutationError';
 import { useMe } from '@/features/me/useMe';
 import { useAllTripPhotos } from '@/features/photos/useAllTripPhotos';
 import {
@@ -54,7 +55,13 @@ import { useTripDetail } from '@/features/trip/TripDetailContext';
 import { useHistorySections } from '@/features/trip/useHistorySections';
 import { useVaultBalance } from '@/features/vault/api/queries';
 import { useTripHasVault } from '@/features/vault/api/tripHasVault';
+import {
+  alertVaultNotEmpty,
+  isVaultNotEmptyError,
+  vaultBlocksDelete,
+} from '@/features/vault/deleteGuard';
 import { FALLBACK_USDC_TO_VND } from '@/features/vault/helpers/tripEndSettlement';
+import { VaultHistoryView } from '@/features/vault/screens/VaultHistoryView';
 import { VaultSettlementScreen } from '@/features/vault/screens/VaultSettlementScreen';
 import { useWeb3Enabled } from '@/features/vault/web3Flag';
 import { deviceUses24hourClock, useAppLanguage } from '@/i18n';
@@ -69,7 +76,10 @@ const GRADIENT = ['rgb(214, 227, 255)', colors.background] as const;
 /** Tab-switch cross-fade of the body (≈ the iOS `TabView` transition). */
 const FADE_MS = 220;
 
-/** A read-only History row, or the single row holding the Breakdown tab. */
+/** The single row holding a vault trip's History (the vault ledger). */
+const VAULT_HISTORY_ROW = 'tab:vault-history';
+
+/** A read-only History row, or the single row holding the Breakdown tab / vault history. */
 type EndRow = HistoryRow | { type: 'tab'; key: string };
 
 export default function TripEndScreen() {
@@ -122,12 +132,23 @@ export default function TripEndScreen() {
   const tripBalanceChipText =
     web3Enabled && hasVault && vaultBalance.data
       ? t('Trip Balance +{{0}}', {
-          0: formatWhole((Number(vaultBalance.data.balanceMicro) / 1_000_000) * FALLBACK_USDC_TO_VND),
+          0: formatWhole(
+            (Number(vaultBalance.data.balanceMicro) / 1_000_000) * FALLBACK_USDC_TO_VND,
+          ),
         })
       : null;
   const sections = useHistorySections(detail);
   const historyRows = useMemo(() => flattenHistorySections(sections), [sections]);
-  const rows: EndRow[] = tab === 'history' ? historyRows : [{ type: 'tab', key: 'tab:breakdown' }];
+  // A vault trip's History is the vault ledger (deposits + payments, read-only), like iOS
+  // `TripEndHistory.usesVaultHistory` — the classic expense rows miss vault-side edits.
+  const usesVaultHistory = usesVaultSettlement;
+  const hasHistory = usesVaultHistory || historyRows.length > 0;
+  const rows: EndRow[] =
+    tab !== 'history'
+      ? [{ type: 'tab', key: 'tab:breakdown' }]
+      : usesVaultHistory
+        ? [{ type: 'tab', key: VAULT_HISTORY_ROW }]
+        : historyRows;
   // One native read per render for every row's time label.
   const uses24hourClock = deviceUses24hourClock();
 
@@ -139,7 +160,11 @@ export default function TripEndScreen() {
 
   const headerTop = insets.top + 6;
   const isOwner = trip != null && me.data?.id === trip.createdById;
-  const handleDelete = () => {
+  const handleDelete = async () => {
+    if (web3Enabled && (await vaultBlocksDelete(queryClient, tripId))) {
+      alertVaultNotEmpty(t);
+      return;
+    }
     Alert.alert(
       t('Delete trip?'),
       t('This will permanently delete the trip for all members. This action cannot be undone.'),
@@ -152,7 +177,10 @@ export default function TripEndScreen() {
             deleteTrip.mutate(tripId, {
               onSuccess: () =>
                 mode === 'ended' ? router.back() : router.dismissTo('/(tabs)/home'),
-              onError: () => Alert.alert(t('Failed to delete trip')),
+              onError: (err) =>
+                isVaultNotEmptyError(err)
+                  ? alertVaultNotEmpty(t)
+                  : Alert.alert(mutationErrorMessage(err, t('Failed to delete trip'))),
             }),
         },
       ],
@@ -166,7 +194,15 @@ export default function TripEndScreen() {
       <FlashList
         data={rows}
         renderItem={({ item }) =>
-          item.type === 'tab' ? (
+          item.type === 'tab' && item.key === VAULT_HISTORY_ROW ? (
+            <Animated.View style={[fadeStyle, styles.historyRow]}>
+              <VaultHistoryView
+                tripId={tripId}
+                allowsEditing={false}
+                embedsInParentScroll
+              />
+            </Animated.View>
+          ) : item.type === 'tab' ? (
             <Animated.View style={fadeStyle}>
               {usesVaultSettlement ? (
                 <VaultSettlementScreen
@@ -217,7 +253,7 @@ export default function TripEndScreen() {
                 // The gap down to the first row: title → rows on History, banner → Breakdown.
                 paddingBottom:
                   tab === 'history'
-                    ? historyRows.length > 0
+                    ? hasHistory
                       ? historyTitleGap
                       : 0
                     : detail.servingCached
@@ -238,7 +274,7 @@ export default function TripEndScreen() {
                   totalSpent={breakdown?.totalSpent ?? money.totalSpent}
                   photos={photos.photos}
                   photosDraining={photos.draining}
-                  showHistoryTitle={historyRows.length > 0}
+                  showHistoryTitle={hasHistory}
                   localRating={localRating}
                   onRate={() => ratingRef.current?.present()}
                 />
@@ -273,7 +309,11 @@ export default function TripEndScreen() {
               <Spinner />
             </View>
           ) : isOwner ? (
-            <GlassIconButton label={t('Delete')} onPress={handleDelete} testID="trip-end-delete">
+            <GlassIconButton
+              label={t('Delete')}
+              onPress={() => void handleDelete()}
+              testID="trip-end-delete"
+            >
               <Ionicons name="trash-outline" size={20} color={colors.warning500} />
             </GlassIconButton>
           ) : (

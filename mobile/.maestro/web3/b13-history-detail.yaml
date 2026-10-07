@@ -1,0 +1,15 @@
+# B (spike): vault History tab → the approved Dinner payment → receipt → Go back.
+appId: local.lumilabs.oneplan
+---
+- tapOn:
+    id: "vault-history-row-spend-14"
+- extendedWaitUntil:
+    visible:
+      id: "vault-detail-go-back"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 3500
+- tapOn:
+    id: "vault-detail-go-back"
+- waitForAnimationToEnd:
+    timeout: 2500

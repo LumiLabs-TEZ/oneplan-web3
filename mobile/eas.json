@@ -76,10 +76,50 @@
         "credentialsSource": "local"
       }
     },
+    "hackathon": {
+      "extends": "dev",
+      "channel": "hackathon",
+      "env": {
+        "HIDE_DEV_SIGN_IN": "1"
+      },
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "credentialsSource": "local"
+      }
+    },
     "development-simulator": {
       "extends": "development",
       "ios": {
         "simulator": true
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6761648165",
+        "ascApiKeyPath": "./credentials/AuthKey_UHA9A57VX7.p8",
+        "ascApiKeyId": "UHA9A57VX7",
+        "ascApiKeyIssuerId": "4e3b13a2-1a0d-4267-9d72-3435296e1b80",
+        "appleTeamId": "P9CL9VF72D"
+      },
+      "android": {
+        "track": "internal",
+        "serviceAccountKeyPath": "./credentials/play-service-account.json"
+      }
+    },
+    "dev": {
+      "ios": {
+        "ascAppId": "6771303748",
+        "ascApiKeyPath": "./credentials/AuthKey_UHA9A57VX7.p8",
+        "ascApiKeyId": "UHA9A57VX7",
+        "ascApiKeyIssuerId": "4e3b13a2-1a0d-4267-9d72-3435296e1b80",
+        "appleTeamId": "P9CL9VF72D"
+      },
+      "android": {
+        "track": "internal",
+        "serviceAccountKeyPath": "./credentials/play-service-account.json"
       }
     }
   }

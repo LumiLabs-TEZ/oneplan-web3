@@ -54,9 +54,10 @@ export class VaultSafetyService {
       balance = 0n;
     }
     if (balance > 0n) {
-      throw new BadRequestException(
-        'Settle or withdraw the trip vault before deleting the trip',
-      );
+      throw new BadRequestException({
+        code: 'vault_not_empty',
+        message: 'Settle or withdraw the trip vault before deleting the trip',
+      });
     }
   }
 

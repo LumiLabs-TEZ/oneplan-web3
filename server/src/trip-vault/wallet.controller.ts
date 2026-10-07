@@ -14,12 +14,15 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+import { WalletProvider } from '@prisma/client';
 
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Web3EnabledGuard } from '../solana/web3-enabled.guard';
+import { SeekerIdentityService } from '../web3/seeker-identity.service';
 import { Web3EligibleGuard } from '../web3/web3-eligible.guard';
 import { LinkWalletDto, LinkWalletResponseDto } from './dto/link-wallet.dto';
 import { SubmitSignedDto } from './dto/prepare-payment.dto';
+import { LinkWalletSiwsDto, SiwsChallengeDto } from './dto/siws.dto';
 import { WalletHistoryEntryDto } from './dto/wallet-history.dto';
 import {
   BuildWithdrawalDto,
@@ -29,6 +32,7 @@ import {
   WithdrawalTxDto,
 } from './dto/wallet-withdraw.dto';
 import { WalletBalanceDto } from './dto/wallet-balance.dto';
+import { SiwsService } from './siws.service';
 import { TripVaultService } from './trip-vault.service';
 import { WalletWithdrawService } from './wallet-withdraw.service';
 
@@ -47,6 +51,8 @@ export class WalletController {
   constructor(
     private readonly vaultService: TripVaultService,
     private readonly withdrawals: WalletWithdrawService,
+    private readonly siws: SiwsService,
+    private readonly identity: SeekerIdentityService,
   ) {}
 
   @Get()
@@ -63,6 +69,8 @@ export class WalletController {
       publicKey: wallet.publicKey ?? '',
       usdcAta: wallet.usdcAta,
       balanceMicro: wallet.balanceMicro.toString(),
+      skrDomain: wallet.skrDomain,
+      isSeeker: wallet.isSeeker,
     };
   }
 
@@ -81,6 +89,41 @@ export class WalletController {
     @Body() dto: LinkWalletDto,
   ): Promise<LinkWalletResponseDto> {
     const wallet = await this.vaultService.linkWallet(userId, dto.publicKey);
+    return { publicKey: wallet.publicKey };
+  }
+
+  @Post('siws/challenge')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Sign-In-With-Solana input for linking a wallet the user brings (MWA)',
+    operationId: 'createSiwsChallenge',
+  })
+  @ApiOkResponse({ type: SiwsChallengeDto })
+  async createSiwsChallenge(
+    @CurrentUser('sub') userId: number,
+  ): Promise<SiwsChallengeDto> {
+    return this.siws.createChallenge(userId);
+  }
+
+  @Post('link/siws')
+  @ApiOperation({
+    summary: 'Link a wallet after verifying its Sign-In-With-Solana signature',
+    operationId: 'linkWalletSiws',
+  })
+  @ApiCreatedResponse({ type: LinkWalletResponseDto })
+  async linkWalletSiws(
+    @CurrentUser('sub') userId: number,
+    @Body() dto: LinkWalletSiwsDto,
+  ): Promise<LinkWalletResponseDto> {
+    const address = await this.siws.verify(userId, dto);
+    const wallet = await this.vaultService.linkWallet(
+      userId,
+      address,
+      WalletProvider.MWA,
+    );
+    // Fresh SIWS proof: look the key's Seeker identity up now, off the request path.
+    this.identity.refreshInBackground(userId);
     return { publicKey: wallet.publicKey };
   }
 

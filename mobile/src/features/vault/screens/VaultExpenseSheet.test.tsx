@@ -15,9 +15,7 @@ describe('VaultExpenseSheet', () => {
 
   it('defaults to Group payer, COFFEE category, and share-with-all', async () => {
     const onDone = jest.fn();
-    const screen = await render(
-      <VaultExpenseSheet members={testMembers} onDone={onDone} />,
-    );
+    const screen = await render(<VaultExpenseSheet members={testMembers} onDone={onDone} />);
     await fireEvent.press(screen.getByTestId('vault-expense-done'));
     expect(onDone).toHaveBeenCalledWith<[VaultExpenseDetails]>({
       name: 'Coffee',
@@ -53,6 +51,11 @@ describe('VaultExpenseSheet', () => {
     expect(onDone.mock.calls[0]?.[0].name).toBe('Weekend groceries');
   });
 
+  it('no out-of-money note when the group can cover the amount', async () => {
+    const screen = await render(<VaultExpenseSheet members={testMembers} onDone={jest.fn()} />);
+    expect(screen.queryByTestId('vault-expense-group-short')).toBeNull();
+  });
+
   it('choosing Me sets payer to PERSONAL and shows the wallet hint', async () => {
     const onDone = jest.fn();
     const screen = await render(
@@ -60,6 +63,26 @@ describe('VaultExpenseSheet', () => {
     );
     await fireEvent.press(screen.getByTestId('vault-expense-payer-me'));
     expect(screen.getByText('My wallet: $12.50')).toBeTruthy();
+    await fireEvent.press(screen.getByTestId('vault-expense-done'));
+    expect(onDone.mock.calls[0]?.[0].payer).toBe('PERSONAL');
+  });
+
+  it('when the group cannot cover the amount, Group is disabled and Me pays', async () => {
+    const onDone = jest.fn();
+    const screen = await render(
+      <VaultExpenseSheet
+        members={testMembers}
+        personalBalanceUsdc={12.5}
+        groupCanCover={false}
+        onDone={onDone}
+      />,
+    );
+    expect(screen.getByTestId('vault-expense-payer-group').props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
+    expect(screen.getByText('Group wallet is low on funds')).toBeTruthy();
+    expect(screen.getByText('My wallet: $12.50')).toBeTruthy();
+    await fireEvent.press(screen.getByTestId('vault-expense-payer-group'));
     await fireEvent.press(screen.getByTestId('vault-expense-done'));
     expect(onDone.mock.calls[0]?.[0].payer).toBe('PERSONAL');
   });

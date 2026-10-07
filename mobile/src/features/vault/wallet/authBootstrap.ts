@@ -10,12 +10,20 @@ import { registerSignOutHook } from '@/auth/signOutHooks';
 import { useAuthStore } from '@/auth/authStore';
 
 import { linkWallet } from '../api/mutations';
-import { ensureVaultWallet, isVaultWalletConfigured, resetVaultWallet } from './walletHandle';
+import {
+  ensureVaultWallet,
+  isVaultWalletConfigured,
+  resetVaultWallet,
+  vaultWalletKind,
+} from './walletHandle';
 import { withWalletTimeout } from './walletTimeout';
 
 /** Creates the wallet if needed and registers it on the server. Best-effort, never throws. */
 export async function ensureWalletLinked(): Promise<void> {
   if (!isVaultWalletConfigured()) return;
+  // MWA: linking already happened, SIWS-verified, when the member tapped Connect, and the server
+  // link persists across sign-out. Opening a wallet app on every sign-in would be hostile.
+  if (vaultWalletKind() === 'mwa') return;
   try {
     const address = await ensureVaultWallet();
     // Bounded like `ensureVaultWallet`: the deposit sheet awaits this behind a spinner.
@@ -38,7 +46,7 @@ export function useWalletAuthBootstrap(): void {
 
 let signOutHookInstalled = false;
 
-/** Clears wallet + Privy session state before the session is torn down. */
+/** Clears wallet state (Privy session / local MWA connection) before the session is torn down. */
 export function installVaultSignOutHook(): void {
   if (signOutHookInstalled) return;
   signOutHookInstalled = true;

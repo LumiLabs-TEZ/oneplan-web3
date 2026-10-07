@@ -1,0 +1,30 @@
+# B (spike, owes the host): Settlement tab → Pay row → Send opens the withdraw sheet prefilled with
+# the host's wallet and the debt (not sent here: spike's wallet holds less than the debt).
+appId: local.lumilabs.oneplan
+---
+- tapOn: "Settlement"
+- extendedWaitUntil:
+    visible:
+      id: "vault-settlement-row-toggle"
+    timeout: 60000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "vault-settlement-row-toggle"
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "vault-settlement-send"
+- extendedWaitUntil:
+    visible:
+      id: "withdraw-confirm"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 4000
+- takeScreenshot: b18-send-prefilled
+- swipe:
+    start: "50%,45%"
+    end: "50%,95%"
+    duration: 500
+- waitForAnimationToEnd:
+    timeout: 2500

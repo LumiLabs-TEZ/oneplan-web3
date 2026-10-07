@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   ParseIntPipe,
@@ -10,6 +11,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiOkResponse,
   ApiOperation,
   ApiParam,
   ApiTags,
@@ -28,6 +30,7 @@ import { TripVaultHistoryService } from './trip-vault-history.service';
 import { TripVaultSettlementService } from './trip-vault-settlement.service';
 import { CreateVaultDto, VaultCreatedDto } from './dto/create-vault.dto';
 import { LinkWalletDto, LinkWalletResponseDto } from './dto/link-wallet.dto';
+import { MemberIdentityDto } from './dto/member-identity.dto';
 import { VaultBalanceDto } from './dto/vault-balance.dto';
 import { WalletBalanceDto } from './dto/wallet-balance.dto';
 import { PayQuoteDto, PayQuoteRequestDto } from './dto/pay-quote.dto';
@@ -105,9 +108,24 @@ export class TripVaultController {
     @CurrentUser('sub') userId: number,
   ): Promise<VaultCreatedDto> {
     // Choosing custom spend limits is a trip-configuration decision, so only
-    // the host may do it explicitly (a member's first payment still creates a
-    // vault implicitly, with the fixed defaults, via ensureDefaultVault).
-    await this.vaultService.assertHost(tripId, userId);
+    // the host may do it explicitly. A member (whose first deposit or payment
+    // may be the one that needs the vault) gets the fixed defaults instead, via
+    // ensureDefaultVault — their requested limits are ignored, never applied.
+    const isHost = await this.vaultService
+      .assertHost(tripId, userId)
+      .then(() => true)
+      .catch((error: unknown) => {
+        if (error instanceof ForbiddenException) return false;
+        throw error;
+      });
+    if (!isHost) {
+      const vault = await this.vaultService.ensureDefaultVault(tripId, userId);
+      return {
+        vaultPda: vault.vaultPda,
+        usdcAta: vault.usdcAta,
+        membersSynced: 0,
+      };
+    }
     const vault = await this.vaultService.createVault(
       tripId,
       userId,
@@ -141,7 +159,23 @@ export class TripVaultController {
       publicKey: wallet.publicKey,
       usdcAta: wallet.usdcAta,
       balanceMicro: wallet.balanceMicro.toString(),
+      skrDomain: wallet.skrDomain,
+      isSeeker: wallet.isSeeker,
     };
+  }
+
+  @Get('identities')
+  @ApiOperation({
+    summary: 'Seeker badge and .skr name per member',
+    operationId: 'getVaultMemberIdentities',
+  })
+  @ApiOkResponse({ type: MemberIdentityDto, isArray: true })
+  async identities(
+    @Param('tripId', ParseIntPipe) tripId: number,
+    @CurrentUser('sub') userId: number,
+  ): Promise<MemberIdentityDto[]> {
+    await this.vaultService.assertMember(tripId, userId);
+    return this.vaultService.identitiesForTrip(tripId);
   }
 
   @Get('balance')

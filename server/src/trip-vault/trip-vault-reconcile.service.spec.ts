@@ -249,6 +249,30 @@ describe('TripVaultReconcileService', () => {
     expect(report.reverted).toBe(1);
   });
 
+  // A FAILED deposit moved nothing out of the vault; "reverting" it would pay
+  // out money that was never spent. The query must say so itself, not lean on
+  // a NULL failureCode falling out of NOT IN.
+  it('only ever looks for spends to revert, never deposits', async () => {
+    const d = deps();
+
+    await build(d).reconcile();
+
+    const revertQuery = d.prisma.vaultTransaction.findMany.mock.calls
+      .map(([arg]) => arg as { where: Record<string, unknown> })
+      .find(
+        (arg) =>
+          arg.where.status === VaultTxStatus.FAILED &&
+          'failureCode' in arg.where,
+      );
+    expect(revertQuery?.where).toEqual(
+      expect.objectContaining({
+        kind: VaultTxKind.SPEND,
+        status: VaultTxStatus.FAILED,
+        signature: { not: null },
+      }),
+    );
+  });
+
   // The USDC left the member's wallet, not the vault, so the vault program's
   // revert cannot give it back. The receiver sends it back to the member.
   it('refunds a failed personal spend to the member rather than reverting the vault', async () => {
@@ -390,15 +414,40 @@ describe('TripVaultReconcileService', () => {
       ],
     });
     d.solana.signatureLanded.mockResolvedValue(true);
+    // settleBroadcastDeposits runs first, so this is its write.
+    d.prisma.vaultTransaction.updateMany.mockResolvedValueOnce({ count: 1 });
 
-    await build(d).reconcile();
+    const report = await build(d).reconcile();
 
+    expect(report.confirmed).toBe(1);
     expect(d.solana.signatureLanded).toHaveBeenCalledWith('dep-sig');
-    expect(d.prisma.vaultTransaction.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: { status: VaultTxStatus.CONFIRMED },
-      }),
-    );
+    expect(d.prisma.vaultTransaction.updateMany).toHaveBeenCalledWith({
+      where: { id: 9, status: VaultTxStatus.PENDING },
+      data: { status: VaultTxStatus.CONFIRMED },
+    });
+    expect(d.prisma.vaultTransaction.update).not.toHaveBeenCalled();
+  });
+
+  // A live submit can settle the row between the scan and the write (it
+  // confirmed, or its expired blockhash failed it). The cron must not
+  // overwrite that with what it decided from an older read.
+  it('only settles a deposit row that is still PENDING', async () => {
+    const d = deps({
+      broadcastDeposits: [
+        row({ id: 9, kind: VaultTxKind.DEPOSIT, signature: 'dep-sig' }),
+      ],
+    });
+    d.solana.signatureLanded.mockResolvedValue(true);
+    // The default updateMany mock reports 0 rows: the row already moved on.
+
+    const report = await build(d).reconcile();
+
+    expect(d.prisma.vaultTransaction.updateMany).toHaveBeenCalledWith({
+      where: { id: 9, status: VaultTxStatus.PENDING },
+      data: { status: VaultTxStatus.CONFIRMED },
+    });
+    expect(d.prisma.vaultTransaction.update).not.toHaveBeenCalled();
+    expect(report.confirmed).toBe(0);
   });
 
   // A deposit whose transaction never landed is money the vault does not have.
@@ -413,9 +462,11 @@ describe('TripVaultReconcileService', () => {
 
     await build(d).reconcile();
 
-    expect(d.prisma.vaultTransaction.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { status: VaultTxStatus.FAILED } }),
-    );
+    expect(d.prisma.vaultTransaction.updateMany).toHaveBeenCalledWith({
+      where: { id: 9, status: VaultTxStatus.PENDING },
+      data: { status: VaultTxStatus.FAILED },
+    });
+    expect(d.prisma.vaultTransaction.update).not.toHaveBeenCalled();
   });
 
   // The payout provider takes bank details a deposit does not have, so a

@@ -18,7 +18,6 @@ import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAppLanguage } from '@/i18n';
 import { Spinner } from '@/ui/components/Spinner';
@@ -27,9 +26,13 @@ import { colors } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
 import { useWallet } from '../api/queries';
+import { ConnectWalletCard } from '../components/ConnectWalletCard';
 import { VaultPalette } from '../components/VaultPalette';
-import { isVaultWalletConfigured } from '../wallet/walletHandle';
+import { isVaultWalletConfigured, vaultWalletKind } from '../wallet/walletHandle';
 import { ensureWalletLinked } from '../wallet/authBootstrap';
+
+/** Fits the 0.8-detent sheet with the header, address, note and button on a 6.1" phone. */
+const QR_SIZE = 270;
 
 export type DepositToOnePlanWalletMode = 'deposit' | 'receive';
 
@@ -44,7 +47,6 @@ export function DepositToOnePlanWalletSheet({
 }: DepositToOnePlanWalletSheetProps) {
   useAppLanguage();
   const { t } = useTranslation();
-  const insets = useSafeAreaInsets();
   const back = onBack ?? (() => router.back());
 
   const [linking, setLinking] = useState(true);
@@ -76,7 +78,7 @@ export function DepositToOnePlanWalletSheet({
   };
 
   return (
-    <View style={[styles.root, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 31 }]}>
+    <View style={styles.root} testID="wallet-deposit-sheet">
       <View style={styles.header}>
         <Text style={styles.title}>
           {mode === 'receive' ? t('Receive to ') : t('Deposit to ')}
@@ -85,45 +87,41 @@ export function DepositToOnePlanWalletSheet({
         <Text style={styles.subtitle}>
           {mode === 'receive'
             ? t('Receive USDC on Solana to your OnePlan Wallet')
-            : t('Deposit to OnePlan Wallet\nfrom your personal Solana wallet')}
+            : t('From your personal Solana wallet')}
         </Text>
       </View>
 
-      {isLoading ? (
-        <Spinner fill />
-      ) : address ? (
-        <>
-          <View style={styles.body}>
-            <Text style={styles.chainWarning}>
-              {mode === 'receive' ? t('Make sure to send USDC\nvia ') : t('Make sure to deposit USDC\nvia ')}
-              <Text style={styles.chainWarningAccent}>{t('Solana')}</Text>
-              {t(' chain only.')}
-            </Text>
-
-            <View style={styles.qrCard}>
-              <StyledQRCode value={address} size={283} color={colors.black} />
-              <Pressable
-                onPress={() => copyAddress(address)}
-                accessibilityLabel={copied ? t('Address copied') : t('Copy wallet address')}
-              >
-                <AddressText address={address} />
-              </Pressable>
+      <View style={[styles.body, isLoading && styles.bodyLoading]}>
+        {isLoading ? (
+          <Spinner fill />
+        ) : address ? (
+          <>
+            <StyledQRCode value={address} size={QR_SIZE} color={colors.black} />
+            <Pressable
+              onPress={() => copyAddress(address)}
+              testID="wallet-deposit-copy"
+              accessibilityLabel={copied ? t('Address copied') : t('Copy wallet address')}
+            >
+              <AddressText address={address} />
+            </Pressable>
+            <View style={styles.chainNote}>
+              <Text style={styles.chainNoteText}>{t('Send only USDC on the Solana network')}</Text>
             </View>
-          </View>
+          </>
+        ) : vaultWalletKind() === 'mwa' ? (
+          // Android: `ensureWalletLinked()` is a no-op for MWA, so an unlinked member connects here.
+          <ConnectWalletCard onConnected={() => void wallet.refetch()} />
+        ) : null}
+      </View>
 
-          <Pressable
-            onPress={back}
-            style={styles.goBackButton}
-            accessibilityRole="button"
-          >
-            <Text style={styles.goBackText}>{t('Go back')}</Text>
-          </Pressable>
-        </>
-      ) : (
-        <Pressable onPress={back} style={styles.goBackButton} accessibilityRole="button">
-          <Text style={styles.goBackText}>{t('Go back')}</Text>
-        </Pressable>
-      )}
+      <Pressable
+        onPress={back}
+        style={styles.goBackButton}
+        accessibilityRole="button"
+        testID="wallet-deposit-go-back"
+      >
+        <Text style={styles.goBackText}>{t('Go back')}</Text>
+      </Pressable>
 
       {copied ? (
         <View style={styles.toast}>
@@ -153,27 +151,37 @@ function AddressText({ address }: { address: string }) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.surface, paddingHorizontal: 24 },
-  header: { alignItems: 'center', gap: 3, marginBottom: 20 },
-  title: { ...beVietnamPro(20), letterSpacing: -0.8, color: colors.neutral950, textAlign: 'center' },
-  titleAccent: { ...beVietnamPro(20), color: VaultPalette.accent, fontStyle: 'italic' },
+  // Sized to its content (`fitToContents` detent) — no flex, so the button sits under the note.
+  // Top padding clears the grabber; iOS already adds the bottom inset under fitToContents.
+  root: {
+    backgroundColor: colors.surface,
+    paddingHorizontal: 24,
+    paddingTop: 36,
+    paddingBottom: 8,
+  },
+  header: { alignItems: 'center', gap: 4 },
+  title: {
+    ...beVietnamPro(22),
+    letterSpacing: -0.88,
+    color: colors.neutral950,
+    textAlign: 'center',
+  },
+  titleAccent: { ...beVietnamPro(22), color: VaultPalette.accent, fontStyle: 'italic' },
   subtitle: {
-    ...beVietnamPro(14),
-    letterSpacing: -0.42,
+    ...beVietnamPro(15),
+    letterSpacing: -0.45,
     color: colors.contentM,
     textAlign: 'center',
   },
-  body: { flex: 1, gap: 16, justifyContent: 'center' },
-  chainWarning: { ...beVietnamPro(16), color: colors.contentM, textAlign: 'center' },
-  chainWarningAccent: { ...beVietnamPro(16), color: colors.black, fontStyle: 'italic' },
-  qrCard: {
-    padding: 24,
-    alignItems: 'center',
-    gap: 16,
-    backgroundColor: colors.surface,
-    borderRadius: 30,
-    boxShadow: '0px 4px 6.3px rgba(0, 0, 0, 0.12)',
+  body: { alignItems: 'center', gap: 10, paddingTop: 20, paddingBottom: 24 },
+  bodyLoading: { height: QR_SIZE + 120 },
+  chainNote: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: colors.neutral100,
   },
+  chainNoteText: { ...beVietnamPro(13), letterSpacing: -0.26, color: colors.contentM },
   addressText: { ...beVietnamPro(16), color: '#3D3D3D', textAlign: 'center', maxWidth: 250 },
   addressMiddle: { ...beVietnamPro(16), color: colors.blueBase },
   goBackButton: {

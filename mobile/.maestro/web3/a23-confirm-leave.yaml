@@ -1,0 +1,31 @@
+# A (host): Members tab → spike's role menu → Confirm leave → the host leave sheet shows what the
+# vault owes spike → Approve & send (pays spike back from the vault) → spike is removed.
+appId: local.lumilabs.oneplan
+---
+- tapOn: "Members"
+- extendedWaitUntil:
+    visible:
+      id: "member-role-menu-80"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "member-role-menu-80"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn: "Confirm leave"
+- extendedWaitUntil:
+    visible:
+      id: "vault-leave-host-cta"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: a23-host-leave-sheet
+- tapOn:
+    id: "vault-leave-host-cta"
+- extendedWaitUntil:
+    notVisible:
+      id: "member-role-menu-80"
+    timeout: 120000
+- waitForAnimationToEnd:
+    timeout: 4000

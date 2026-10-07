@@ -42,13 +42,15 @@ export function isPrivateIp(rawIp: string): boolean {
 }
 
 /**
- * Decides who gets web3 at all (per request IP, no KYC). A non-eligible IP
- * sees no web3 anywhere: it cannot create or enable web3, cannot join a web3
- * trip, and is refused on the vault/wallet/end-trip/leave routes even inside
- * a web3 trip it already belongs to (see Web3TripGuard); it must use a VPN.
+ * Decides who gets web3 at all (per request IP or admin allowlist, no KYC). A
+ * non-eligible caller sees no web3 anywhere: it cannot create or enable web3,
+ * cannot join a web3 trip, and is refused on the vault/wallet/end-trip/leave
+ * routes even inside a web3 trip it already belongs to (see Web3TripGuard); it
+ * must use a VPN or be added to the allowlist from the admin panel.
  *
  * Fails closed: unknown country, unparsable IP, or a private IP with no
- * WEB3_DEV_COUNTRY_OVERRIDE all answer "not eligible".
+ * WEB3_DEV_COUNTRY_OVERRIDE all answer "not eligible" unless the user is on
+ * the allowlist. The allowlist never bypasses serverReady.
  */
 @Injectable()
 export class Web3EligibilityService {
@@ -74,10 +76,17 @@ export class Web3EligibilityService {
     return geoip.lookup(normalized)?.country ?? null;
   }
 
-  isEligible(ip: string | undefined): boolean {
+  async isEligible(ip: string | undefined, userId?: number): Promise<boolean> {
     if (!this.serverReady) return false;
     const country = this.countryOf(ip);
-    return country !== null && !BLOCKED_COUNTRIES.has(country);
+    if (country !== null && !BLOCKED_COUNTRIES.has(country)) return true;
+    // Only blocked/unknown IPs pay for the allowlist lookup.
+    if (userId === undefined) return false;
+    const row = await this.prisma.web3Allowlist.findUnique({
+      where: { userId },
+      select: { userId: true },
+    });
+    return row !== null;
   }
 
   /** True when the user has accepted membership in at least one web3 trip. */

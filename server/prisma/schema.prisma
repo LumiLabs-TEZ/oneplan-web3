@@ -61,10 +61,12 @@ model User {
   tripRequests             TripRequest[]
   engagementNotifications  EngagementNotification[]
   giftsReceived            GiftLog[]
+  web3Allowlist            Web3Allowlist?
   invitedTripMembers       TripMember[]              @relation("TripMemberInviter")
   missionCompletions       MissionCompletion[]
   rewardRedemptions        RewardRedemption[]
   walletAccount            WalletAccount?
+  web3FaucetClaims         Web3FaucetClaim[]
   walletWithdrawals        WalletWithdrawal[]
   vaultTransactions        VaultTransaction[]
   cashSettlementsOwed      VaultCashSettlement[]     @relation("cashSettlementFrom")
@@ -117,6 +119,20 @@ model GiftLog {
   @@index([recipientUserId])
   @@index([createdAt])
   @@map("gift_log")
+}
+
+// Admin-managed web3 allowlist: these users are web3-eligible from any IP
+// (bypasses the GeoIP country block, not the WEB3_ENABLED kill switch). One
+// row per user; managed from the admin panel (/web3/admin/allowlist).
+model Web3Allowlist {
+  userId       Int      @id @map("user_id")
+  addedByEmail String   @map("added_by_email") @db.VarChar(255)
+  note         String?  @map("note") @db.VarChar(200)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([createdAt])
+  @@map("web3_allowlist")
 }
 
 model AuthAccount {
@@ -254,8 +270,9 @@ model Trip {
   createdAt            DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt            DateTime            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
   marketplaceListingId Int?                @map("marketplace_listing_id")
-  // Fixed at creation: true only if the creator was web3-eligible (non-VN IP,
-  // server web3 on). Members of a web3 trip use the vault whatever their IP.
+  // Fixed at creation: true only if the creator was web3-eligible (server web3
+  // on, and a non-VN IP or an admin-allowlisted user). Membership alone never
+  // grants access: a non-eligible member is refused on the vault routes too.
   web3                 Boolean             @default(false) @map("web3")
   marketplaceListing   MarketplaceListing? @relation(fields: [marketplaceListingId], references: [id], onDelete: SetNull)
   budgets              Budget[]
@@ -1499,6 +1516,8 @@ enum VaultStatus {
 
 enum WalletProvider {
   PRIVY
+  /// The user's own wallet app, connected through Solana Mobile Wallet Adapter (Android).
+  MWA
 
   @@map("wallet_provider")
 }
@@ -1608,17 +1627,37 @@ model TripVault {
 
 /// A user's embedded wallet public key. The server never holds the secret.
 model WalletAccount {
-  id        Int            @id @default(autoincrement())
-  userId    Int            @unique @map("user_id")
+  id                Int            @id @default(autoincrement())
+  userId            Int            @unique @map("user_id")
   /// Unique: one public key belongs to one user. Linking someone else's key
   /// would seat (or grant approver rights to) a key its linker does not hold.
-  publicKey String         @unique @map("public_key") @db.VarChar(64)
-  provider  WalletProvider @default(PRIVY) @map("provider")
-  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
-  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  publicKey         String         @unique @map("public_key") @db.VarChar(64)
+  provider          WalletProvider @default(PRIVY) @map("provider")
+  /// Mainnet Seeker Genesis Token mint held by this key, or null. Read-only identity data:
+  /// the key signs on devnet, but the same key's mainnet holdings prove Seeker ownership.
+  seekerGenesisMint String?        @map("seeker_genesis_mint") @db.VarChar(64)
+  seekerCheckedAt   DateTime?      @map("seeker_checked_at") @db.Timestamptz(6)
+  /// Primary `.skr` name (without the suffix), mainnet AllDomains reverse lookup.
+  skrDomain         String?        @map("skr_domain") @db.VarChar(64)
+  skrCheckedAt      DateTime?      @map("skr_checked_at") @db.Timestamptz(6)
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("wallet_account")
+}
+
+/// One devnet test-USDC drip. Used for the per-user cooldown and for accounting the faucet.
+model Web3FaucetClaim {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @map("user_id")
+  amountMicro BigInt   @map("amount_micro")
+  signature   String   @db.VarChar(100)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId, createdAt])
+  @@map("web3_faucet_claim")
 }
 
 /// One row per personal-wallet withdrawal the server built for a member. It is

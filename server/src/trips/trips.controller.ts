@@ -29,7 +29,10 @@ import {
 } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Web3EligibilityService } from '../web3/web3-eligibility.service';
-import { Web3EligibleGuard } from '../web3/web3-eligible.guard';
+import {
+  Web3EligibleGuard,
+  web3UnavailableException,
+} from '../web3/web3-eligible.guard';
 import { Web3EnabledGuard } from '../solana/web3-enabled.guard';
 import { TripEndConsensusService } from './trip-end-consensus.service';
 import { TripsService } from './trips.service';
@@ -72,17 +75,20 @@ export class TripsController {
   @Post()
   @ApiOperation({ operationId: 'createTrip', summary: 'Create a new trip' })
   @ApiCreatedResponse({ type: TripDto })
-  createTrip(
+  async createTrip(
     @CurrentUser('sub') userId: number,
     @Body() dto: CreateTripDto,
     @Req() req: FastifyRequest,
   ): Promise<TripDto> {
-    // No opt-in in the create flow: an eligible creator's trip is a web3 trip.
-    return this.tripsService.createTrip(
-      userId,
-      dto,
-      this.web3Eligibility.isEligible(req.ip),
-    );
+    // Opt-in: the creator asks for a group wallet (`web3: true`); only an
+    // eligible caller may get one. Anything else is an ordinary trip.
+    if (dto.web3 !== true) {
+      return this.tripsService.createTrip(userId, dto, false);
+    }
+    if (!(await this.web3Eligibility.isEligible(req.ip, userId))) {
+      throw web3UnavailableException();
+    }
+    return this.tripsService.createTrip(userId, dto, true);
   }
 
   @Get()
@@ -107,7 +113,7 @@ export class TripsController {
   @ApiParam({ name: 'inviteCode', type: 'string' })
   @ApiOkResponse({ type: TripDto })
   @ApiNotFoundResponse({ description: 'Invalid invite code' })
-  joinTrip(
+  async joinTrip(
     @CurrentUser('sub') userId: number,
     @Param('inviteCode') inviteCode: string,
     @Req() req: FastifyRequest,
@@ -115,7 +121,7 @@ export class TripsController {
     return this.tripsService.joinTrip(
       inviteCode,
       userId,
-      this.web3Eligibility.isEligible(req.ip),
+      await this.web3Eligibility.isEligible(req.ip, userId),
     );
   }
 
@@ -127,7 +133,7 @@ export class TripsController {
   @ApiParam({ name: 'inviteCode', type: 'string' })
   @ApiOkResponse({ type: InvitePreviewDto })
   @ApiNotFoundResponse({ description: 'Invalid invite code' })
-  getInvitePreview(
+  async getInvitePreview(
     @CurrentUser('sub') userId: number,
     @Param('inviteCode') inviteCode: string,
     @Req() req: FastifyRequest,
@@ -135,7 +141,7 @@ export class TripsController {
     return this.tripsService.getInvitePreview(
       inviteCode,
       userId,
-      this.web3Eligibility.isEligible(req.ip),
+      await this.web3Eligibility.isEligible(req.ip, userId),
     );
   }
 
@@ -367,7 +373,7 @@ export class TripsController {
   @ApiParam({ name: 'id', type: 'integer' })
   @ApiOkResponse({ type: TripMemberDto })
   @ApiNotFoundResponse({ description: 'No invitation found' })
-  respondToInvite(
+  async respondToInvite(
     @CurrentUser('sub') userId: number,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: RespondInviteDto,
@@ -377,7 +383,7 @@ export class TripsController {
       id,
       userId,
       dto,
-      this.web3Eligibility.isEligible(req.ip),
+      await this.web3Eligibility.isEligible(req.ip, userId),
     );
   }
 

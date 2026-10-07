@@ -20,7 +20,11 @@ jest.mock('@/features/subscription/useFreeTrialEligibility', () => ({
 jest.mock('@/features/me/useMe', () => ({ useMe: () => ({ data: { id: 42 } }) }));
 
 let mockWeb3Enabled = true;
-jest.mock('@/features/vault/web3Flag', () => ({ useWeb3Enabled: () => mockWeb3Enabled }));
+let mockUsesMwa = false;
+jest.mock('@/features/vault/web3Flag', () => ({
+  useWeb3Enabled: () => mockWeb3Enabled,
+  useUsesMwa: () => mockUsesMwa,
+}));
 let mockHasPrivyIds = true;
 jest.mock('@/features/vault/wallet/walletConfig', () => ({ hasPrivyIds: () => mockHasPrivyIds }));
 
@@ -34,10 +38,15 @@ function mount() {
 beforeEach(() => {
   mockPush.mockClear();
   mockWeb3Enabled = true;
+  mockUsesMwa = false;
   mockHasPrivyIds = true;
   resetRootModalPresenter();
   useTripWalletWelcomeStore.setState({ seenUserIds: [] });
   useAuthStore.setState({ status: 'authed' });
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 describe('useRootModalPresenter — web3 welcome', () => {
@@ -46,8 +55,30 @@ describe('useRootModalPresenter — web3 welcome', () => {
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/web3-welcome'));
   });
 
-  it('never presents it when the wallet cannot be set up (no Privy ids)', async () => {
+  it('never presents it on iOS when the wallet cannot be set up (no Privy ids)', async () => {
     mockHasPrivyIds = false;
+    await mount();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('presents it on MWA without Privy ids (MWA needs none)', async () => {
+    mockUsesMwa = true;
+    mockHasPrivyIds = false;
+    await mount();
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/web3-welcome'));
+  });
+
+  it('never presents it on Android once the server switches MWA off (back to Privy, no ids)', async () => {
+    mockUsesMwa = false;
+    mockHasPrivyIds = false;
+    await mount();
+    expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it('never presents it on MWA when the web3 flag is off', async () => {
+    mockUsesMwa = true;
+    mockHasPrivyIds = false;
+    mockWeb3Enabled = false;
     await mount();
     expect(mockPush).not.toHaveBeenCalled();
   });

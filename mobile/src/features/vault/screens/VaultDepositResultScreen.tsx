@@ -10,15 +10,19 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAppLanguage } from '@/i18n';
 import { colors } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
-import { VaultHeaderChip } from '../components/VaultHeaderChip';
 import { formatMicroUsdc } from '../depositMath';
 import { shortenVaultAddress } from './VaultDepositingSheet';
-import { useVaultDepositFlowStore, type VaultDepositFlow } from '../vaultDepositFlowStore';
+import {
+  useVaultDepositFlowStore,
+  vaultDepositFlowStore,
+  type VaultDepositFlow,
+} from '../vaultDepositFlowStore';
 
 const GREEN = '#30C48C';
 const PROCESSING_ORANGE = '#FF8C40';
@@ -27,18 +31,32 @@ export interface VaultDepositResultScreenProps {
   flow?: VaultDepositFlow;
   onDone?: () => void;
   onDepositAgain?: () => void;
+  /** Label for the address row — `Recipient` (the vault) after a deposit, `From` in history. */
+  addressLabel?: string;
+  /** False for a past deposit opened from history — "Deposit again" drives the live flow. */
+  showsDepositAgain?: boolean;
 }
 
 export function VaultDepositResultScreen({
   flow: flowProp,
   onDone,
   onDepositAgain,
+  addressLabel,
+  showsDepositAgain = true,
 }: VaultDepositResultScreenProps) {
   useAppLanguage();
   const { t } = useTranslation();
+  // Presented as a full-screen modal route: the content clears the status bar itself.
+  const insets = useSafeAreaInsets();
   const storedFlow = useVaultDepositFlowStore((s) => s.flow);
   const flow = flowProp ?? storedFlow;
   const done = onDone ?? (() => router.back());
+  const depositAgain =
+    onDepositAgain ??
+    (() => {
+      vaultDepositFlowStore.requestDepositAgain();
+      router.back();
+    });
 
   if (!flow) return null;
 
@@ -51,7 +69,7 @@ export function VaultDepositResultScreen({
   };
 
   return (
-    <View style={styles.root}>
+    <View style={styles.root} testID="vault-deposit-result-screen">
       <LinearGradient
         colors={
           isCompleted
@@ -62,19 +80,7 @@ export function VaultDepositResultScreen({
         style={styles.gradient}
       />
 
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>{t('Move money')}</Text>
-        <Pressable
-          onPress={done}
-          style={styles.headerBack}
-          accessibilityRole="button"
-          accessibilityLabel={t('Back')}
-        >
-          <VaultHeaderChip>
-            <Text style={styles.headerBackGlyph}>{'←'}</Text>
-          </VaultHeaderChip>
-        </Pressable>
-      </View>
+      <View style={{ height: insets.top }} />
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.amountBlock}>
@@ -82,15 +88,6 @@ export function VaultDepositResultScreen({
           <Text style={styles.amountValue} numberOfLines={1}>
             {amountText}
           </Text>
-          {isCompleted ? (
-            <Pressable
-              onPress={onDepositAgain}
-              style={styles.depositAgainButton}
-              accessibilityRole="button"
-            >
-              <Text style={styles.depositAgainText}>{t('Deposit again')}</Text>
-            </Pressable>
-          ) : null}
         </View>
 
         <View style={styles.detailsShell}>
@@ -108,7 +105,7 @@ export function VaultDepositResultScreen({
             <Row label={t('Date')}>
               <Text style={styles.value}>{formatDate(flow.date)}</Text>
             </Row>
-            <Row label={t('Recipient')}>
+            <Row label={addressLabel ?? t('Recipient')}>
               <Copyable
                 display={shortenVaultAddress(flow.recipient)}
                 full={flow.recipient}
@@ -143,6 +140,7 @@ export function VaultDepositResultScreen({
               }
               style={styles.explorerLink}
               accessibilityRole="link"
+              testID="vault-deposit-result-explorer"
             >
               <Text style={styles.explorerText}>{t('Check on explorer')}</Text>
             </Pressable>
@@ -150,9 +148,26 @@ export function VaultDepositResultScreen({
         </View>
       </ScrollView>
 
-      <Pressable onPress={done} style={styles.goBackButton} accessibilityRole="button">
-        <Text style={styles.goBackText}>{t('Go back')}</Text>
-      </Pressable>
+      <View style={styles.bottomBar}>
+        {isCompleted && showsDepositAgain ? (
+          <Pressable
+            onPress={depositAgain}
+            style={styles.depositAgainButton}
+            accessibilityRole="button"
+            testID="vault-deposit-result-deposit-again"
+          >
+            <Text style={styles.depositAgainText}>{t('Deposit again')}</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          onPress={done}
+          style={styles.goBackButton}
+          accessibilityRole="button"
+          testID="vault-deposit-result-go-back"
+        >
+          <Text style={styles.goBackText}>{t('Go back')}</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -195,23 +210,29 @@ function formatDate(epochMs: number): string {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   gradient: { position: 'absolute', top: 0, left: 0, right: 0, height: 345 },
-  header: { paddingHorizontal: 16, paddingTop: 8, alignItems: 'center' },
-  headerTitle: { ...beVietnamPro(14), letterSpacing: -0.28, color: colors.contentB },
-  headerBack: { position: 'absolute', left: 16, top: 8 },
-  headerBackGlyph: { fontSize: 14, color: colors.neutral900 },
   scrollContent: { paddingBottom: 24 },
   amountBlock: { alignItems: 'center', gap: 20, paddingTop: 48, paddingBottom: 28 },
   amountLabel: { ...beVietnamPro(18), letterSpacing: -0.36, color: colors.neutral600 },
   amountValue: { ...beVietnamPro(48), letterSpacing: -2.4, color: colors.neutral950 },
+  bottomBar: { flexDirection: 'row', gap: 12, marginHorizontal: 24, marginBottom: 32 },
   depositAgainButton: {
-    width: 147,
-    height: 44,
+    flex: 1,
+    minHeight: 52,
     borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.5)',
+    backgroundColor: colors.white,
+    // A visible edge: with the old #EFEFEF border on the #F7F7F7 page, the pill's outline
+    // vanished and it read shorter than Go back (both are 52pt).
+    borderWidth: 1,
+    borderColor: '#DADADA',
+    boxShadow: '0px 1px 3px rgba(0, 0, 0, 0.06)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  depositAgainText: { ...beVietnamPro(15), letterSpacing: -0.75, color: colors.contentB },
+  depositAgainText: {
+    ...beVietnamPro(17, 'regular'),
+    letterSpacing: -0.68,
+    color: colors.contentB,
+  },
   detailsShell: {
     marginHorizontal: 15,
     paddingHorizontal: 8,
@@ -231,8 +252,7 @@ const styles = StyleSheet.create({
   explorerLink: { alignSelf: 'center', paddingBottom: 4 },
   explorerText: { ...beVietnamPro(16), letterSpacing: -0.32, color: '#393939' },
   goBackButton: {
-    marginHorizontal: 24,
-    marginBottom: 32,
+    flex: 1,
     minHeight: 52,
     borderRadius: 999,
     backgroundColor: colors.neutral900,

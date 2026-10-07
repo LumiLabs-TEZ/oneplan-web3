@@ -1,0 +1,20 @@
+# B (spike): the trip invite pops up live → drag the avatar down into the trip card to join → open
+# the trip: a web3 trip with no vault yet still shows the vault card at 0.
+appId: local.lumilabs.oneplan
+---
+- extendedWaitUntil:
+    visible:
+      id: "invitation-drag-preview"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 2000
+- swipe:
+    start: "50%,30%"
+    end: "50%,66%"
+    duration: 1800
+- extendedWaitUntil:
+    visible:
+      id: "trip-vault-card-deposit"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 3000

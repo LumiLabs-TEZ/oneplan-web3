@@ -40,6 +40,12 @@ import {
 import { useTripBudgets, useTripCore, useTripExpenses } from '@/features/trip/TripDetailContext';
 import { useRequestTripEnd } from '@/features/vault/api/endTrip';
 import { useTripHasVault } from '@/features/vault/api/tripHasVault';
+import {
+  alertVaultNotEmpty,
+  isVaultNotEmptyError,
+  vaultBlocksDelete,
+} from '@/features/vault/deleteGuard';
+import { openConsensusScreen } from '@/features/vault/useTripEndConsensus';
 import { useWeb3Enabled } from '@/features/vault/web3Flag';
 import { useAppLanguage } from '@/i18n';
 import { currencyFromCode } from '@/lib/currency';
@@ -245,11 +251,8 @@ export function TripMenuController({
   // trips are unaffected: with the web3 flag off, or a non-vault trip, this is the plain PATCH.
   const endVaultTrip = () => {
     requestTripEnd.mutate(undefined, {
-      onSuccess: () =>
-        router.push({
-          pathname: '/trip/[tripId]/end-review',
-          params: { tripId: String(tripId) },
-        }),
+      // An already-pending request (409 recovery) may have my vote: Waiting, not Review.
+      onSuccess: (request) => openConsensusScreen(tripId, request),
       onError: (err) => Alert.alert(mutationErrorMessage(err, t('Failed to end trip'))),
     });
   };
@@ -296,7 +299,11 @@ export function TripMenuController({
     );
   };
 
-  const confirmDeleteTrip = () => {
+  const confirmDeleteTrip = async () => {
+    if (web3Enabled && (await vaultBlocksDelete(queryClient, tripId))) {
+      alertVaultNotEmpty(t);
+      return;
+    }
     Alert.alert(
       t('Delete trip?'),
       t('This will permanently delete the trip for all members. This action cannot be undone.'),
@@ -311,7 +318,10 @@ export function TripMenuController({
                 void invalidateTripLists(queryClient);
                 router.dismissTo('/(tabs)/home');
               },
-              onError: (err) => Alert.alert(mutationErrorMessage(err, t('Failed to delete trip'))),
+              onError: (err) =>
+                isVaultNotEmptyError(err)
+                  ? alertVaultNotEmpty(t)
+                  : Alert.alert(mutationErrorMessage(err, t('Failed to delete trip'))),
             });
           },
         },
@@ -343,7 +353,7 @@ export function TripMenuController({
         confirmEndTrip();
         return;
       case 'deleteTrip':
-        confirmDeleteTrip();
+        void confirmDeleteTrip();
         return;
       case 'leaveGroup':
         onLeave();

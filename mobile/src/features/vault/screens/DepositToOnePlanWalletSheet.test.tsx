@@ -13,8 +13,14 @@ jest.mock('../api/queries', () => ({
 }));
 
 const mockIsVaultWalletConfigured = jest.fn(() => true);
+const mockVaultWalletKind = jest.fn<'privy' | 'mwa' | null, []>(() => 'privy');
 jest.mock('../wallet/walletHandle', () => ({
   isVaultWalletConfigured: () => mockIsVaultWalletConfigured(),
+  vaultWalletKind: () => mockVaultWalletKind(),
+  connectedVaultWalletAddress: () => null,
+  connectVaultWallet: jest.fn(),
+  resetVaultWallet: jest.fn(),
+  subscribeWalletHandle: () => () => undefined,
 }));
 
 const mockEnsureWalletLinked = jest.fn(async () => undefined);
@@ -45,6 +51,21 @@ describe('DepositToOnePlanWalletSheet', () => {
     mockRouterBack.mockClear();
     mockEnsureWalletLinked.mockClear();
     mockIsVaultWalletConfigured.mockReturnValue(true);
+    mockVaultWalletKind.mockReturnValue('privy');
+  });
+
+  it('on Android shows the Connect card when no wallet is linked', async () => {
+    mockWalletData = { publicKey: null };
+    mockVaultWalletKind.mockReturnValue('mwa');
+    const screen = await render(<DepositToOnePlanWalletSheet />, { wrapper });
+    await waitFor(() => expect(screen.getByTestId('connect-wallet-button')).toBeTruthy());
+  });
+
+  it('on Android shows the deposit QR, not the Connect card, once a wallet is linked', async () => {
+    mockVaultWalletKind.mockReturnValue('mwa');
+    const screen = await render(<DepositToOnePlanWalletSheet />, { wrapper });
+    await waitFor(() => expect(screen.getByTestId('wallet-deposit-copy')).toBeTruthy());
+    expect(screen.queryByTestId('connect-wallet-card')).toBeNull();
   });
 
   it('shows the deposit copy and a QR once the address loads', async () => {

@@ -7,6 +7,7 @@ import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import TripWalletWelcomeFriends from '@/assets/images/vault/tripWalletWelcomeFriends.svg';
 import TripWalletWelcomeGlobe from '@/assets/images/vault/tripWalletWelcomeGlobe.svg';
@@ -20,11 +21,15 @@ import { beVietnamPro } from '@/ui/typography';
 import { shortenAddress } from '../shortenAddress';
 
 import { useLinkWallet } from '../api/mutations';
-import { TripWalletSheetCloseButton } from '../components/TripWalletSheetCloseButton';
+import { ConnectWalletCard } from '../components/ConnectWalletCard';
 import { VaultPalette } from '../components/VaultPalette';
 import { markTripWalletWelcomeSeen } from '../tripWalletWelcomeStore';
 import { describeUnknownError, WalletError, walletErrorMessageKey } from '../wallet/walletError';
-import { ensureVaultWallet } from '../wallet/walletHandle';
+import {
+  connectedVaultWalletAddress,
+  ensureVaultWallet,
+  vaultWalletKind,
+} from '../wallet/walletHandle';
 import { withWalletTimeout } from '../wallet/walletTimeout';
 
 const INK = '#363636';
@@ -34,31 +39,32 @@ export interface WelcomeTripWalletSheetProps {
   onContinue?: () => void;
   /** Opens Profile → wallet detail → deposit sheet, per iOS `onAddMoney`. */
   onAddMoney?: () => void;
-  onClose?: () => void;
 }
 
-export function WelcomeTripWalletSheet({
-  onContinue,
-  onAddMoney,
-  onClose,
-}: WelcomeTripWalletSheetProps) {
+export function WelcomeTripWalletSheet({ onContinue, onAddMoney }: WelcomeTripWalletSheetProps) {
   useAppLanguage();
   const { t } = useTranslation();
   const me = useMe();
+  const insets = useSafeAreaInsets();
   const linkWallet = useLinkWallet();
 
-  const [address, setAddress] = useState<string | null>(null);
+  // Android (MWA): the root provider publishes the handle long before this modal opens.
+  const isMwa = vaultWalletKind() === 'mwa';
+  const [address, setAddress] = useState<string | null>(() =>
+    vaultWalletKind() === 'mwa' ? connectedVaultWalletAddress() : null,
+  );
   const [setupError, setSetupError] = useState<unknown>(null);
   const [failed, setFailed] = useState(false);
 
   const isSettingUp = address === null;
+  // On MWA connecting is optional here: the member can connect later from Profile → Wallet.
+  const continueDisabled = isSettingUp && !isMwa;
   const setupErrorMessage = !failed
     ? null
     : setupError instanceof WalletError
       ? t(walletErrorMessageKey(setupError), { 0: setupError.reason })
       : describeUnknownError(setupError);
   const finish = onContinue ?? (() => router.back());
-  const dismiss = onClose ?? finish;
 
   const complete = (action: () => void) => {
     markTripWalletWelcomeSeen(me.data ? String(me.data.id) : null);
@@ -81,7 +87,14 @@ export function WelcomeTripWalletSheet({
     }
   };
 
+  // No close button: the sheet is swiped away via its grabber, which skips `complete`, so mark
+  // it seen on unmount too (also covers a failed setup, where Continue stays disabled).
+  const userId = me.data ? String(me.data.id) : null;
+  useEffect(() => () => markTripWalletWelcomeSeen(userId), [userId]);
+
   useEffect(() => {
+    // Android (MWA): never open the member's wallet app on mount — the Connect card is a tap.
+    if (vaultWalletKind() === 'mwa') return;
     // One-time async setup on mount (Privy wallet linking), same as iOS's `.task` — not a
     // derived-state sync, so the cascading-render concern `set-state-in-effect` guards against
     // doesn't apply here. Deliberately `[]`: re-running on every `setupWallet` identity change
@@ -92,14 +105,10 @@ export function WelcomeTripWalletSheet({
   }, []);
 
   return (
-    <View style={styles.root}>
-      <View style={styles.toolbar}>
-        <TripWalletSheetCloseButton
-          onPress={() => complete(dismiss)}
-          testID="welcome-trip-wallet-close"
-        />
-      </View>
-
+    <View
+      style={[styles.root, { paddingBottom: insets.bottom + 16 }]}
+      testID="welcome-trip-wallet-sheet"
+    >
       <View style={styles.header}>
         <Text style={styles.title}>{t('Welcome to your trip wallet')}</Text>
         <Text style={styles.subtitle}>
@@ -107,45 +116,58 @@ export function WelcomeTripWalletSheet({
         </Text>
       </View>
 
-      <View style={styles.statusCard}>
-        {address ? (
-          <>
-            <TripWalletWelcomeWallet width={28} height={28} />
-            <Text style={styles.statusAddress} numberOfLines={1}>
-              {shortenAddress(address, 8)}
-            </Text>
-            <Pressable
-              onPress={() => complete(() => (onAddMoney ?? finish)())}
-              style={styles.addMoneyPill}
-              accessibilityRole="button"
-            >
-              <Text style={styles.addMoneyText}>{t('Add money to get start')}</Text>
-            </Pressable>
-          </>
-        ) : setupErrorMessage !== null ? (
-          <>
-            <TripWalletWelcomeWallet width={28} height={28} />
-            <Text style={styles.statusTitle}>{t('Could not set up wallet')}</Text>
-            <Text style={styles.statusError} numberOfLines={3} testID="welcome-trip-wallet-error">
-              {setupErrorMessage}
-            </Text>
-            <Pressable
-              onPress={() => void setupWallet()}
-              style={styles.addMoneyPill}
-              accessibilityRole="button"
-              testID="welcome-trip-wallet-retry"
-            >
-              <Text style={styles.addMoneyText}>{t('Retry')}</Text>
-            </Pressable>
-          </>
-        ) : (
-          <>
-            <TripWalletWelcomeWallet width={28} height={28} />
-            <Text style={styles.statusTitle}>{t('Setting up your wallet')}</Text>
-            <Text style={styles.statusSubtitle}>{t('Few seconds')}</Text>
-          </>
-        )}
-      </View>
+      {isMwa && address === null ? (
+        // Handles cancel / no wallet app / 409 itself; its connect already linked the key
+        // server-side (SIWS), so no `/wallet/link` call here.
+        <View style={styles.connectCard}>
+          <ConnectWalletCard onConnected={setAddress} />
+        </View>
+      ) : (
+        <View style={styles.statusCard}>
+          {address ? (
+            <>
+              <TripWalletWelcomeWallet width={28} height={28} />
+              <Text
+                style={styles.statusAddress}
+                numberOfLines={1}
+                testID="welcome-trip-wallet-address"
+              >
+                {shortenAddress(address, 8)}
+              </Text>
+              <Pressable
+                onPress={() => complete(() => (onAddMoney ?? finish)())}
+                style={styles.addMoneyPill}
+                accessibilityRole="button"
+                testID="welcome-trip-wallet-add-money"
+              >
+                <Text style={styles.addMoneyText}>{t('Add money to get start')}</Text>
+              </Pressable>
+            </>
+          ) : setupErrorMessage !== null ? (
+            <>
+              <TripWalletWelcomeWallet width={28} height={28} />
+              <Text style={styles.statusTitle}>{t('Could not set up wallet')}</Text>
+              <Text style={styles.statusError} numberOfLines={3} testID="welcome-trip-wallet-error">
+                {setupErrorMessage}
+              </Text>
+              <Pressable
+                onPress={() => void setupWallet()}
+                style={styles.addMoneyPill}
+                accessibilityRole="button"
+                testID="welcome-trip-wallet-retry"
+              >
+                <Text style={styles.addMoneyText}>{t('Retry')}</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <TripWalletWelcomeWallet width={28} height={28} />
+              <Text style={styles.statusTitle}>{t('Setting up your wallet')}</Text>
+              <Text style={styles.statusSubtitle}>{t('Few seconds')}</Text>
+            </>
+          )}
+        </View>
+      )}
 
       <View style={styles.fundingOptions}>
         <OptionRow
@@ -169,12 +191,17 @@ export function WelcomeTripWalletSheet({
         <View style={styles.disclosureBlock}>
           <TripWalletWelcomeWalletSmall width={28} height={28} />
           <Text style={styles.disclosureText}>
-            {t(
-              'Setting up a wallet creates a Solana account tied to your OnePlan sign-in, through our wallet provider. Payments need your approval, and spending from a trip fund above the trip\'s limit needs a second member to approve it too. OnePlan covers the network fees, so you never need to hold SOL. ',
-            )}
+            {isMwa
+              ? t(
+                  "Your own Solana wallet app holds your keys and signs every payment. OnePlan never holds your keys. Trip money sits in the group's on-chain vault, and spending above the trip's limit needs a second member to approve it too. OnePlan covers the network fees, so you never need to hold SOL. ",
+                )
+              : t(
+                  "Setting up a wallet creates a Solana account tied to your OnePlan sign-in, through our wallet provider. Payments need your approval, and spending from a trip fund above the trip's limit needs a second member to approve it too. OnePlan covers the network fees, so you never need to hold SOL. ",
+                )}
             <Text
               style={styles.disclosureLink}
               onPress={() => router.push('/how-money-is-held')}
+              testID="welcome-trip-wallet-how-held"
             >
               {t('See how your money is held')}
             </Text>
@@ -183,9 +210,10 @@ export function WelcomeTripWalletSheet({
 
         <Pressable
           onPress={() => complete(finish)}
-          disabled={isSettingUp}
-          style={[styles.continueButton, isSettingUp && styles.continueButtonDisabled]}
+          disabled={continueDisabled}
+          style={[styles.continueButton, continueDisabled && styles.continueButtonDisabled]}
           accessibilityRole="button"
+          testID="welcome-trip-wallet-continue"
         >
           <Text style={styles.continueText}>{t('Continue')}</Text>
         </Pressable>
@@ -217,13 +245,8 @@ function OptionRow({
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: colors.surface,
-    paddingTop: 16,
-    paddingBottom: 24,
-  },
-  toolbar: { paddingHorizontal: 16, paddingBottom: 10 },
+  // Top padding clears the native grabber.
+  root: { flex: 1, backgroundColor: colors.surface, paddingTop: 44 },
   header: { paddingHorizontal: 24, gap: 3, marginBottom: 20 },
   title: { ...beVietnamPro(28), letterSpacing: -1.96, color: INK },
   subtitle: { ...beVietnamPro(15), letterSpacing: -0.75, color: SUBTITLE_GRAY },
@@ -237,6 +260,7 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 20,
   },
+  connectCard: { marginHorizontal: 20, marginBottom: 20 },
   statusAddress: { ...beVietnamPro(18), letterSpacing: -0.54, color: INK, maxWidth: '80%' },
   statusTitle: { ...beVietnamPro(18), letterSpacing: -0.54, color: INK },
   statusError: {
@@ -263,7 +287,8 @@ const styles = StyleSheet.create({
     letterSpacing: -0.45,
     color: 'rgba(54, 54, 54, 0.4)',
   },
-  footer: { paddingHorizontal: 16, gap: 24, marginTop: 8 },
+  // Pinned to the bottom of the sheet.
+  footer: { paddingHorizontal: 16, gap: 24, marginTop: 'auto', paddingTop: 16 },
   disclosureBlock: { gap: 2 },
   disclosureText: { ...beVietnamPro(12), letterSpacing: -0.36, color: SUBTITLE_GRAY },
   disclosureLink: { color: VaultPalette.accent },

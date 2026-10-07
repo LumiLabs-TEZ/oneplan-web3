@@ -15,3 +15,6 @@ export {
   type CategoryPickerSheetRef,
 } from './CategoryPickerSheet';
 export { TripVaultCard, type TripVaultCardProps } from './TripVaultCard';
+export { ConnectWalletCard, type ConnectWalletCardProps } from './ConnectWalletCard';
+export { NoWalletAppSheet } from './NoWalletAppSheet';
+export { SeekerIdentityTag, type SeekerIdentityTagProps } from './SeekerIdentityTag';

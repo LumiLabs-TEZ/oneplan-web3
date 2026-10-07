@@ -1,0 +1,57 @@
+# A (host): Deposit → OnePlan Wallet → 4 USDC → Contribute. The first deposit creates the vault on
+# chain. Depositing → Details → receipt (Completed) → Solana Explorer → back → Go back.
+appId: local.lumilabs.oneplan
+---
+- tapOn:
+    id: "trip-vault-card-deposit"
+- extendedWaitUntil:
+    visible:
+      id: "deposit-option-oneplan-wallet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "deposit-option-oneplan-wallet"
+- extendedWaitUntil:
+    visible:
+      id: "contribute-to-vault-sheet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "key-4"
+- waitForAnimationToEnd:
+    timeout: 1000
+- tapOn:
+    id: "contribute-submit"
+- extendedWaitUntil:
+    visible:
+      id: "vault-depositing-details"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 4000
+- tapOn:
+    id: "vault-depositing-details"
+- extendedWaitUntil:
+    visible: "Completed"
+    timeout: 120000
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: a08-deposit-result
+- tapOn:
+    id: "vault-deposit-result-explorer"
+- waitForAnimationToEnd:
+    timeout: 12000
+- launchApp:
+    appId: "local.lumilabs.oneplan"
+    stopApp: false
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "vault-deposit-result-go-back"
+- extendedWaitUntil:
+    visible:
+      id: "trip-vault-card-deposit"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 3000

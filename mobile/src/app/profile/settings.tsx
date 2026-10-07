@@ -49,8 +49,6 @@ import {
   type CurrencyPickerCode,
   type CurrencyPickerSheetRef,
 } from '@/features/trip/components/CurrencyPickerSheet';
-import { useWallet } from '@/features/vault/api/queries';
-import { useWeb3Enabled } from '@/features/vault/web3Flag';
 import { setAppLanguage, useAppLanguage } from '@/i18n';
 import { requireOnline } from '@/offline/guardOnline';
 import { BackButton } from '@/ui/components/BackButton';
@@ -71,8 +69,6 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const appUpdate = useAppUpdate();
   const updateBusy = isUpdateBusy(appUpdate.status);
-  const web3Enabled = useWeb3Enabled();
-  const wallet = useWallet({ enabled: web3Enabled });
 
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [tripTipsOptimistic, setTripTipsOptimistic] = useState<boolean | null>(null);
@@ -149,9 +145,6 @@ export default function SettingsScreen() {
       case 'displayName':
         displayNameSheetRef.current?.present();
         return;
-      case 'myWallet':
-        router.push('/profile/wallet');
-        return;
       case 'currency':
         currencySheetRef.current?.present();
         return;
@@ -183,7 +176,6 @@ export default function SettingsScreen() {
 
   const trailingFor = (id: SettingRowId): string | undefined => {
     if (id === 'displayName') return profile?.displayName ?? t('One Plan User');
-    if (id === 'myWallet') return truncateAddress(wallet.data?.publicKey);
     if (id === 'currency') return currencyLabel;
     if (id === 'language') return language === 'vi' ? 'Tiếng Việt' : 'English';
     return undefined;
@@ -207,33 +199,31 @@ export default function SettingsScreen() {
             title={t(section.titleKey)}
             testID={`settings-section-${section.id}`}
           >
-            {section.rows
-              .filter((row) => row.id !== 'myWallet' || web3Enabled)
-              .map((row) => (
-                <SettingRow
-                  key={row.id}
-                  icon={row.icon}
-                  title={t(row.titleKey)}
-                  trailing={trailingFor(row.id)}
-                  disclosure={row.disclosure}
-                  destructive={row.destructive}
-                  toggle={
-                    row.id === 'tripTips'
-                      ? { value: tripTipsEnabled, onChange: handleTripTipsToggle }
-                      : undefined
-                  }
-                  loading={
-                    (row.id === 'logout' && isSigningOut) ||
-                    (row.id === 'delete' && deleteAccount.pending)
-                  }
-                  disabled={
-                    (row.id === 'logout' && isSigningOut) ||
-                    (row.id === 'delete' && deleteAccount.pending)
-                  }
-                  onPress={() => handlePress(row.id)}
-                  testID={`setting-${ROW_TEST_ID[row.id]}`}
-                />
-              ))}
+            {section.rows.map((row) => (
+              <SettingRow
+                key={row.id}
+                icon={row.icon}
+                title={t(row.titleKey)}
+                trailing={trailingFor(row.id)}
+                disclosure={row.disclosure}
+                destructive={row.destructive}
+                toggle={
+                  row.id === 'tripTips'
+                    ? { value: tripTipsEnabled, onChange: handleTripTipsToggle }
+                    : undefined
+                }
+                loading={
+                  (row.id === 'logout' && isSigningOut) ||
+                  (row.id === 'delete' && deleteAccount.pending)
+                }
+                disabled={
+                  (row.id === 'logout' && isSigningOut) ||
+                  (row.id === 'delete' && deleteAccount.pending)
+                }
+                onPress={() => handlePress(row.id)}
+                testID={`setting-${ROW_TEST_ID[row.id]}`}
+              />
+            ))}
             {section.id === 'oneplan' && adPrivacyRequired ? (
               <SettingRow
                 icon={{ sf: 'hand.raised.fill', ionicon: 'hand-left', symbolSize: 18 }}
@@ -302,7 +292,6 @@ export default function SettingsScreen() {
  * `setting-trip-tips`, `setting-delete-account`, …). */
 const ROW_TEST_ID: Record<SettingRowId, string> = {
   displayName: 'display-name',
-  myWallet: 'my-wallet',
   currency: 'currency',
   language: 'language',
   tripTips: 'trip-tips',
@@ -313,12 +302,6 @@ const ROW_TEST_ID: Record<SettingRowId, string> = {
   logout: 'logout',
   delete: 'delete-account',
 };
-
-function truncateAddress(address: string | null | undefined): string | undefined {
-  if (!address) return undefined;
-  if (address.length <= 8) return address;
-  return `${address.slice(0, 4)}...${address.slice(-4)}`;
-}
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },

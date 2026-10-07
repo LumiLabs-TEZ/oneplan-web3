@@ -1,0 +1,104 @@
+# A (user 2): New trip ${TRIP_NAME} in Da Nang starting today, Group wallet on, with spike added →
+# the trip is a web3 trip, so its detail shows the vault card at a 0 balance (no vault yet).
+appId: local.lumilabs.oneplan
+env:
+  TRIP_NAME: Web3 E2E
+---
+- runFlow: common/launch.yaml
+- tapOn:
+    id: "fab"
+- extendedWaitUntil:
+    visible:
+      id: "quick-newTrip"
+    timeout: 10000
+- tapOn:
+    id: "quick-newTrip"
+- extendedWaitUntil:
+    visible:
+      id: "trip-name-input"
+    timeout: 15000
+- tapOn:
+    id: "trip-name-input"
+- inputText: "${TRIP_NAME}"
+- pressKey: Enter
+- tapOn:
+    id: "location-row"
+- extendedWaitUntil:
+    visible:
+      id: "location-search-input"
+    timeout: 15000
+- tapOn:
+    id: "location-search-input"
+- inputText: "D"
+- inputText: "a"
+- inputText: " "
+- inputText: "N"
+- inputText: "a"
+- inputText: "n"
+- inputText: "g"
+- extendedWaitUntil:
+    visible:
+      id: "location-result-0"
+    timeout: 30000
+- tapOn:
+    id: "location-result-0"
+- extendedWaitUntil:
+    visible:
+      id: "duration-row"
+    timeout: 15000
+- tapOn:
+    id: "duration-row"
+- extendedWaitUntil:
+    visible:
+      id: "duration-sheet"
+    timeout: 10000
+- evalScript: ${output.today = (function(){var d=new Date();var p=function(n){return (n<10?'0':'')+n};return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())})()}
+- tapOn:
+    id: "calendar-day-${output.today}"
+- tapOn:
+    id: "duration-confirm"
+- waitForAnimationToEnd:
+    timeout: 1500
+# Group wallet is opt-in (off by default); only eligible (allowlisted) users see the switch.
+- extendedWaitUntil:
+    visible:
+      id: "group-wallet-toggle"
+    timeout: 15000
+- tapOn:
+    id: "group-wallet-toggle"
+- scrollUntilVisible:
+    element:
+      id: "new-trip-friend-80"
+    timeout: 15000
+- tapOn:
+    id: "new-trip-friend-80-trailing"
+- extendedWaitUntil:
+    visible:
+      text: "Sent"
+    timeout: 5000
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "create-trip-submit"
+- extendedWaitUntil:
+    visible:
+      id: "trip-menu-button"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 2500
+# Creator's first open auto-presents the invite/QR sheet — close it via the backdrop.
+- runFlow:
+    when:
+      visible:
+        id: "trip-invite-card"
+    commands:
+      - tapOn:
+          point: "50%,8%"
+      - waitForAnimationToEnd:
+          timeout: 2000
+- extendedWaitUntil:
+    visible:
+      id: "trip-vault-card-deposit"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 2500

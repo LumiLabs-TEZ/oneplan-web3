@@ -34,6 +34,20 @@ describe('VaultSettlementRow', () => {
     expect(screen.getByTestId('vault-settlement-mark-done')).toBeTruthy();
   });
 
+  it('labels a receive row in English, collapsed and expanded', async () => {
+    const receiving = await render(<VaultSettlementRow entry={entry({ direction: 'receiving' })} />);
+    expect(receiving.getByText('Receive from')).toBeTruthy();
+    await fireEvent.press(receiving.getByTestId('vault-settlement-row-toggle'));
+    expect(receiving.getByText('You receive from')).toBeTruthy();
+  });
+
+  it('labels a pay row Transfer to', async () => {
+    const paying = await render(
+      <VaultSettlementRow entry={entry({ direction: 'paying', canConfirm: false })} />,
+    );
+    expect(paying.getByText('Transfer to')).toBeTruthy();
+  });
+
   it('shows Mark as done + Show QR when receiving', async () => {
     const screen = await render(<VaultSettlementRow entry={entry({ direction: 'receiving' })} />);
     await fireEvent.press(screen.getByTestId('vault-settlement-row-toggle'));
@@ -116,5 +130,28 @@ describe('VaultSettlementRow', () => {
     expect(screen.getByText('1.00 USDC')).toBeTruthy();
     expect(screen.getByText('Homestay')).toBeTruthy();
     expect(screen.getByText('0.20 USDC')).toBeTruthy();
+  });
+
+  it('shows the creditor .skr name and Seeker badge on a paying row', async () => {
+    const screen = await render(
+      <VaultSettlementRow
+        entry={entry({ direction: 'paying', name: 'Bob', walletAddress: 'BobWallet1111111111', canConfirm: false })}
+        identity={{ skrDomain: 'bob', isSeeker: true }}
+      />,
+    );
+    // displayName is "Bob (bob.skr)" — match the fragment, not the whole text.
+    expect(screen.getByText(/bob\.skr/)).toBeTruthy();
+    expect(screen.queryByText(/BobW\.\.\./)).toBeNull();
+    expect(screen.getByTestId('seeker-badge')).toBeTruthy();
+  });
+
+  it('keeps the short wallet address without an identity', async () => {
+    const screen = await render(
+      <VaultSettlementRow
+        entry={entry({ direction: 'paying', name: 'Bob', walletAddress: 'BobWallet1111111111', canConfirm: false })}
+      />,
+    );
+    expect(screen.getByText('Bob (BobW...1111)')).toBeTruthy();
+    expect(screen.queryByTestId('seeker-badge')).toBeNull();
   });
 });

@@ -71,9 +71,15 @@ export interface BuildHistorySectionsInput {
 
 const DATE_KEY_LENGTH = 10;
 
-/** Grouped whole amount, e.g. `1955000.4` → `1,955,000` (iOS `formatCurrency`, 0 fraction digits). */
-function wholeAmount(amount: number): string {
-  return formatWhole(amount);
+/**
+ * Grouped amount in the trip's home currency: whole for 0-decimal currencies (`1955000.4` VND →
+ * `1,955,000`, iOS `formatCurrency`), cents otherwise (`1.89` USD → `1.89`) so a small spend in a
+ * cents currency does not read as `1`.
+ */
+function homeAmount(amount: number, currency: CatalogCurrency): string {
+  if (currency.decimalPlaces === 0) return formatWhole(amount);
+  const rounded = Math.round(amount * 100) / 100;
+  return `${formatWhole(rounded)}${formatDecimal(rounded)}`;
 }
 
 function timestampMs(iso: string): number {
@@ -109,7 +115,7 @@ export function mapExpenseToEntry(
     id: expense.id,
     name: expense.name,
     category: expense.category,
-    amountLabel: `-${wholeAmount(expense.amount)}${homeCurrency.symbol}`,
+    amountLabel: `-${homeAmount(expense.amount, homeCurrency)}${homeCurrency.symbol}`,
     amount: expense.amount,
     amountSign: '-',
     amountCurrency: homeCurrency,
@@ -144,7 +150,7 @@ export function mapBudgetToEntry(
     id: budget.id,
     name: budget.name,
     category: budget.category,
-    amountLabel: `+${wholeAmount(total)}${homeCurrency.symbol}`,
+    amountLabel: `+${homeAmount(total, homeCurrency)}${homeCurrency.symbol}`,
     amount: total,
     amountSign: '+',
     amountCurrency: homeCurrency,

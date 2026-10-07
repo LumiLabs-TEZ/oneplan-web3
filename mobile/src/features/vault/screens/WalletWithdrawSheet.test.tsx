@@ -35,12 +35,12 @@ describe('WalletWithdrawSheet', () => {
   });
 
   it('disables Confirm & Withdraw with no address or amount typed', async () => {
-    const screen = await render(<WalletWithdrawSheet onFinished={jest.fn()} />);
+    const screen = await render(<WalletWithdrawSheet onSubmitted={jest.fn()} />);
     expect(screen.getByTestId('withdraw-confirm').props.accessibilityState.disabled).toBe(true);
   });
 
   it('typing an amount over the balance shows "Insufficient balance" and disables Confirm', async () => {
-    const screen = await render(<WalletWithdrawSheet onFinished={jest.fn()} />);
+    const screen = await render(<WalletWithdrawSheet onSubmitted={jest.fn()} />);
     // balance is 50 USDC; type 99.
     await fireEvent.press(screen.getByText('9'));
     await fireEvent.press(screen.getByText('9'));
@@ -53,7 +53,7 @@ describe('WalletWithdrawSheet', () => {
       isPending: false,
     } as never);
 
-    const screen = await render(<WalletWithdrawSheet onFinished={jest.fn()} />);
+    const screen = await render(<WalletWithdrawSheet onSubmitted={jest.fn()} />);
     await fireEvent.press(screen.getByTestId('withdraw-address-pill'));
     await fireEvent.changeText(screen.getByTestId('withdraw-address-input'), 'FRESH_ADDR');
     await fireEvent.press(screen.getByTestId('withdraw-address-done'));
@@ -65,11 +65,12 @@ describe('WalletWithdrawSheet', () => {
     );
   });
 
-  it('sends a valid withdrawal and swaps in place to the result screen', async () => {
+  it('sends a valid withdrawal and hands the result to onSubmitted', async () => {
     const mutateAsync = jest.fn(async () => ({ signature: 'SIG123', status: 'CONFIRMED' }));
     mockedUseWithdraw.mockReturnValue({ mutateAsync, isPending: false } as never);
 
-    const screen = await render(<WalletWithdrawSheet onFinished={jest.fn()} />);
+    const onSubmitted = jest.fn();
+    const screen = await render(<WalletWithdrawSheet onSubmitted={onSubmitted} />);
     await fireEvent.press(screen.getByTestId('withdraw-address-pill'));
     await fireEvent.changeText(screen.getByTestId('withdraw-address-input'), 'RECIPIENT_ADDR');
     await fireEvent.press(screen.getByTestId('withdraw-address-done'));
@@ -85,7 +86,16 @@ describe('WalletWithdrawSheet', () => {
         amountMicro: 20_000_000n,
       }),
     );
-    await waitFor(() => expect(screen.getByText('Completed')).toBeTruthy());
+    await waitFor(() =>
+      expect(onSubmitted).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 'completed',
+          amountMicro: 20_000_000n,
+          recipient: 'RECIPIENT_ADDR',
+          signature: 'SIG123',
+        }),
+      ),
+    );
   });
 
   it('shows an inline error and never presents a result when the withdrawal call fails', async () => {
@@ -94,7 +104,8 @@ describe('WalletWithdrawSheet', () => {
     });
     mockedUseWithdraw.mockReturnValue({ mutateAsync, isPending: false } as never);
 
-    const screen = await render(<WalletWithdrawSheet onFinished={jest.fn()} />);
+    const onSubmitted = jest.fn();
+    const screen = await render(<WalletWithdrawSheet onSubmitted={onSubmitted} />);
     await fireEvent.press(screen.getByTestId('withdraw-address-pill'));
     await fireEvent.changeText(screen.getByTestId('withdraw-address-input'), 'RECIPIENT_ADDR');
     await fireEvent.press(screen.getByTestId('withdraw-address-done'));
@@ -102,13 +113,13 @@ describe('WalletWithdrawSheet', () => {
     await fireEvent.press(screen.getByTestId('withdraw-confirm'));
 
     await waitFor(() => expect(screen.getByText('Network error')).toBeTruthy());
-    expect(screen.queryByTestId('withdraw-result-go-back')).toBeNull();
+    expect(onSubmitted).not.toHaveBeenCalled();
   });
 
   it('applies a settlement prefill (address + amount) on mount', async () => {
     const screen = await render(
       <WalletWithdrawSheet
-        onFinished={jest.fn()}
+        onSubmitted={jest.fn()}
         prefilledAddress="CREDITOR_ADDR"
         prefilledAmountMicro={5_000_000n}
       />,

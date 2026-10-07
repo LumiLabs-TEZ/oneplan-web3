@@ -165,17 +165,6 @@ export function hostLeaveDisplay(
   return { isPayout, displayAmountMicro, statusBadge: statusBadgeFor(request.status, isPayout) };
 }
 
-/** Sheet height (`VaultLeaveBottomSheet.sheetHeight`) — row-count-driven, clamped. */
-export function memberLeaveSheetHeight(lineCount: number): number {
-  const rowEstimate = Math.max(lineCount, 1) * 80;
-  return Math.min(720, Math.max(520, 300 + rowEstimate));
-}
-
-/** Sheet height (`VaultLeaveHostBottomSheet.sheetHeight`) — fixed per payout/non-payout. */
-export function hostLeaveSheetHeight(isPayout: boolean): number {
-  return isPayout ? 560 : 420;
-}
-
 /** `shortenedAddress` — `"abcd...wxyz"`, or the raw string when too short to shorten. */
 export function shortenAddress(address: string | null | undefined): string | null {
   const raw = address ?? '';

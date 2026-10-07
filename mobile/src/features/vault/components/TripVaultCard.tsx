@@ -280,7 +280,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: VaultPalette.accent,
-    boxShadow: '0px 4px 8px rgba(72, 184, 254, 0.22)',
+    // Tinted glow + tight contact shadow + top inner highlight so the primary CTA lifts off the
+    // card. Kept within the actions row's 8pt + card's 4pt padding — the card clips overflow.
+    boxShadow:
+      '0px 4px 10px rgba(72, 184, 254, 0.5), 0px 1px 3px rgba(0, 100, 255, 0.3), inset 0px 1px 0px rgba(255, 255, 255, 0.35)',
   },
   accentLabel: { ...beVietnamPro(15), color: colors.white, letterSpacing: -0.6 },
 });

@@ -1,0 +1,27 @@
+# B (spike): the "Approval needed" alert popped up live → Approve (second signature) → the spend
+# leaves the vault. Then open it from the vault History tab → receipt → Go back.
+appId: local.lumilabs.oneplan
+---
+- extendedWaitUntil:
+    visible: "Approval needed"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn: "Approve"
+- extendedWaitUntil:
+    notVisible: "Needs approval"
+    timeout: 120000
+- waitForAnimationToEnd:
+    timeout: 3000
+- tapOn: "Dinner"
+- extendedWaitUntil:
+    visible:
+      id: "vault-detail-go-back"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 3500
+- takeScreenshot: b12-dinner-receipt
+- tapOn:
+    id: "vault-detail-go-back"
+- waitForAnimationToEnd:
+    timeout: 2500

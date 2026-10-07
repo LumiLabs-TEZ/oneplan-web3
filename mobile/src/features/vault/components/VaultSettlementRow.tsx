@@ -20,6 +20,7 @@ import { beVietnamPro } from '@/ui/typography';
 
 import { shortenAddress } from '../shortenAddress';
 import { PersonAvatar } from './PersonAvatar';
+import { SeekerIdentityTag } from './SeekerIdentityTag';
 import type { VaultSettlementEntryModel } from '../helpers/tripEndSettlement';
 
 export interface VaultSettlementRowProps {
@@ -29,6 +30,8 @@ export interface VaultSettlementRowProps {
   onSendToWallet?: () => void | Promise<void>;
   /** External pending flag (e.g. the owning screen's mutation) — merged with local `isWorking`. */
   isWorking?: boolean;
+  /** `.skr` name / Seeker badge of the counterparty (`useMemberIdentities`). Display only. */
+  identity?: { skrDomain?: string | null; isSeeker: boolean };
   testID?: string;
 }
 
@@ -38,6 +41,7 @@ export function VaultSettlementRow({
   onShowQR,
   onSendToWallet,
   isWorking: externalWorking = false,
+  identity,
   testID,
 }: VaultSettlementRowProps) {
   useAppLanguage();
@@ -61,12 +65,12 @@ export function VaultSettlementRow({
   const directionLabel =
     entry.direction === 'receiving'
       ? isExpanded
-        ? t('Bạn nhận từ')
-        : t('Nhận từ')
-      : t('Chuyển cho');
+        ? t('You receive from')
+        : t('Receive from')
+      : t('Transfer to');
   const displayName =
     entry.walletAddress && entry.direction === 'paying'
-      ? `${entry.name} (${shortenAddress(entry.walletAddress)})`
+      ? `${entry.name} (${identity?.skrDomain ? `${identity.skrDomain}.skr` : shortenAddress(entry.walletAddress)})`
       : entry.extraCount > 0
         ? t('Group')
         : entry.name;
@@ -90,6 +94,7 @@ export function VaultSettlementRow({
           <Text style={styles.nameText} numberOfLines={1}>
             {displayName}
           </Text>
+          <SeekerIdentityTag skrDomain={null} isSeeker={identity?.isSeeker ?? false} fallback={null} />
         </View>
 
         <View style={styles.amountBlock}>
@@ -143,7 +148,7 @@ export function VaultSettlementRow({
 function AvatarBlock({ entry }: { entry: VaultSettlementEntryModel }) {
   const showsStack = entry.extraCount > 0 || entry.avatarUrls.length > 1;
   if (!showsStack) {
-    return <PersonAvatar uri={entry.avatarUrls[0]} name={entry.name} size={52} />;
+    return <PersonAvatar uri={entry.avatarUrls[0]} size={52} />;
   }
   const offsets = [
     { left: 0, top: 5.7 },
@@ -157,7 +162,7 @@ function AvatarBlock({ entry }: { entry: VaultSettlementEntryModel }) {
           key={`${url}-${index}`}
           style={[styles.avatarStackItem, offsets[index], { width: 29, height: 29 }]}
         >
-          <PersonAvatar uri={url} name={entry.name} size={29} />
+          <PersonAvatar uri={url} size={29} />
         </View>
       ))}
       {entry.extraCount > 0 ? (

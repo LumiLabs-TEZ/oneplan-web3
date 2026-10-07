@@ -29,7 +29,9 @@ export function DepositOptionsSheet({ onOnchain }: DepositOptionsSheetProps) {
         <DepositContributeArrow width={28} height={28} />
         <View style={styles.headerText}>
           <Text style={styles.title}>{t('Contribute')}</Text>
-          <Text style={styles.subtitle}>{t('Choose one of the options below\nto deposit crypto')}</Text>
+          <Text style={styles.subtitle}>
+            {t('Choose one of the options below\nto deposit crypto')}
+          </Text>
         </View>
       </View>
 
@@ -39,12 +41,15 @@ export function DepositOptionsSheet({ onOnchain }: DepositOptionsSheetProps) {
           title={t('Fiat')}
           subtitle={t('Receive assets via global bank account')}
           onPress={undefined}
+          badge={t('Coming soon')}
+          testID="deposit-option-fiat"
         />
         <OptionRow
           icon={<DepositOptionWallet width={28} height={28} />}
           title={t('OnePlan Wallet')}
           subtitle={t('Receive assets via OnePlan Wallet')}
           onPress={onOnchain}
+          testID="deposit-option-oneplan-wallet"
         />
       </View>
     </View>
@@ -56,11 +61,16 @@ function OptionRow({
   title,
   subtitle,
   onPress,
+  badge,
+  testID,
 }: {
   icon: React.ReactNode;
   title: string;
   subtitle: string;
   onPress: (() => void) | undefined;
+  /** Pill beside the title — for a row that is not tappable yet. */
+  badge?: string;
+  testID?: string;
 }) {
   return (
     <Pressable
@@ -69,31 +79,52 @@ function OptionRow({
       style={styles.row}
       accessibilityRole="button"
       accessibilityState={{ disabled: !onPress }}
+      testID={testID}
     >
       <View style={styles.rowIcon}>{icon}</View>
       <View style={styles.rowText}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
-          {title}
-        </Text>
+        <View style={styles.rowTitleLine}>
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {title}
+          </Text>
+          {badge ? (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{badge}</Text>
+            </View>
+          ) : null}
+        </View>
         <Text style={styles.rowSubtitle} numberOfLines={1}>
           {subtitle}
         </Text>
       </View>
-      <Ionicons name="chevron-forward" size={12} color="rgba(54, 54, 54, 0.35)" />
+      {badge ? null : <Ionicons name="chevron-forward" size={12} color="rgba(54, 54, 54, 0.35)" />}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.surface, paddingHorizontal: 16, paddingBottom: 48 },
+  root: { flex: 1, paddingHorizontal: 16, paddingBottom: 48 },
   header: { alignItems: 'center', gap: 8, marginTop: 32 },
   headerText: { alignItems: 'center', gap: 4 },
   title: { ...beVietnamPro(20), letterSpacing: -0.8, color: colors.neutral950 },
-  subtitle: { ...beVietnamPro(14), letterSpacing: -0.42, color: colors.contentM, textAlign: 'center' },
+  subtitle: {
+    ...beVietnamPro(14),
+    letterSpacing: -0.42,
+    color: colors.contentM,
+    textAlign: 'center',
+  },
   options: { marginTop: 32, gap: 20 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rowIcon: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   rowText: { flex: 1, gap: 2 },
+  rowTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   rowTitle: { ...beVietnamPro(16), letterSpacing: -0.48, color: colors.neutral950 },
   rowSubtitle: { ...beVietnamPro(14), letterSpacing: -0.42, color: 'rgba(54, 54, 54, 0.4)' },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: colors.neutral100,
+  },
+  badgeText: { ...beVietnamPro(12), letterSpacing: -0.24, color: colors.contentM },
 });

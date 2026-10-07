@@ -9,7 +9,7 @@ import {
 
 const prisma = new PrismaClient();
 
-const OWNER_EMAIL = 'owner@example.com';
+const OWNER_EMAIL = 'thekha2710@gmail.com';
 
 const FAKE_NAMES = [
   'Hyydesi',

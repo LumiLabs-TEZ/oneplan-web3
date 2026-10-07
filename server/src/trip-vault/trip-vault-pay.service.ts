@@ -28,7 +28,7 @@ import { PublicKey } from '@solana/web3.js';
 import BN from 'bn.js';
 
 import { PrismaService } from '../prisma/prisma.service';
-import { SolanaService } from '../solana/solana.service';
+import { isTxExpired, SolanaService } from '../solana/solana.service';
 import {
   assertInstructionAccounts,
   decodeTransferChecked,
@@ -530,7 +530,31 @@ export class TripVaultPayService {
     // signature stored the reconcile job can settle it whatever happens next.
     // The unique index on signature makes a replayed transaction fail here
     // instead of being attached to a second row (S7).
-    const signature = await this.solana.broadcastSigned(signedTx);
+    let signature: string;
+    try {
+      signature = await this.solana.broadcastSigned(signedTx);
+    } catch (error) {
+      if (isTxExpired(error) && !record.signature && !record.proposalPda) {
+        // The blockhash expired while the member was approving, so nothing
+        // reached the chain. The client only abandons a row it never signed,
+        // so retire it here the same way, or it reads as money spent until
+        // the reconcile job's grace period runs out. An approval leg keeps its
+        // open proposal: that can still be approved again.
+        await this.prisma.vaultTransaction.updateMany({
+          where: {
+            id: record.id,
+            status: VaultTxStatus.PENDING,
+            signature: null,
+            proposalPda: null,
+          },
+          data: {
+            status: VaultTxStatus.FAILED,
+            failureCode: VAULT_FAILURE_CODES.abandoned,
+          },
+        });
+      }
+      throw error;
+    }
     try {
       await this.prisma.vaultTransaction.update({
         where: { id: record.id },

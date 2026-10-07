@@ -38,7 +38,7 @@ export const HOW_MONEY_IS_HELD_SECTIONS: HowMoneyIsHeldSection[] = [
     ],
     bulletKeys: [
       'Every member sees the balance and every movement, at any time',
-      "Spending above the limit your group sets needs a second member to approve it before any money moves",
+      'Spending above the limit your group sets needs a second member to approve it before any money moves',
       'At the end of the trip, one settlement pays everyone back at once, and every member can check the numbers themselves',
     ],
   },
@@ -86,8 +86,40 @@ export const HOW_MONEY_IS_HELD_SECTIONS: HowMoneyIsHeldSection[] = [
       'Do you earn interest on my balance? No. Your balance does not earn anything, and we do not lend it out or invest it.',
       "Can I take my money out at any time? Yes, to your own wallet address, subject to network confirmation. Money already inside a trip fund follows your group's approval rules.",
       'What happens if OnePlan shuts down? Your personal USDC sits in your Privy wallet on Solana. OnePlan does not hold it as a bank. If the app disappears, that balance stays on-chain; access is through Privy with the same sign-in, or through a private key you exported earlier into another Solana wallet. Money already inside a trip fund also remains on Solana in the group vault. Managing approvals and payouts today depends on OnePlan. Without the app, that path is not simple for most people — personal wallet funds are the part you can take with you most reliably.',
-      'Who else can see my transactions? Members of a trip can see that trip\'s fund and its movements. Solana is a public network, so wallet activity is visible on it, though it is not labelled with your name by us.',
+      "Who else can see my transactions? Members of a trip can see that trip's fund and its movements. Solana is a public network, so wallet activity is visible on it, though it is not labelled with your name by us.",
     ],
     bulletKeys: [],
   },
 ];
+
+/**
+ * Android (MWA): the member's own wallet app holds the keys — no Privy, no "created for your
+ * account", no key export. Same structure as the iOS copy; only the custody-specific strings
+ * differ (ruling P24). Every other section is shared verbatim.
+ */
+const MWA_SECTION_PARAGRAPHS: Record<string, string[]> = {
+  'wallet-yours': [
+    'You connect your own Solana wallet app, such as Phantom, Solflare or Seed Vault. Your keys stay in that app, and OnePlan never holds them. Your wallet holds USDC, a dollar-backed stablecoin, on the Solana network.',
+    "Your wallet app signs every payment. OnePlan cannot move your money without that signature. Keep your wallet's recovery phrase safe: OnePlan cannot recover it for you.",
+  ],
+};
+
+/** Per-paragraph swaps inside otherwise shared sections (keyed by the iOS paragraph). */
+const MWA_PARAGRAPH_SWAPS: Record<string, string> = {
+  'You lose access to your sign-in account. Your wallet is tied to the account you sign in with. Losing that account means losing in-app access to the wallet. We do not currently offer a separate recovery method (no seed phrase in the app). Protect your Apple or Google account. Once we ship key export, you will be able to save your Solana private key and import it into another wallet (for example Phantom). If you have already exported that key, you can still reach your personal USDC even without OnePlan login. Export must happen before you lose access.':
+    'You lose your wallet app or its recovery phrase. Your keys live only in your own wallet app, so OnePlan cannot restore them. Restore the wallet from its recovery phrase on a new device, then connect it again.',
+  'What happens if OnePlan shuts down? Your personal USDC sits in your Privy wallet on Solana. OnePlan does not hold it as a bank. If the app disappears, that balance stays on-chain; access is through Privy with the same sign-in, or through a private key you exported earlier into another Solana wallet. Money already inside a trip fund also remains on Solana in the group vault. Managing approvals and payouts today depends on OnePlan. Without the app, that path is not simple for most people — personal wallet funds are the part you can take with you most reliably.':
+    'What happens if OnePlan shuts down? Your personal USDC sits in your own Solana wallet, and you can still use it from your wallet app without OnePlan. Money already inside a trip fund remains on Solana in the group vault. Managing approvals and payouts today depends on OnePlan.',
+};
+
+export const HOW_MONEY_IS_HELD_SECTIONS_MWA: HowMoneyIsHeldSection[] =
+  HOW_MONEY_IS_HELD_SECTIONS.map((section) => ({
+    ...section,
+    paragraphKeys: (MWA_SECTION_PARAGRAPHS[section.id] ?? section.paragraphKeys).map(
+      (key) => MWA_PARAGRAPH_SWAPS[key] ?? key,
+    ),
+  }));
+
+export function howMoneyIsHeldSections(kind: 'privy' | 'mwa' | null): HowMoneyIsHeldSection[] {
+  return kind === 'mwa' ? HOW_MONEY_IS_HELD_SECTIONS_MWA : HOW_MONEY_IS_HELD_SECTIONS;
+}

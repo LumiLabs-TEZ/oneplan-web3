@@ -660,6 +660,16 @@ jest.mock('@solana/web3.js', () => {
   return { VersionedTransaction };
 });
 
+// MWA ships a Kotlin native module; under jest every test that reaches `mwaSession` drives
+// `transact` itself via `jest.mocked(transact)`. Default: no wallet installed.
+jest.mock('@solana-mobile/mobile-wallet-adapter-protocol-web3js', () => ({
+  transact: jest.fn(() => {
+    const error = new Error('no wallet') as Error & { code: string };
+    error.code = 'ERROR_WALLET_NOT_FOUND';
+    return Promise.reject(error);
+  }),
+}));
+
 // @privy-io/expo: no jest preset, and its hooks are only meaningfully driven from
 // `useVaultWallet.test.ts` via `jest.mocked(usePrivy)`/`jest.mocked(useEmbeddedSolanaWallet)`.
 // Default state here is "ready, no wallet" so any other test that happens to render

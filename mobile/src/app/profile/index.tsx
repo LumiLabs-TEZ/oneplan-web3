@@ -25,13 +25,16 @@ import {
 } from '@/features/profile/components';
 import { useWallet } from '@/features/vault/api/queries';
 import { OnePlanWalletCard } from '@/features/vault/components/OnePlanWalletCard';
-import { WalletWithdrawSheet } from '@/features/vault/screens/WalletWithdrawSheet';
+import {
+  WalletWithdrawSheetHost,
+  type WalletWithdrawSheetHostRef,
+} from '@/features/vault/screens/WalletWithdrawSheetHost';
 import { useWeb3Enabled } from '@/features/vault/web3Flag';
 import { useAppLanguage } from '@/i18n';
 import { pickImages } from '@/native/imagePick';
 import { requireOnline } from '@/offline/guardOnline';
 import { useServingCached } from '@/offline/servingCached';
-import { AppSheet, type AppSheetRef, GlassIconButton, OfflineBanner } from '@/ui/components';
+import { GlassIconButton, OfflineBanner } from '@/ui/components';
 import { BackButton } from '@/ui/components/BackButton';
 import { colors, spacing } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
@@ -57,7 +60,7 @@ export default function ProfileScreen() {
   const servingCachedMe = useServingCached(me);
   const web3Enabled = useWeb3Enabled();
   const wallet = useWallet({ enabled: web3Enabled });
-  const withdrawSheetRef = useRef<AppSheetRef>(null);
+  const withdrawSheetRef = useRef<WalletWithdrawSheetHostRef>(null);
   const balanceMicro = wallet.data ? BigInt(wallet.data.balanceMicro) : 0n;
   const balanceUsdc = Number(balanceMicro) / 1_000_000;
   // Indicative only — same ballpark as the trip vault UX until live FX is wired.
@@ -95,17 +98,13 @@ export default function ProfileScreen() {
 
         {web3Enabled ? (
           <OnePlanWalletCard
-            email={me.data?.email ?? ''}
+            address={wallet.data?.publicKey ?? null}
             balanceUsdc={balanceUsdc}
             balanceVnd={balanceVnd}
             isLoading={wallet.isLoading}
             onOpenDetail={() => router.push('/profile/wallet')}
             onWithdraw={() => withdrawSheetRef.current?.present()}
-            onDeposit={() =>
-              // Deposit is Wave A's flow (`DepositToOnePlanWalletView`/`DepositOptionsSheet`,
-              // not part of this task) — placeholder until that lands.
-              Alert.alert(t('Deposit'), t('Coming soon'))
-            }
+            onDeposit={() => router.push('/wallet/deposit')}
             testID="profile-wallet-card"
           />
         ) : null}
@@ -163,16 +162,7 @@ export default function ProfileScreen() {
         </View>
       </View>
 
-      {web3Enabled ? (
-        <AppSheet
-          ref={withdrawSheetRef}
-          snapPoints={['94%']}
-          floating={false}
-          enableDynamicSizing={false}
-        >
-          <WalletWithdrawSheet onFinished={() => withdrawSheetRef.current?.dismiss()} />
-        </AppSheet>
-      ) : null}
+      {web3Enabled ? <WalletWithdrawSheetHost ref={withdrawSheetRef} /> : null}
     </View>
   );
 }

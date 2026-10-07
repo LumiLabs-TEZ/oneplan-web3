@@ -25,4 +25,9 @@ describe('DepositOptionsSheet', () => {
     while (node && node.props.accessibilityState === undefined) node = node.parent;
     expect(node?.props.accessibilityState?.disabled).toBe(true);
   });
+
+  it('labels only the Fiat row "Coming soon"', async () => {
+    const screen = await render(<DepositOptionsSheet onOnchain={jest.fn()} />);
+    expect(screen.getAllByText('Coming soon')).toHaveLength(1);
+  });
 });

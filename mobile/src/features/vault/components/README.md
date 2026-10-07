@@ -5,9 +5,6 @@ visual parity from `ios/OnePlan/OnePlan/Component/Vault/*.swift` on `feat/web3-v
 component here is props-in / callbacks-out — no data fetching, no service calls — so later waves
 compose them instead of re-deriving the chrome.
 
-View them all at once at `(dev)/vault-kit` (`dev.lumilabs.oneplan:///vault-kit`, `!isProd`-gated
-like `(dev)/offline`).
-
 ## Components
 
 ### `VaultPalette.ts`
@@ -96,7 +93,7 @@ because the fiat 2-decimal split (`formatWhole` + `formatDecimal`) turns `0.999`
 
 ## Verified on Android emulator (`APP_VARIANT=local`)
 
-Built/installed on a `Medium_Phone_API_36.1` AVD and viewed at `(dev)/vault-kit`. Screenshots
+Built/installed on a `Medium_Phone_API_36.1` AVD and viewed at `(dev)/vault-kit` (gallery since removed). Screenshots
 saved under `/tmp/vault-kit-*.png` during the porting session: `13-deeplink` (palette, header
 chip x2, VND keypad), `14-scroll1`/`15-scroll2`/`16-scroll3` (USDC keypad, all 14 category icons,
 every `TripVaultCard` state), `19-vi-card` (Vietnamese strings via the gallery's EN/VI toggle).

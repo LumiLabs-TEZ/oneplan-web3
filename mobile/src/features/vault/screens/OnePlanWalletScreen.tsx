@@ -9,22 +9,51 @@
  * Deposit is Wave A's flow (`DepositToOnePlanWalletView`/`DepositOptionsSheet`) — this screen
  * only exposes an `onDeposit` callback, the same seam `OnePlanWalletCard` uses.
  */
-import { Ionicons } from '@expo/vector-icons';
+import type { TFunction } from 'i18next';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ApiMutationError, mutationErrorMessage } from '@/api/mutationError';
 import { useAppLanguage } from '@/i18n';
 import { CurrencyFormatter } from '@/lib/currency';
+import { BackPillButton } from '@/ui/components';
 import { colors } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
+import { useWeb3Eligibility } from '../api/eligibility';
+import { useClaimFaucet } from '../api/mwa';
 import { useWallet, useWalletHistory } from '../api/queries';
+import { ConnectWalletCard } from '../components/ConnectWalletCard';
 import { OnePlanWalletHistoryRow } from '../components/OnePlanWalletHistoryRow';
-import { VaultHeaderChip } from '../components/VaultHeaderChip';
 import { VaultSkyGradient } from '../components/VaultSkyGradient';
 
 /** Indicative only — same ballpark as trip vault UX until live FX is wired. */
 const INDICATIVE_USDC_TO_VND = 26_500;
+
+const SKY_TO_WHITE = ['rgb(180, 223, 255)', 'rgb(251, 236, 215)', colors.white] as const;
+
+/** How long the faucet result stays under the button (same timer pattern as the wallet card's "Copied"). */
+const FAUCET_MESSAGE_MS = 4000;
+
+/**
+ * Faucet failure text, or null to say nothing: 409 `faucet_in_flight` is a double tap while the
+ * first claim is still running — that claim's own result is what the member should see.
+ */
+function faucetErrorMessage(t: TFunction, error: unknown): string | null {
+  if (error instanceof ApiMutationError) {
+    const code = (error.body as { code?: string } | null)?.code;
+    if (error.status === 409 && code === 'faucet_in_flight') return null;
+    if (error.status === 429) return t('You can claim test USDC again tomorrow.');
+    // `faucet_empty`, and `faucet_wrong_cluster` (misconfigured server) — unavailable either way.
+    if (error.status === 503) return t('The test faucet is empty right now.');
+    if (error.status === 400 && code === 'wallet_not_linked') {
+      return t('Connect your Solana wallet');
+    }
+  }
+  return mutationErrorMessage(error, t('Something went wrong'));
+}
 
 export interface OnePlanWalletScreenProps {
   onBack: () => void;
@@ -36,8 +65,36 @@ export function OnePlanWalletScreen({ onBack, onWithdraw, onDeposit }: OnePlanWa
   useAppLanguage();
   const { t } = useTranslation();
 
+  const insets = useSafeAreaInsets();
   const walletQuery = useWallet();
   const historyQuery = useWalletHistory();
+  const eligibility = useWeb3Eligibility();
+  const faucet = useClaimFaucet();
+  const showFaucet = eligibility.data?.faucetEnabled === true && !!walletQuery.data?.publicKey;
+  const [faucetMessage, setFaucetMessage] = useState<string | null>(null);
+  const faucetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (faucetTimer.current) clearTimeout(faucetTimer.current);
+    },
+    [],
+  );
+
+  const flashFaucetMessage = (message: string) => {
+    setFaucetMessage(message);
+    if (faucetTimer.current) clearTimeout(faucetTimer.current);
+    faucetTimer.current = setTimeout(() => setFaucetMessage(null), FAUCET_MESSAGE_MS);
+  };
+
+  const claimTestUsdc = () =>
+    faucet.mutate(undefined, {
+      onSuccess: () => flashFaucetMessage(t('Test USDC sent')),
+      onError: (error) => {
+        const message = faucetErrorMessage(t, error);
+        if (message !== null) flashFaucetMessage(message);
+      },
+    });
 
   const balanceMicro = walletQuery.data ? BigInt(walletQuery.data.balanceMicro) : 0n;
   const balanceUsdc = Number(balanceMicro) / 1_000_000;
@@ -47,9 +104,10 @@ export function OnePlanWalletScreen({ onBack, onWithdraw, onDeposit }: OnePlanWa
 
   return (
     <View style={styles.container}>
-      <VaultSkyGradient height={345} />
+      {/* Fades to the page's white, as Swift does — ending on the grey default left a band. */}
+      <VaultSkyGradient height={345} colors={SKY_TO_WHITE} />
 
-      <ScrollView contentContainerStyle={styles.scrollContent} scrollIndicatorInsets={{ right: 1 }}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.balanceBlock}>
           {isLoading ? (
             <ActivityIndicator size="large" />
@@ -83,6 +141,37 @@ export function OnePlanWalletScreen({ onBack, onWithdraw, onDeposit }: OnePlanWa
           </Pressable>
         </View>
 
+        <ConnectWalletCard
+          skrDomain={walletQuery.data?.skrDomain ?? null}
+          isSeeker={walletQuery.data?.isSeeker ?? false}
+          onConnected={() => void walletQuery.refetch()}
+        />
+
+        {showFaucet ? (
+          <View style={styles.faucetBlock}>
+            <Pressable
+              onPress={claimTestUsdc}
+              disabled={faucet.isPending}
+              style={styles.faucetButton}
+              testID="wallet-screen-faucet"
+              accessibilityRole="button"
+              accessibilityLabel={t('Get test USDC')}
+              accessibilityState={{ busy: faucet.isPending, disabled: faucet.isPending }}
+            >
+              {faucet.isPending ? (
+                <ActivityIndicator color={colors.contentB} />
+              ) : (
+                <Text style={styles.faucetLabel}>{t('Get test USDC')}</Text>
+              )}
+            </Pressable>
+            {faucetMessage !== null ? (
+              <Text style={styles.faucetStatus} testID="wallet-screen-faucet-status">
+                {faucetMessage}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+
         <View style={styles.historyCard}>
           {history.length === 0 ? (
             <Text style={styles.emptyText}>{t('No activity yet')}</Text>
@@ -105,21 +194,8 @@ export function OnePlanWalletScreen({ onBack, onWithdraw, onDeposit }: OnePlanWa
         </View>
       </ScrollView>
 
-      <View style={styles.backChrome}>
-        <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel={t('Back')}>
-          <VaultHeaderChip>
-            <View style={styles.backIconWrap}>
-              <Ionicons name="arrow-back" size={14} color={colors.neutral900} />
-            </View>
-          </VaultHeaderChip>
-        </Pressable>
-        <Pressable onPress={onBack} accessibilityRole="button">
-          <VaultHeaderChip>
-            <View style={styles.backTextWrap}>
-              <Text style={styles.backText}>{t('Back')}</Text>
-            </View>
-          </VaultHeaderChip>
-        </Pressable>
+      <View style={[styles.backChrome, { top: insets.top + 8 }]}>
+        <BackPillButton onPress={onBack} testID="wallet-screen-back" />
       </View>
     </View>
   );
@@ -144,8 +220,9 @@ function formatTime(entry: { createdAt: string; blockTime: string }): string {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.white },
-  scrollContent: { paddingTop: 280, paddingHorizontal: 16, paddingBottom: 24 },
-  balanceBlock: { alignItems: 'flex-start', gap: 8 },
+  // Swift: balance inset 16, buttons + history inset 12.
+  scrollContent: { paddingTop: 280, paddingHorizontal: 12, paddingBottom: 24 },
+  balanceBlock: { alignItems: 'flex-start', gap: 8, paddingHorizontal: 4 },
   usdRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 3 },
   usdSymbol: { ...beVietnamPro(48), letterSpacing: -0.96, color: colors.contentL },
   usdAmount: { ...beVietnamPro(48), letterSpacing: -0.96, color: colors.contentB },
@@ -158,6 +235,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.white,
     borderWidth: 1,
     borderColor: 'rgba(0, 0, 0, 0.06)',
+    // Swift's two stacked shadows: a soft dark lift + a pale blue glow.
+    boxShadow: '0px 6px 12px rgba(0, 0, 0, 0.07), 0px 10px 18px rgba(204, 219, 240, 0.35)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -171,6 +250,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   depositLabel: { ...beVietnamPro(15), letterSpacing: -0.6, color: colors.white },
+  faucetBlock: { gap: 6, paddingTop: 12 },
+  faucetButton: {
+    minHeight: 42,
+    borderRadius: 999,
+    backgroundColor: colors.neutral50,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  faucetLabel: { ...beVietnamPro(15), letterSpacing: -0.6, color: colors.contentB },
+  faucetStatus: { ...beVietnamPro(13), color: colors.contentM, textAlign: 'center' },
   historyCard: {
     marginTop: 16,
     padding: 4,
@@ -185,8 +274,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   divider: { height: 1, backgroundColor: colors.neutral100 },
-  backChrome: { position: 'absolute', top: 8, left: 16, flexDirection: 'row', gap: 5 },
-  backIconWrap: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  backTextWrap: { width: 61, height: 34, alignItems: 'center', justifyContent: 'center' },
-  backText: { ...beVietnamPro(15), letterSpacing: -0.3, color: colors.neutral900 },
+  backChrome: { position: 'absolute', left: 16 },
 });

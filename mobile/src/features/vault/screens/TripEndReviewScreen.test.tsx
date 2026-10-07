@@ -12,6 +12,10 @@ const mockReviewState: { data: TripEndReviewDto | undefined; isError: boolean } 
 const mockVoteMutate = jest.fn();
 const mockVoteState = { isPending: false };
 
+// Rendered without a SafeAreaProvider; the floating vote bar reads the bottom inset.
+jest.mock('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 jest.mock('@/features/vault/api/endTrip', () => ({
   useTripEndReview: () => mockReviewState,
   useCastTripEndVote: () => ({ mutate: mockVoteMutate, ...mockVoteState }),

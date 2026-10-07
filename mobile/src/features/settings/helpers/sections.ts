@@ -6,7 +6,6 @@ import type { Ionicons } from '@expo/vector-icons';
 
 export type SettingRowId =
   | 'displayName'
-  | 'myWallet'
   | 'currency'
   | 'language'
   | 'tripTips'
@@ -22,7 +21,6 @@ export type IoniconName = keyof typeof Ionicons.glyphMap;
 /** `svg.settings` key — kept as a literal union so this module stays free of asset imports. */
 export type SettingAssetName =
   | 'displayName'
-  | 'wallet'
   | 'currency'
   | 'privacy'
   | 'terms'
@@ -63,8 +61,6 @@ export const SETTING_SECTIONS: readonly SettingSectionDef[] = [
     titleKey: 'Personal',
     rows: [
       { id: 'displayName', icon: { asset: 'displayName' }, titleKey: 'Display name' },
-      /** Web3-gated (`useWeb3Enabled()`) — filtered out by the screen when the flag is off. */
-      { id: 'myWallet', icon: { asset: 'wallet' }, titleKey: 'My wallet', disclosure: true },
       { id: 'currency', icon: { asset: 'currency' }, titleKey: 'Currency', disclosure: true },
       {
         id: 'language',

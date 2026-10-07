@@ -81,6 +81,8 @@ export const keys = {
     history: (tripId: number) => ['vault', tripId, 'history'] as const,
     transaction: (tripId: number, id: number) => ['vault', tripId, 'transaction', id] as const,
     settlement: (tripId: number) => ['vault', tripId, 'settlement'] as const,
+    /** Member Seeker identities (.skr domain), keyed by userId. Never persisted (Map). */
+    identities: (tripId: number) => ['vault', tripId, 'identities'] as const,
     /** Host-side pending vault-leave announcements (Wave E). */
     leaveRequests: (tripId: number) => ['vault', tripId, 'leave-requests'] as const,
     endRequest: (tripId: number) => ['vault', tripId, 'end-request'] as const,

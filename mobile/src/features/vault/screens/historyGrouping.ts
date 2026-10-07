@@ -7,6 +7,7 @@ import { CurrencyFormatter } from '@/lib/currency';
 
 import type { VaultHistoryEntryDto } from '../api/queries';
 import type { VaultHistoryEntry, VaultHistoryPerson } from '../components/VaultHistoryRow';
+import type { VaultDepositFlow } from '../vaultDepositFlowStore';
 
 export interface VaultHistoryDay {
   /** `yyyy-MM-dd`, local calendar date. */
@@ -68,32 +69,20 @@ export function groupHistoryByDay(
 }
 
 /**
- * Day header total in the dominant unit (VND spends, else net USDC) — never sums VND and USDC
- * together. `null` when the day has neither (shouldn't happen for a non-empty day, but a day of
- * all-zero entries is possible in principle).
+ * Day header total: the day's net USDC change for the vault (money in +, spends −). Every entry
+ * carries `amountMicro` — a spend's is the USDC actually debited — so the sum is single-unit and
+ * deposits are never dropped. `null` when the day nets to zero.
  */
 export function dayTotalLabel(entries: readonly VaultHistoryEntryDto[]): string | null {
-  let spendVnd = 0;
-  let netUsdc = 0;
-  let hasVnd = false;
+  let netMicro = 0;
   for (const entry of entries) {
-    const usdc = Number(entry.amountMicro) / 1_000_000;
+    const micro = Number(entry.amountMicro);
     const isIncoming = entry.kind === 'DEPOSIT' || entry.kind === 'SETTLEMENT';
-    if (isIncoming) {
-      netUsdc += usdc;
-    } else if (entry.amountVnd != null && entry.amountVnd !== '') {
-      spendVnd += Number(entry.amountVnd);
-      hasVnd = true;
-    } else {
-      netUsdc -= usdc;
-    }
+    netMicro += isIncoming ? micro : -micro;
   }
-  if (hasVnd && spendVnd > 0) return `-${CurrencyFormatter.formatWhole(spendVnd)}đ`;
-  if (netUsdc !== 0) {
-    const sign = netUsdc > 0 ? '+' : '-';
-    return `${sign}${CurrencyFormatter.formatUsdc(Math.abs(netUsdc))}`;
-  }
-  return null;
+  if (netMicro === 0) return null;
+  const sign = netMicro > 0 ? '+' : '-';
+  return `${sign}$${CurrencyFormatter.formatUsdc(Math.abs(netMicro) / 1_000_000)}`;
 }
 
 function defaultTitle(kind: string, t: (key: string) => string): string {
@@ -131,8 +120,6 @@ export function mapHistoryEntry(
   const isSettlement = entry.kind === 'SETTLEMENT';
   const isIncoming = isDeposit || isSettlement;
   const category = categoryOption(entry.category).value;
-  // A payment is shown in dong (what the merchant was handed); a deposit has no dong side.
-  const amount = isIncoming ? usdc : (vnd ?? usdc);
 
   return {
     id: entry.id,
@@ -150,11 +137,29 @@ export function mapHistoryEntry(
               avatarUrl: m.avatarUrl ?? null,
             })),
           },
-    // Money in is positive, money out negative.
-    amount: isIncoming ? amount : -amount,
-    currency: isIncoming ? 'USD' : vnd != null ? 'VND' : 'USD',
+    // Always the vault's own unit (USDC) so rows add up to the balance; money in +, out −.
+    amount: isIncoming ? usdc : -usdc,
+    currency: 'USD',
+    // A payment also shows the dong the merchant was handed; a deposit has no dong side.
+    secondaryVnd: isIncoming ? null : vnd,
     time: formatTime(parseCreatedAt(entry.createdAt)),
     // A spend still PENDING has not left the vault; a pending deposit is money already sent.
     isAwaitingApproval: entry.needsApproval,
+  };
+}
+
+/** Rows that open a full-screen receipt — a payment (bank details) or a deposit (tx id). */
+export function hasHistoryDetail(entry: VaultHistoryEntryDto): boolean {
+  return entry.kind === 'SPEND' || entry.kind === 'DEPOSIT';
+}
+
+/** A past deposit as the `VaultDepositResultScreen` receipt; the address is the sender's wallet. */
+export function depositFlowFromHistory(entry: VaultHistoryEntryDto): VaultDepositFlow {
+  return {
+    amountMicro: BigInt(entry.amountMicro),
+    recipient: entry.fromAddress ?? '',
+    status: entry.status === 'CONFIRMED' ? 'completed' : 'processing',
+    signature: entry.signature ?? '',
+    date: parseCreatedAt(entry.createdAt).getTime(),
   };
 }

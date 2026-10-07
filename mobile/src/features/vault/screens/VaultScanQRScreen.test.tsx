@@ -3,9 +3,15 @@
  */
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { scanFromURLAsync } from 'expo-camera';
+import { scanFromURLAsync, useCameraPermissions } from 'expo-camera';
 
 import { VaultScanQRScreen } from './VaultScanQRScreen';
+
+// Rendered without a SafeAreaProvider; the screen reads the top inset for its header.
+jest.mock('react-native-safe-area-context', () => ({
+  ...jest.requireActual('react-native-safe-area-context'),
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 
 const mockedLaunchImageLibraryAsync = ImagePicker.launchImageLibraryAsync as jest.Mock;
 const mockedScanFromURLAsync = scanFromURLAsync as jest.Mock;
@@ -55,17 +61,10 @@ describe('VaultScanQRScreen', () => {
     expect(screen.getByTestId('qr-scanner')).toBeTruthy();
   });
 
-  it('calls onCancel from the icon back control', async () => {
+  it('calls onCancel from the back button', async () => {
     const onCancel = jest.fn();
     const screen = await render(<VaultScanQRScreen onScanned={jest.fn()} onCancel={onCancel} />);
-    fireEvent.press(screen.getByTestId('vault-scan-qr-back-icon'));
-    expect(onCancel).toHaveBeenCalledTimes(1);
-  });
-
-  it('calls onCancel from the label back control', async () => {
-    const onCancel = jest.fn();
-    const screen = await render(<VaultScanQRScreen onScanned={jest.fn()} onCancel={onCancel} />);
-    fireEvent.press(screen.getByTestId('vault-scan-qr-back-label'));
+    fireEvent.press(screen.getByTestId('vault-scan-qr-back'));
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
@@ -105,5 +104,28 @@ describe('VaultScanQRScreen', () => {
     await waitFor(() => expect(mockedLaunchImageLibraryAsync).toHaveBeenCalled());
     expect(onScanned).not.toHaveBeenCalled();
     expect(screen.queryByTestId('vault-scan-qr-rejected')).toBeNull();
+  });
+
+  it('hides the camera-access hint once permission is granted', async () => {
+    const screen = await render(<VaultScanQRScreen onScanned={jest.fn()} onCancel={jest.fn()} />);
+    await waitFor(() => expect(screen.queryByTestId('vault-scan-qr-permission-hint')).toBeNull());
+  });
+
+  it('shows the camera-access hint inside the frame while permission is denied', async () => {
+    const denied = { granted: false, status: 'denied' };
+    (useCameraPermissions as jest.Mock).mockReturnValue([denied, jest.fn(async () => denied)]);
+    try {
+      const screen = await render(
+        <VaultScanQRScreen onScanned={jest.fn()} onCancel={jest.fn()} />,
+      );
+      expect(screen.getByText('Allow camera access, or pick a code from your photos')).toBeTruthy();
+      // The scanner's own "unavailable" card would duplicate the hint.
+      await waitFor(() => expect(screen.queryByText('Camera preview is unavailable.')).toBeNull());
+    } finally {
+      (useCameraPermissions as jest.Mock).mockReset().mockImplementation(() => [
+        { granted: true, status: 'granted' },
+        jest.fn(async () => ({ granted: true, status: 'granted' })),
+      ]);
+    }
   });
 });

@@ -1,0 +1,32 @@
+# B (spike): dev sign-in, then the web3 welcome sheet sets up the Privy wallet.
+appId: local.lumilabs.oneplan
+---
+- runFlow: common/launch.yaml
+- extendedWaitUntil:
+    visible:
+      id: "welcome-trip-wallet-address"
+    timeout: 60000
+- waitForAnimationToEnd:
+    timeout: 2000
+# A nested <Text onPress> link at the end of the disclosure: no accessibility node of its own.
+- tapOn:
+    point: "62%,85%"
+- extendedWaitUntil:
+    visible:
+      id: "how-money-is-held-sheet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 1500
+- swipe:
+    start: "50%,9%"
+    end: "50%,90%"
+    duration: 500
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "welcome-trip-wallet-continue"
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 20000
+- takeScreenshot: b01-home

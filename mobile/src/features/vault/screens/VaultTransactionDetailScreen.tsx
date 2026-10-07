@@ -8,7 +8,8 @@
  * locally.
  */
 import { Ionicons } from '@expo/vector-icons';
-import { useState } from 'react';
+import { BottomSheetView } from '@gorhom/bottom-sheet';
+import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -23,14 +24,13 @@ import {
 import type { components } from '@/api/schema';
 import { useAppLanguage } from '@/i18n';
 import { CurrencyFormatter } from '@/lib/currency';
-import { Avatar, SFSymbol } from '@/ui/components';
+import { AppSheet, type AppSheetRef, Avatar } from '@/ui/components';
 import type { TranslateFn } from '@/ui/relativeTime';
 import { colors } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
 import { categoryOption } from '@/features/expense/categories';
 import { CategoryIcon } from '../components/CategoryIcon';
-import { VaultHeaderChip } from '../components/VaultHeaderChip';
 import { VaultPalette } from '../components/VaultPalette';
 import { VaultSkyGradient } from '../components/VaultSkyGradient';
 import {
@@ -41,8 +41,13 @@ import {
 import type { VaultTransactionDetail } from './transactionDetailMapping';
 import { VaultTransactionEditScreen } from './VaultTransactionEditScreen';
 import type { VaultTransactionDetailDto } from '../api/mutations';
+import { WalletError } from '../wallet/walletError';
+import { walletErrorMessage } from './walletErrorMessage';
 
 type TripMemberDto = components['schemas']['TripMemberDto'];
+
+/** `AppSheet`'s floating-sheet gap above the home indicator / keyboard. */
+const FLOATING_INSET = 9;
 
 export interface VaultTransactionDetailScreenProps {
   detail: VaultTransactionDetail;
@@ -57,6 +62,8 @@ export interface VaultTransactionDetailScreenProps {
   onApproved?: () => void;
   onCancelled?: () => void;
   onEdited?: (updated: VaultTransactionDetailDto, savedName: string) => void;
+  /** Status-bar inset to clear when shown full-screen (pay flow); 0 inside a sheet. */
+  topInset?: number;
 }
 
 export function VaultTransactionDetailScreen({
@@ -70,12 +77,14 @@ export function VaultTransactionDetailScreen({
   onApproved,
   onCancelled,
   onEdited,
+  topInset = 0,
 }: VaultTransactionDetailScreenProps) {
   useAppLanguage();
   const { t } = useTranslation();
 
   const [detail, setDetail] = useState(initialDetail);
   const [isEditing, setIsEditing] = useState(false);
+  const editSheetRef = useRef<AppSheetRef>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const approve = useApproveVaultTransaction(tripId ?? 0);
   const cancel = useCancelVaultTransaction(tripId ?? 0);
@@ -96,7 +105,7 @@ export function VaultTransactionDetailScreen({
       await approve.mutateAsync({ vaultTransactionId });
       onApproved?.();
     } catch (err) {
-      setErrorMessage(vaultPayErrorMessage(err, t('Could not load history')));
+      setErrorMessage(actionErrorMessage(err, t('Could not approve the payment.')));
     }
   }
 
@@ -120,35 +129,14 @@ export function VaultTransactionDetailScreen({
       await cancel.mutateAsync({ vaultTransactionId });
       onCancelled?.();
     } catch (err) {
-      setErrorMessage(vaultPayErrorMessage(err, t('Could not load history')));
+      setErrorMessage(actionErrorMessage(err, t('Could not cancel the payment.')));
     }
   }
 
-  if (isEditing && tripId != null && vaultTransactionId != null) {
-    return (
-      <VaultTransactionEditScreen
-        tripId={tripId}
-        vaultTransactionId={vaultTransactionId}
-        amountVnd={detail.amountVnd}
-        rate={detail.rate}
-        members={members}
-        initialName={detail.name}
-        initialCategory={detail.category}
-        initialShareWithUserIds={detail.shareWithUserIds}
-        onBack={() => setIsEditing(false)}
-        onSaved={(updated, savedName) => {
-          setDetail((current) => ({
-            ...current,
-            name: savedName,
-            category: categoryOption(updated.category).value,
-            shareWithNames: updated.shareWith.map((m) => m.displayName),
-            shareWithUserIds: updated.shareWith.map((m) => m.userId),
-          }));
-          setIsEditing(false);
-          onEdited?.(updated, savedName);
-        }}
-      />
-    );
+  /** null = say nothing (the member cancelled in their wallet). */
+  function actionErrorMessage(err: unknown, fallback: string): string | null {
+    if (err instanceof WalletError && err.kind === 'cancelled') return null;
+    return walletErrorMessage(t, err) ?? vaultPayErrorMessage(err, fallback);
   }
 
   return (
@@ -157,26 +145,9 @@ export function VaultTransactionDetailScreen({
           unlike SwiftUI's `.background { gradient }` which paints behind its content. */}
       <VaultSkyGradient />
 
-      <View style={styles.header}>
-        <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel={t('Back')}>
-          <VaultHeaderChip>
-            <View style={styles.headerIconWrap}>
-              <SFSymbol
-                name="arrow.left"
-                fallback="arrow-back"
-                size={14}
-                frame={32}
-                weight="500"
-                color={colors.neutral900}
-              />
-            </View>
-          </VaultHeaderChip>
-        </Pressable>
-        <Text style={styles.headerTitle}>{t('Transaction details')}</Text>
-        <View style={styles.headerSpacer} />
-      </View>
+      <View style={{ height: topInset }} />
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.hero}>
           <Text style={styles.amount} numberOfLines={1}>
             {CurrencyFormatter.formatWhole(detail.amountVnd)}đ
@@ -192,6 +163,12 @@ export function VaultTransactionDetailScreen({
               disabled={approve.isPending || cancel.isPending}
               style={styles.approveButton}
               testID="vault-detail-approve"
+              accessibilityRole="button"
+              accessibilityLabel={t('Approve payment')}
+              accessibilityState={{
+                busy: approve.isPending,
+                disabled: approve.isPending || cancel.isPending,
+              }}
             >
               {approve.isPending ? (
                 <ActivityIndicator color={colors.white} />
@@ -209,22 +186,18 @@ export function VaultTransactionDetailScreen({
               disabled={approve.isPending || cancel.isPending}
               style={styles.cancelButton}
               testID="vault-detail-cancel"
+              accessibilityRole="button"
+              accessibilityLabel={t('Cancel payment')}
+              accessibilityState={{
+                busy: cancel.isPending,
+                disabled: approve.isPending || cancel.isPending,
+              }}
             >
               {cancel.isPending ? (
                 <ActivityIndicator color={colors.secondary} />
               ) : (
                 <Text style={styles.cancelLabel}>{t('Cancel payment')}</Text>
               )}
-            </Pressable>
-          ) : null}
-
-          {onSendAgain ? (
-            <Pressable
-              onPress={onSendAgain}
-              style={styles.sendAgainButton}
-              testID="vault-detail-send-again"
-            >
-              <Text style={styles.sendAgainLabel}>{t('Send again')}</Text>
             </Pressable>
           ) : null}
 
@@ -279,7 +252,10 @@ export function VaultTransactionDetailScreen({
               <Text style={styles.groupTitle}>{t('Group details')}</Text>
               {showsEdit ? (
                 <Pressable
-                  onPress={() => setIsEditing(true)}
+                  onPress={() => {
+                    setIsEditing(true);
+                    editSheetRef.current?.present();
+                  }}
                   style={styles.editButton}
                   testID="vault-detail-edit"
                 >
@@ -319,6 +295,66 @@ export function VaultTransactionDetailScreen({
           ) : null}
         </View>
       </ScrollView>
+
+      {/* Same bottom bar as the deposit / withdraw receipts. */}
+      <View style={styles.bottomBar}>
+        {onSendAgain ? (
+          <Pressable
+            onPress={onSendAgain}
+            style={styles.sendAgainButton}
+            accessibilityRole="button"
+            testID="vault-detail-send-again"
+          >
+            <Text style={styles.sendAgainLabel}>{t('Send again')}</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          onPress={onBack}
+          style={styles.goBackButton}
+          accessibilityRole="button"
+          testID="vault-detail-go-back"
+        >
+          <Text style={styles.goBackLabel}>{t('Go back')}</Text>
+        </Pressable>
+      </View>
+
+      {/* Content-sized floating sheet: gorhom's `interactive` keyboard offset already lifts it
+          above the keyboard. Don't add `EditDisplayNameSheet`'s keyboard-height `bottomInset`
+          on top — that lifts it twice. */}
+      <AppSheet
+        ref={editSheetRef}
+        enableDynamicSizing
+        bottomInset={FLOATING_INSET}
+        android_keyboardInputMode="adjustPan"
+        backgroundColor={colors.background}
+        onDismiss={() => setIsEditing(false)}
+      >
+        <BottomSheetView>
+          {isEditing && tripId != null && vaultTransactionId != null ? (
+            <VaultTransactionEditScreen
+              tripId={tripId}
+              vaultTransactionId={vaultTransactionId}
+              amountVnd={detail.amountVnd}
+              rate={detail.rate}
+              members={members}
+              initialName={detail.name}
+              initialCategory={detail.category}
+              initialShareWithUserIds={detail.shareWithUserIds}
+              onSaved={(updated, savedName) => {
+                setDetail((current) => ({
+                  ...current,
+                  name: savedName,
+                  category: categoryOption(updated.category).value,
+                  shareWithNames: updated.shareWith.map((m) => m.displayName),
+                  shareWithUserIds: updated.shareWith.map((m) => m.userId),
+                }));
+                editSheetRef.current?.dismiss();
+                onEdited?.(updated, savedName);
+              }}
+            />
+          ) : null}
+        </BottomSheetView>
+      </AppSheet>
     </View>
   );
 }
@@ -415,16 +451,6 @@ const valueInk = 'rgb(57, 57, 57)';
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8 },
-  headerIconWrap: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    ...beVietnamPro(14),
-    letterSpacing: -0.28,
-    color: colors.contentB,
-  },
-  headerSpacer: { width: 32 },
   scrollContent: { paddingBottom: 24 },
   hero: { alignItems: 'center', gap: 20, paddingTop: 28 },
   amount: { ...beVietnamPro(48), letterSpacing: -2.4, color: colors.neutral950 },
@@ -443,15 +469,27 @@ const styles = StyleSheet.create({
   waitingLabel: { ...beVietnamPro(14), color: colors.warning500 },
   cancelButton: { minWidth: 147, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   cancelLabel: { ...beVietnamPro(15), color: colors.secondary },
+  bottomBar: { flexDirection: 'row', gap: 12, marginHorizontal: 24, marginBottom: 32 },
   sendAgainButton: {
-    width: 147,
-    height: 44,
+    flex: 1,
+    minHeight: 52,
     borderRadius: 999,
-    backgroundColor: colors.onSurface,
+    backgroundColor: colors.white,
+    borderWidth: 1,
+    borderColor: '#EFEFEF',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sendAgainLabel: { ...beVietnamPro(15), letterSpacing: -0.75, color: colors.contentB },
+  sendAgainLabel: { ...beVietnamPro(17, 'regular'), letterSpacing: -0.68, color: colors.contentB },
+  goBackButton: {
+    flex: 1,
+    minHeight: 52,
+    borderRadius: 999,
+    backgroundColor: colors.neutral900,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  goBackLabel: { ...beVietnamPro(17, 'regular'), letterSpacing: -0.68, color: colors.white },
   error: { ...beVietnamPro(13), color: colors.secondary, textAlign: 'center' },
   detailsShell: {
     marginTop: 20,

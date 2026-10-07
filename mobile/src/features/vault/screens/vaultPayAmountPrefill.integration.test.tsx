@@ -11,6 +11,12 @@ import { VaultPayAmountScreen } from './VaultPayAmountScreen';
 import { VaultScanQRScreen } from './VaultScanQRScreen';
 import type { VietQrPayload } from '../solana/vietqr';
 
+// Rendered without a SafeAreaProvider; the screen reads the top inset for its header.
+jest.mock('react-native-safe-area-context', () => ({
+  ...jest.requireActual('react-native-safe-area-context'),
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+
 /** Tag 38 (merchant, bank BIN 970422 / account 123456) + tag 54 amount "150000". */
 function buildVietQrPayloadWithAmount(): string {
   const beneficiary = '00' + '06' + '970422' + '01' + '06' + '123456';

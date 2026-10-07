@@ -33,7 +33,7 @@ import {
 } from '@/features/vault/wallet/authBootstrap';
 import { useWeb3Enabled } from '@/features/vault/web3Flag';
 import { web3RootScreens } from '@/features/vault/web3RootScreens';
-import { PrivyVaultProvider } from '@/features/vault/wallet/PrivyVaultProvider';
+import { VaultWalletProvider } from '@/features/vault/wallet/VaultWalletProvider';
 import { installStoreSignOutHook, useStoreInit } from '@/iap';
 import { initI18n } from '@/i18n';
 import { isProd } from '@/lib/env';
@@ -57,7 +57,7 @@ installInviteSignOutHook(); // clear pending trip invites on sign-out
 installLinksSignOutHook(); // clear the parked deep link on sign-out
 installBoardSignOutHook();
 installStoreSignOutHook(); // drop cached IAP products/flags on sign-out (keeps the connection)
-installVaultSignOutHook(); // reset the embedded wallet + Privy session on sign-out
+installVaultSignOutHook(); // reset the vault wallet (Privy session / local MWA connection) on sign-out
 
 // TanStack Query ↔ device state (replaces the iOS NetworkMonitor + scenePhase glue).
 onlineManager.setEventListener((setOnline) =>
@@ -171,12 +171,6 @@ function RootStack({ route }: { route: ReturnType<typeof resolveRootRoute> }) {
         <Stack.Screen name="(dev)/offline" options={{ headerShown: false }} />
         <Stack.Screen name="(dev)/receipt" options={{ headerShown: false }} />
         <Stack.Screen name="(dev)/web3-flag" options={{ headerShown: false }} />
-        <Stack.Screen name="(dev)/vault-kit" options={{ headerShown: false }} />
-        <Stack.Screen name="(dev)/web3-wave-a" options={{ headerShown: false }} />
-        <Stack.Screen name="(dev)/vault-pay" options={{ headerShown: false }} />
-        <Stack.Screen name="(dev)/vault-leave" options={{ headerShown: false }} />
-        <Stack.Screen name="(dev)/vault-wave-c" options={{ headerShown: false }} />
-        <Stack.Screen name="(dev)/vault-wave-d" options={{ headerShown: false }} />
       </Stack.Protected>
     </Stack>
   );
@@ -236,7 +230,7 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <ShareIntentProvider>
           <QueryClientProvider client={queryClient}>
-            <PrivyVaultProvider>
+            <VaultWalletProvider>
               <BottomSheetModalProvider>
                 <StatusBar style={showSplash ? 'light' : 'dark'} />
                 {!isReference ? <SessionEffects ready={route === 'app' && !updateInfo} /> : null}
@@ -244,7 +238,7 @@ export default function RootLayout() {
                 {updateInfo ? <LazyUpdateRequired info={updateInfo} /> : null}
                 {showSplash ? <AnimatedSplash onComplete={() => setShowSplash(false)} /> : null}
               </BottomSheetModalProvider>
-            </PrivyVaultProvider>
+            </VaultWalletProvider>
           </QueryClientProvider>
         </ShareIntentProvider>
       </SafeAreaProvider>

@@ -1,13 +1,16 @@
 import { ConfigService } from '@nestjs/config';
+import { ConflictException, Logger } from '@nestjs/common';
 import {
   Keypair,
   PublicKey,
+  SendTransactionError,
   SystemProgram,
   Transaction,
+  TransactionExpiredBlockheightExceededError,
 } from '@solana/web3.js';
 import { getAssociatedTokenAddressSync } from '@solana/spl-token';
 import bs58 from 'bs58';
-import { SolanaService } from './solana.service';
+import { isTxExpired, SolanaService } from './solana.service';
 
 const PROGRAM_ID = 'HcBimMiXCgDnBabhsyoq99g1WqzNSEuiiNMoUvXrtLAL';
 const USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
@@ -199,6 +202,102 @@ describe('SolanaService', () => {
       await expect(service.sendAsFeePayer([noop(service)])).resolves.toBe(
         'sig',
       );
+    });
+  });
+  // I2: a wallet approval slower than the blockhash lifetime is a retryable
+  // conflict the app can explain, not a 500.
+  describe('I2: an expired blockhash on broadcast is a 409 tx_expired', () => {
+    beforeEach(() => {
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    });
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    function withSendError(error: unknown) {
+      const service = new SolanaService(configWith());
+      const conn = service.connection as unknown as Record<string, jest.Mock>;
+      conn.sendRawTransaction = jest.fn().mockRejectedValue(error);
+      return service;
+    }
+
+    function signedTx(service: SolanaService): string {
+      const t = new Transaction();
+      t.add(noop(service));
+      t.recentBlockhash = Keypair.generate().publicKey.toBase58();
+      t.feePayer = service.feePayer.publicKey;
+      t.sign(service.feePayer);
+      return t.serialize().toString('base64');
+    }
+
+    async function caught(service: SolanaService): Promise<unknown> {
+      try {
+        await service.broadcastSigned(signedTx(service));
+      } catch (error) {
+        return error;
+      }
+      throw new Error('broadcastSigned resolved');
+    }
+
+    it('maps a "Blockhash not found" simulation failure', async () => {
+      const error = await caught(
+        withSendError(
+          new SendTransactionError({
+            action: 'simulate',
+            signature: '',
+            transactionMessage:
+              'Transaction simulation failed: Blockhash not found',
+            logs: [],
+          }),
+        ),
+      );
+      expect(error).toBeInstanceOf(ConflictException);
+      const body = (error as ConflictException).getResponse() as {
+        code: string;
+        message: string;
+      };
+      expect(body.code).toBe('tx_expired');
+      expect(body.message).toEqual(expect.any(String));
+      expect(isTxExpired(error)).toBe(true);
+    });
+
+    it('maps a BlockhashNotFound send error', async () => {
+      const error = await caught(
+        withSendError(
+          new SendTransactionError({
+            action: 'send',
+            signature: '',
+            transactionMessage: 'BlockhashNotFound',
+          }),
+        ),
+      );
+      expect(isTxExpired(error)).toBe(true);
+    });
+
+    it('maps a block height exceeded error', async () => {
+      const error = await caught(
+        withSendError(new TransactionExpiredBlockheightExceededError('sig')),
+      );
+      expect(isTxExpired(error)).toBe(true);
+    });
+
+    it('rethrows any other broadcast failure unchanged', async () => {
+      const original = new SendTransactionError({
+        action: 'simulate',
+        signature: '',
+        transactionMessage:
+          'Transaction simulation failed: Error processing Instruction 0',
+        logs: [],
+      });
+      const error = await caught(withSendError(original));
+      expect(error).toBe(original);
+      expect(isTxExpired(error)).toBe(false);
+    });
+
+    it('isTxExpired is false for an unrelated 409', () => {
+      expect(
+        isTxExpired(new ConflictException({ code: 'wallet_locked_by_vault' })),
+      ).toBe(false);
     });
   });
 });

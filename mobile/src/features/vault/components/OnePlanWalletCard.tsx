@@ -2,9 +2,12 @@
  * Port of `OnePlanWalletCard.swift` (`origin/feat/web3-version`, Figma `4245:15486`) — the
  * personal OnePlan Wallet summary card shown above `ProfileInfoCard`.
  *
- * Header/balance tap opens the wallet detail; Withdraw/Deposit are separate tap targets that
- * open sheets directly without navigating first — three independent actions, not one drill-in.
+ * Header tap copies the wallet address (haptic + a brief "Copied" label); balance tap opens the
+ * wallet detail; Withdraw/Deposit open sheets directly — four independent actions, not one drill-in.
  */
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -17,7 +20,8 @@ import { beVietnamPro } from '@/ui/typography';
 const DepositOptionWalletIcon = svg.vault.depositOptionWallet;
 
 export interface OnePlanWalletCardProps {
-  email: string;
+  /** Solana public key of the personal wallet; `null` while it is not linked yet. */
+  address: string | null;
   balanceUsdc: number;
   balanceVnd: number;
   isLoading?: boolean;
@@ -28,7 +32,7 @@ export interface OnePlanWalletCardProps {
 }
 
 export function OnePlanWalletCard({
-  email,
+  address,
   balanceUsdc,
   balanceVnd,
   isLoading = false,
@@ -39,26 +43,52 @@ export function OnePlanWalletCard({
 }: OnePlanWalletCardProps) {
   useAppLanguage();
   const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
+
+  const copyAddress = () => {
+    if (!address) return;
+    void Clipboard.setStringAsync(address);
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
+    setCopied(true);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <View style={styles.card} testID={testID}>
+      <Pressable
+        onPress={copyAddress}
+        disabled={!address}
+        accessibilityRole="button"
+        style={({ pressed }) => [styles.header, pressed && styles.pressed]}
+        testID={testID ? `${testID}-copy` : undefined}
+      >
+        <View style={styles.headerIconFallback}>
+          <DepositOptionWalletIcon width={24} height={24} />
+        </View>
+        <View style={styles.headerText}>
+          <Text style={styles.headerLabel}>
+            {copied ? t('Copied successfully') : t('OnePlan Wallet')}
+          </Text>
+          <Text style={styles.headerAddress} numberOfLines={1}>
+            {address ? shortAddress(address) : '—'}
+          </Text>
+        </View>
+      </Pressable>
+
       <Pressable
         onPress={onOpenDetail}
         style={styles.body}
         testID={testID ? `${testID}-open` : undefined}
       >
-        <View style={styles.header}>
-          <View style={styles.headerIconFallback}>
-            <DepositOptionWalletIcon width={24} height={24} />
-          </View>
-          <View style={styles.headerText}>
-            <Text style={styles.headerLabel}>{t('OnePlan Wallet')}</Text>
-            <Text style={styles.headerEmail} numberOfLines={1}>
-              {email || '—'}
-            </Text>
-          </View>
-        </View>
-
         <View style={styles.balanceBlock}>
           {isLoading ? (
             <ActivityIndicator />
@@ -94,6 +124,11 @@ export function OnePlanWalletCard({
   );
 }
 
+/** `8nt5E...FKP7W` — first and last 5 characters of the address. */
+function shortAddress(address: string): string {
+  return address.length <= 10 ? address : `${address.slice(0, 5)}...${address.slice(-5)}`;
+}
+
 /** Whole dollars when exact; otherwise two decimal places (Swift `usdAmountText`). */
 function formatUsd(value: number): string {
   return value === Math.floor(value) ? value.toFixed(0) : value.toFixed(2);
@@ -107,6 +142,7 @@ const styles = StyleSheet.create({
     boxShadow: '0px 0px 8.95px rgba(0, 0, 0, 0.05)',
   },
   body: { alignItems: 'center' },
+  pressed: { opacity: 0.6 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -126,7 +162,7 @@ const styles = StyleSheet.create({
   },
   headerText: { flex: 1, gap: 1 },
   headerLabel: { ...beVietnamPro(14), letterSpacing: -0.42, color: 'rgba(54, 54, 54, 0.4)' },
-  headerEmail: { ...beVietnamPro(18), letterSpacing: -0.54, color: colors.neutral950 },
+  headerAddress: { ...beVietnamPro(18), letterSpacing: -0.54, color: colors.neutral950 },
   balanceBlock: { alignItems: 'center', gap: 5, paddingHorizontal: 16, paddingVertical: 12 },
   usdRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 3 },
   usdSymbol: { ...beVietnamPro(36), letterSpacing: -0.72, color: colors.contentL },

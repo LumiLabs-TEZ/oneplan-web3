@@ -4,9 +4,13 @@ import { router } from 'expo-router';
 import { initI18n } from '@/i18n';
 import { markSelfLeave, useRealtimeStore } from '@/realtime/realtimeStore';
 
-import { tripRealtimeAction, useTripRealtimeEffects } from './useTripRealtimeEffects';
+import { isInEndFlow, tripRealtimeAction, useTripRealtimeEffects } from './useTripRealtimeEffects';
 
-jest.mock('expo-router', () => ({ router: { replace: jest.fn(), dismissTo: jest.fn() } }));
+let mockPathname = '/trip/7';
+jest.mock('expo-router', () => ({
+  router: { replace: jest.fn(), dismissTo: jest.fn() },
+  usePathname: () => mockPathname,
+}));
 
 let mockWeb3Enabled = true;
 jest.mock('@/features/vault/web3Flag', () => ({ useWeb3Enabled: () => mockWeb3Enabled }));
@@ -75,7 +79,9 @@ describe('useTripRealtimeEffects — tripMemberRemoved (H3)', () => {
 
   const removeMe = async () => {
     await act(async () => {
-      useRealtimeStore.getState().pushEffect({ type: 'tripMemberRemoved', tripId: TRIP, userId: ME });
+      useRealtimeStore
+        .getState()
+        .pushEffect({ type: 'tripMemberRemoved', tripId: TRIP, userId: ME });
     });
   };
 
@@ -96,7 +102,9 @@ describe('useTripRealtimeEffects — tripMemberRemoved (H3)', () => {
   it('a removal of someone else does not navigate', async () => {
     await renderHook(() => useTripRealtimeEffects(TRIP, false, ME));
     await act(async () => {
-      useRealtimeStore.getState().pushEffect({ type: 'tripMemberRemoved', tripId: TRIP, userId: 99 });
+      useRealtimeStore
+        .getState()
+        .pushEffect({ type: 'tripMemberRemoved', tripId: TRIP, userId: 99 });
     });
     expect(router.dismissTo).not.toHaveBeenCalled();
   });
@@ -109,5 +117,52 @@ describe('useTripRealtimeEffects — tripMemberRemoved (H3)', () => {
     // ...and the mark is one-shot: a later genuine removal still navigates.
     await removeMe();
     expect(router.dismissTo).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useTripRealtimeEffects — tripEnded', () => {
+  const TRIP = 9;
+
+  beforeAll(() => {
+    initI18n();
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    useRealtimeStore.getState().reset();
+  });
+
+  const endTrip = async () => {
+    await act(async () => {
+      useRealtimeStore.getState().pushEffect({ type: 'tripEnded', tripId: TRIP });
+    });
+  };
+
+  it('opens the trip-end recap from the trip screen', async () => {
+    mockPathname = `/trip/${TRIP}`;
+    await renderHook(() => useTripRealtimeEffects(TRIP, false, 4));
+    await endTrip();
+    expect(router.replace).toHaveBeenCalledWith({
+      pathname: '/trip/[tripId]/end',
+      params: { tripId: String(TRIP), mode: 'flow' },
+    });
+  });
+
+  it('leaves it to the end-trip screens when one is already showing', async () => {
+    mockPathname = `/trip/${TRIP}/end-waiting`;
+    await renderHook(() => useTripRealtimeEffects(TRIP, false, 4));
+    await endTrip();
+    expect(router.replace).not.toHaveBeenCalled();
+    expect(useRealtimeStore.getState().lastTripEnded).toBeNull();
+  });
+});
+
+describe('isInEndFlow', () => {
+  it('matches the end, waiting and review screens only', () => {
+    expect(isInEndFlow('/trip/9/end')).toBe(true);
+    expect(isInEndFlow('/trip/9/end-waiting')).toBe(true);
+    expect(isInEndFlow('/trip/9/end-review')).toBe(true);
+    expect(isInEndFlow('/trip/9')).toBe(false);
+    expect(isInEndFlow('/trip/9/end-denied')).toBe(false);
   });
 });

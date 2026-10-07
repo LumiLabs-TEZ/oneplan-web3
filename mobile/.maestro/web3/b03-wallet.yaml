@@ -1,0 +1,55 @@
+# B (spike): Profile wallet card shows the received 2.5 USDC → wallet detail → personal Deposit QR
+# (copy address, Go back) → back to Profile → copy address from the wallet card.
+appId: local.lumilabs.oneplan
+---
+- runFlow: common/launch.yaml
+- tapOn:
+    id: "header-avatar"
+- extendedWaitUntil:
+    visible:
+      id: "profile-wallet-card"
+    timeout: 15000
+- extendedWaitUntil:
+    visible: ".*2\\.5.*"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "profile-wallet-card-open"
+- extendedWaitUntil:
+    visible:
+      id: "wallet-screen-deposit"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "wallet-screen-deposit"
+- extendedWaitUntil:
+    visible:
+      id: "wallet-deposit-sheet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "wallet-deposit-copy"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "wallet-deposit-go-back"
+- extendedWaitUntil:
+    visible:
+      id: "wallet-screen-back"
+    timeout: 10000
+- tapOn:
+    id: "wallet-screen-back"
+- waitForAnimationToEnd:
+    timeout: 1500
+- extendedWaitUntil:
+    visible:
+      id: "profile-wallet-card-copy"
+    timeout: 10000
+- tapOn:
+    id: "profile-wallet-card-copy"
+- extendedWaitUntil:
+    visible: "Copied successfully"
+    timeout: 5000

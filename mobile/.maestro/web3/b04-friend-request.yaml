@@ -1,0 +1,29 @@
+# B (spike): open user 2's friend link (what scanning their QR does) and send a friend request.
+appId: local.lumilabs.oneplan
+env:
+  A_FRIEND_CODE: 8c6982702bcf5812a4109fa43239a80fd8462bfe87abc9f522a9d5a106cef2cf
+---
+- openLink: "oneplan://friend/${A_FRIEND_CODE}"
+- runFlow:
+    when:
+      visible: "Open in .*"
+    commands:
+      - tapOn: "^Open$"
+- extendedWaitUntil:
+    visible:
+      id: "friend-send-modal"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "friend-add"
+- extendedWaitUntil:
+    visible:
+      id: "friend-request-sent"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "friend-send-dismiss"
+- waitForAnimationToEnd:
+    timeout: 1500

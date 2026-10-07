@@ -1,0 +1,60 @@
+# B (spike, a member, not the host): close the invite sheet, then deposit 1.5 USDC into the
+# existing vault (the member path that used to 403 on POST /trips/:id/vault).
+appId: local.lumilabs.oneplan
+---
+- runFlow:
+    when:
+      visible:
+        id: "trip-invite-card"
+    commands:
+      - tapOn:
+          point: "50%,8%"
+      - waitForAnimationToEnd:
+          timeout: 2000
+- tapOn:
+    id: "trip-vault-card-deposit"
+- extendedWaitUntil:
+    visible:
+      id: "deposit-option-oneplan-wallet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "deposit-option-oneplan-wallet"
+- extendedWaitUntil:
+    visible:
+      id: "contribute-to-vault-sheet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "key-1"
+- tapOn:
+    id: "key-dot"
+- tapOn:
+    id: "key-5"
+- waitForAnimationToEnd:
+    timeout: 1000
+- tapOn:
+    id: "contribute-submit"
+- extendedWaitUntil:
+    visible:
+      id: "vault-depositing-details"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 4000
+- tapOn:
+    id: "vault-depositing-details"
+- extendedWaitUntil:
+    visible: "Completed"
+    timeout: 120000
+- waitForAnimationToEnd:
+    timeout: 3000
+- tapOn:
+    id: "vault-deposit-result-go-back"
+- extendedWaitUntil:
+    visible:
+      id: "trip-vault-card-deposit"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 3000

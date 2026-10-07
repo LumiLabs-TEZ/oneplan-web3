@@ -17,6 +17,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActivityIndicator, Alert, StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { components } from '@/api/schema';
 import { useMe } from '@/features/me/useMe';
@@ -33,10 +34,15 @@ import { useVaultBalance, useVaultTransaction, useWallet } from '../api/queries'
 import { decodeVietQr, type VietQrPayload } from '../solana/vietqr';
 import { useVaultAnnounceStore } from '../vaultAnnounceStore';
 import { mapVaultTransactionDetail } from './transactionDetailMapping';
-import { VaultExpenseSheet, type VaultExpenseDetails, type VaultExpenseSheetRef } from './VaultExpenseSheet';
+import {
+  VaultExpenseSheet,
+  type VaultExpenseDetails,
+  type VaultExpenseSheetRef,
+} from './VaultExpenseSheet';
 import { VaultPayAmountScreen } from './VaultPayAmountScreen';
 import { VaultScanQRScreen } from './VaultScanQRScreen';
 import { VaultTransactionDetailScreen } from './VaultTransactionDetailScreen';
+import { walletErrorMessage } from './walletErrorMessage';
 
 type TripMemberDto = components['schemas']['TripMemberDto'];
 
@@ -62,9 +68,15 @@ export interface VaultPayFlowProps {
   onClose: () => void;
 }
 
-export function VaultPayFlow({ tripId, members, allowsEditing = true, onClose }: VaultPayFlowProps) {
+export function VaultPayFlow({
+  tripId,
+  members,
+  allowsEditing = true,
+  onClose,
+}: VaultPayFlowProps) {
   useAppLanguage();
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
   const me = useMe();
   const balance = useVaultBalance(tripId);
   const wallet = useWallet();
@@ -78,12 +90,10 @@ export function VaultPayFlow({ tripId, members, allowsEditing = true, onClose }:
   const receipt = useVaultTransaction(tripId, paidId, { enabled: paidId !== null });
 
   const balanceUsdc = Number(BigInt(balance.data?.balanceMicro ?? '0')) / 1_000_000;
-  const personalUsdc = wallet.data ? Number(BigInt(wallet.data.balanceMicro)) / 1_000_000 : undefined;
+  const personalUsdc = wallet.data
+    ? Number(BigInt(wallet.data.balanceMicro)) / 1_000_000
+    : undefined;
   const balanceVnd = balanceUsdc * INDICATIVE_VND_PER_USDC;
-  // The keypad's ceiling: the larger of the two wallets a payment can come from. The payer is
-  // chosen on the next step, so refusing an amount the member's own wallet could cover would
-  // block a valid payment.
-  const capVnd = Math.max(balanceVnd, (personalUsdc ?? 0) * INDICATIVE_VND_PER_USDC);
 
   const amountVnd = pending?.amountVnd;
   useEffect(() => {
@@ -129,7 +139,11 @@ export function VaultPayFlow({ tripId, members, allowsEditing = true, onClose }:
         },
         // Left on screen on purpose: a failed payment keeps the amount and the details so it can
         // be sent again without typing them a second time.
-        onError: (error) => Alert.alert(t('Payment failed'), vaultPayErrorMessage(error, t('Payment failed'))),
+        onError: (error) =>
+          Alert.alert(
+            t('Payment failed'),
+            walletErrorMessage(t, error) ?? vaultPayErrorMessage(error, t('Payment failed')),
+          ),
       },
     );
   };
@@ -151,12 +165,17 @@ export function VaultPayFlow({ tripId, members, allowsEditing = true, onClose }:
         members={members}
         allowsEditing={allowsEditing}
         onBack={onClose}
+        topInset={insets.top}
         onSendAgain={
           sendAgain
             ? () => {
                 // Straight to the amount: the recipient is already known.
                 setPaidId(null);
-                setPending({ payload: receipt.data!.qrPayload as string, decoded: sendAgain, recipientName: receipt.data!.recipientName });
+                setPending({
+                  payload: receipt.data!.qrPayload as string,
+                  decoded: sendAgain,
+                  recipientName: receipt.data!.recipientName,
+                });
               }
             : undefined
         }
@@ -175,17 +194,23 @@ export function VaultPayFlow({ tripId, members, allowsEditing = true, onClose }:
       <VaultPayAmountScreen
         recipientName={pending.recipientName ?? '…'}
         balanceVnd={balanceVnd}
-        capVnd={capVnd}
         prefilledAmountVnd={pending.decoded.amountVnd}
         indicativeRate={INDICATIVE_VND_PER_USDC}
         onBack={() => setPending(null)}
-        onNext={(vnd) => setPending((current) => (current ? { ...current, amountVnd: vnd } : current))}
+        onNext={(vnd) =>
+          setPending((current) => (current ? { ...current, amountVnd: vnd } : current))
+        }
       />
       <VaultExpenseSheet
         ref={sheetRef}
         members={members}
         currentUser={me.data}
         personalBalanceUsdc={personalUsdc}
+        // The amount screen lets any amount through; the group is greyed out here if it can't
+        // cover it, leaving the member's own wallet (the server has the final word on that one).
+        groupCanCover={
+          pending.amountVnd === undefined || Number(pending.amountVnd) <= balanceVnd
+        }
         fallbackName={pending.recipientName ?? ''}
         isWorking={pay.isPending}
         onDone={submit}
@@ -209,5 +234,10 @@ function tryDecode(payload: string): VietQrPayload | null {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.white },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.white },
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.white,
+  },
 });

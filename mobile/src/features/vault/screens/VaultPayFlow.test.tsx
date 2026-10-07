@@ -12,6 +12,12 @@ import { initI18n } from '@/i18n';
 import { useVaultAnnounceStore } from '../vaultAnnounceStore';
 import { VaultPayFlow } from './VaultPayFlow';
 
+// Rendered without a SafeAreaProvider; the screen reads the top inset for its header.
+jest.mock('react-native-safe-area-context', () => ({
+  ...jest.requireActual('react-native-safe-area-context'),
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+
 type PayOutcome = { kind: 'confirmed' | 'pending' | 'awaitingApproval'; vaultTransactionId: number };
 
 const mockLookupMutate = jest.fn();
@@ -186,7 +192,7 @@ describe('VaultPayFlow', () => {
       screen.getByTestId('qr-scanner').props.onBarcodeScanned({ data: vietQr() });
     });
     await waitFor(() => expect(screen.getByTestId('vault-pay-amount-screen')).toBeTruthy());
-    await fireEvent.press(screen.getByTestId('vault-pay-amount-back-label'));
+    await fireEvent.press(screen.getByTestId('vault-pay-amount-back'));
     expect(screen.getByTestId('vault-scan-qr-screen')).toBeTruthy();
   });
 });

@@ -111,6 +111,8 @@ export function useDepositToVault(tripId: number, deps: DepositToVaultDeps = {})
         queryClient.invalidateQueries({ queryKey: keys.vault.myWallet(tripId) }),
         queryClient.invalidateQueries({ queryKey: keys.wallet.balance }),
         queryClient.invalidateQueries({ queryKey: keys.wallet.history }),
+        // A first deposit creates the vault; the leave sheet reads "has a vault" from here.
+        queryClient.invalidateQueries({ queryKey: keys.trips.leavePreview(tripId) }),
       ]),
   });
 }

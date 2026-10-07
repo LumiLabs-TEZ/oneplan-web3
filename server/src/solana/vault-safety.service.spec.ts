@@ -74,6 +74,14 @@ describe('VaultSafetyService.assertTripDeletable (S10)', () => {
     );
   });
 
+  it('tags the block with vault_not_empty so clients can translate it', async () => {
+    const { service } = build({ status: 'ACTIVE' }, 500_000n);
+    const error = await service.assertTripDeletable(1).catch((e: unknown) => e);
+    expect((error as BadRequestException).getResponse()).toMatchObject({
+      code: 'vault_not_empty',
+    });
+  });
+
   it('fails closed but retryable (503) when the RPC is down', async () => {
     const { service } = build({ status: 'ACTIVE' }, new Error('429 Too Many'));
     await expect(service.assertTripDeletable(1)).rejects.toThrow(

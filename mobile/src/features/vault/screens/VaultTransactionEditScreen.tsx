@@ -4,9 +4,10 @@
  * transfer already happened, so there is no amount field in the PATCH body at all.
  */
 import { Ionicons } from '@expo/vector-icons';
+import { BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { components } from '@/api/schema';
 import { mutationErrorMessage } from '@/api/mutationError';
@@ -18,13 +19,12 @@ import {
 import { categoryOption, type ExpenseCategory } from '@/features/expense/categories';
 import { useAppLanguage } from '@/i18n';
 import { CurrencyFormatter } from '@/lib/currency';
-import { Button, SFSymbol } from '@/ui/components';
+import { Button } from '@/ui/components';
 import { colors } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
 import { useUpdateVaultSpend, type VaultTransactionDetailDto } from '../api/mutations';
 import { CategoryIcon } from '../components/CategoryIcon';
-import { VaultHeaderChip } from '../components/VaultHeaderChip';
 import { resolvedShareWithUserIds, resolvedSpendName } from './editSpendLogic';
 
 type TripMemberDto = components['schemas']['TripMemberDto'];
@@ -40,7 +40,6 @@ export interface VaultTransactionEditScreenProps {
   initialCategory: ExpenseCategory;
   /** Empty means shared with everyone. */
   initialShareWithUserIds: readonly number[];
-  onBack: () => void;
   onSaved: (updated: VaultTransactionDetailDto, savedName: string) => void;
 }
 
@@ -53,7 +52,6 @@ export function VaultTransactionEditScreen({
   initialName,
   initialCategory,
   initialShareWithUserIds,
-  onBack,
   onSaved,
 }: VaultTransactionEditScreenProps) {
   useAppLanguage();
@@ -96,25 +94,10 @@ export function VaultTransactionEditScreen({
   }
 
   return (
+    // Content-sized: presented in a floating sheet over the transaction detail (dismiss by
+    // swiping down — no back button), same as the deposit / withdraw sheets.
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel={t('Back')}>
-          <VaultHeaderChip>
-            <View style={styles.backIcon}>
-              <SFSymbol
-                name="arrow.left"
-                fallback="arrow-back"
-                size={14}
-                frame={32}
-                weight="500"
-                color={colors.neutral900}
-              />
-            </View>
-          </VaultHeaderChip>
-        </Pressable>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <View style={styles.scrollContent}>
         <View style={styles.amountBlock}>
           <View style={styles.vndChip}>
             <Text style={styles.vndChipText}>VND</Text>
@@ -142,7 +125,7 @@ export function VaultTransactionEditScreen({
             <CategoryIcon category={category} size={43} />
             <Ionicons name="chevron-down" size={10} color={colors.contentM} />
           </Pressable>
-          <TextInput
+          <BottomSheetTextInput
             value={name}
             onChangeText={setName}
             placeholder={t('Transaction name')}
@@ -179,7 +162,7 @@ export function VaultTransactionEditScreen({
         </View>
 
         {errorMessage ? <Text style={styles.error}>{errorMessage}</Text> : null}
-      </ScrollView>
+      </View>
 
       <Button
         title={t('Done')}
@@ -206,11 +189,11 @@ export function VaultTransactionEditScreen({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  header: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 8 },
-  backIcon: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+  // No background: the sheet supplies it (colors.background) with rounded corners — a fill here
+  // would paint square corners past the sheet's curve.
+  container: { paddingBottom: 16 },
   scrollContent: { paddingHorizontal: 12, paddingBottom: 24 },
-  amountBlock: { alignItems: 'center', gap: 16, paddingTop: 48, paddingBottom: 28 },
+  amountBlock: { alignItems: 'center', gap: 16, paddingTop: 16, paddingBottom: 28 },
   vndChip: {
     paddingHorizontal: 12,
     paddingVertical: 7,

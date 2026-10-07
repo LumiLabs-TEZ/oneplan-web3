@@ -1,7 +1,10 @@
 import { useEmbeddedSolanaWallet, usePrivy } from '@privy-io/expo';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 
+import { createApiClient } from '@/api/client';
+
 import { WalletError } from './walletError';
+import { _resetWalletTokenFailureForTests, fetchWalletTokenWithRetry } from './walletToken';
 import { _resetEnsureWalletGuardForTests, useVaultWallet } from './useVaultWallet';
 
 const mockedUsePrivy = jest.mocked(usePrivy);
@@ -9,6 +12,7 @@ const mockedUseEmbeddedSolanaWallet = jest.mocked(useEmbeddedSolanaWallet);
 
 afterEach(() => {
   _resetEnsureWalletGuardForTests();
+  _resetWalletTokenFailureForTests();
   mockedUsePrivy.mockReset();
   mockedUseEmbeddedSolanaWallet.mockReset();
 });
@@ -193,6 +197,124 @@ describe('useVaultWallet — ensureWallet', () => {
   });
 });
 
+describe('useVaultWallet — Privy session dropped / wallet unhealthy', () => {
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => warn.mockRestore());
+
+  it('asks the provider to resync once when Privy is ready but disconnected, then resolves', async () => {
+    privy();
+    let status = 'disconnected';
+    mockedUseEmbeddedSolanaWallet.mockImplementation(
+      () =>
+        ({
+          status,
+          wallets: status === 'connected' ? [{ address: 'BACK', getProvider: jest.fn() }] : [],
+          create: jest.fn(),
+          recover: jest.fn(),
+        }) as never,
+    );
+    const requestResync = jest.fn(() => {
+      status = 'connected';
+    });
+
+    const { result, rerender } = await renderHook(() => useVaultWallet(requestResync));
+    const pending = result.current.ensureWallet();
+    await waitFor(() => expect(requestResync).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+    await rerender({});
+    await expect(pending).resolves.toBe('BACK');
+    expect(requestResync).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects with sessionFailed carrying the wallet-token failure when the resync does not help', async () => {
+    jest.useFakeTimers();
+    try {
+      const failing = createApiClient('http://x', async () => new Response('{}', { status: 503 }));
+      await fetchWalletTokenWithRetry(failing, []).catch(() => undefined);
+
+      privy();
+      mockedUseEmbeddedSolanaWallet.mockReturnValue({
+        status: 'disconnected',
+        wallets: [],
+        create: jest.fn(),
+      } as never);
+      const requestResync = jest.fn();
+
+      const { result } = await renderHook(() => useVaultWallet(requestResync));
+      const attempt = expect(result.current.ensureWallet()).rejects.toMatchObject({
+        kind: 'sessionFailed',
+        reason: 'HTTP 503',
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(16_000);
+      });
+      await attempt;
+      expect(requestResync).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('fails fast with sessionFailed(error) on an error status instead of sessionNotReady', async () => {
+    privy();
+    mockedUseEmbeddedSolanaWallet.mockReturnValue({
+      status: 'error',
+      error: 'webview gone',
+      create: jest.fn(),
+    } as never);
+
+    const { result } = await renderHook(() => useVaultWallet());
+    await expect(result.current.ensureWallet()).rejects.toMatchObject({
+      kind: 'sessionFailed',
+      reason: 'webview gone',
+    });
+  });
+
+  it('runs Privy recovery once when the wallet needs recovery', async () => {
+    privy();
+    let status = 'needs-recovery';
+    const recover = jest.fn(async () => {
+      status = 'connected';
+      return null;
+    });
+    mockedUseEmbeddedSolanaWallet.mockImplementation(
+      () =>
+        ({
+          status,
+          wallets: status === 'connected' ? [{ address: 'RECOVERED', getProvider: jest.fn() }] : [],
+          create: jest.fn(),
+          recover,
+        }) as never,
+    );
+
+    const { result, rerender } = await renderHook(() => useVaultWallet());
+    const pending = result.current.ensureWallet();
+    await waitFor(() => expect(recover).toHaveBeenCalledTimes(1));
+    await rerender({});
+    await expect(pending).resolves.toBe('RECOVERED');
+  });
+
+  it('reports a failed recovery as sessionFailed', async () => {
+    privy();
+    mockedUseEmbeddedSolanaWallet.mockReturnValue({
+      status: 'needs-recovery',
+      wallets: [],
+      create: jest.fn(),
+      recover: jest.fn(async () => {
+        throw new Error('no share');
+      }),
+    } as never);
+
+    const { result } = await renderHook(() => useVaultWallet());
+    await expect(result.current.ensureWallet()).rejects.toMatchObject({
+      kind: 'sessionFailed',
+      reason: 'needs-recovery: no share',
+    });
+  });
+});
+
 describe('useVaultWallet — sign', () => {
   it('signs a base64 legacy transaction and returns the re-encoded result', async () => {
     privy();
@@ -201,7 +323,12 @@ describe('useVaultWallet — sign', () => {
     mockedUseEmbeddedSolanaWallet.mockReturnValue({
       status: 'connected',
       wallets: [
-        { address: 'ADDR', publicKey: 'ADDR', walletIndex: 0, getProvider: async () => ({ request }) },
+        {
+          address: 'ADDR',
+          publicKey: 'ADDR',
+          walletIndex: 0,
+          getProvider: async () => ({ request }),
+        },
       ],
       create: jest.fn(),
       getProvider: jest.fn(),
@@ -236,7 +363,12 @@ describe('useVaultWallet — sign', () => {
     mockedUseEmbeddedSolanaWallet.mockReturnValue({
       status: 'connected',
       wallets: [
-        { address: 'ADDR', publicKey: 'ADDR', walletIndex: 0, getProvider: async () => ({ request }) },
+        {
+          address: 'ADDR',
+          publicKey: 'ADDR',
+          walletIndex: 0,
+          getProvider: async () => ({ request }),
+        },
       ],
       create: jest.fn(),
       getProvider: jest.fn(),
@@ -258,6 +390,40 @@ describe('useVaultWallet — sign', () => {
       kind: 'signingFailed',
       reason: 'User declined the request',
     });
+  });
+
+  it('signs with the wallet as of after ensureWallet, not the render it was called from', async () => {
+    privy();
+    const signedTransaction = { serialize: () => Buffer.from('signed') };
+    const request = jest.fn(async () => ({ signedTransaction }));
+    let status = 'reconnecting';
+    mockedUseEmbeddedSolanaWallet.mockImplementation(
+      () =>
+        ({
+          status,
+          wallets:
+            status === 'connected'
+              ? [{ address: 'ADDR', getProvider: async () => ({ request }) }]
+              : [],
+          create: jest.fn(),
+          recover: jest.fn(),
+        }) as never,
+    );
+    const legacy = Buffer.concat([
+      Buffer.from([0]),
+      Buffer.from([0, 0, 0]),
+      Buffer.from([0]),
+      Buffer.alloc(32),
+      Buffer.from([0]),
+    ]).toString('base64');
+
+    const { result, rerender } = await renderHook(() => useVaultWallet());
+    // Captured while reconnecting; the reconnect finishes in a later render.
+    const sign = result.current.sign;
+    const pending = sign(legacy);
+    status = 'connected';
+    await rerender({});
+    await expect(pending).resolves.toBe(Buffer.from('signed').toString('base64'));
   });
 
   it('rejects with malformedTransaction when the base64 does not decode', async () => {
@@ -313,4 +479,3 @@ describe('useVaultWallet — reset', () => {
     expect(logout).not.toHaveBeenCalled();
   });
 });
-

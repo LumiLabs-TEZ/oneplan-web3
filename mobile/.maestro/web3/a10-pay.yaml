@@ -1,0 +1,93 @@
+# A: Scan QR → pick the merchant VietQR from Photos (no camera on a simulator) → 50,000 VND
+# (~$1.89, under the trip's $3 limit) → expense sheet: Coffee, shared with everyone → Done → the
+# spend confirms with one signature → receipt → Edit: share with spike only → Done → Go back.
+appId: local.lumilabs.oneplan
+---
+- runFlow: common/open-trip.yaml
+- tapOn:
+    id: "trip-vault-card-scan-qr"
+- extendedWaitUntil:
+    visible:
+      id: "vault-scan-qr-photo-picker"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "vault-scan-qr-photo-picker"
+- waitForAnimationToEnd:
+    timeout: 3000
+- tapOn:
+    point: "16%,25%"
+- extendedWaitUntil:
+    visible:
+      id: "vault-pay-amount-next"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "vault-pay-amount-next"
+- extendedWaitUntil:
+    visible:
+      id: "vault-expense-sheet"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "vault-expense-category-button"
+- extendedWaitUntil:
+    visible:
+      id: "vault-category-option-COFFEE"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "vault-category-option-COFFEE"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "vault-expense-name"
+- inputText: "Coffee"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "vault-expense-share-all"
+- waitForAnimationToEnd:
+    timeout: 1000
+- tapOn:
+    id: "vault-expense-done"
+- extendedWaitUntil:
+    visible:
+      id: "vault-detail-edit"
+    timeout: 120000
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: a10-receipt
+- tapOn:
+    id: "vault-detail-edit"
+- extendedWaitUntil:
+    visible:
+      id: "vault-edit-share-80"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "vault-edit-share-80"
+- waitForAnimationToEnd:
+    timeout: 1000
+- tapOn:
+    id: "vault-edit-done"
+- waitForAnimationToEnd:
+    timeout: 3000
+- extendedWaitUntil:
+    visible:
+      id: "vault-detail-go-back"
+    timeout: 15000
+- takeScreenshot: a10-receipt-edited
+- tapOn:
+    id: "vault-detail-go-back"
+- extendedWaitUntil:
+    visible:
+      id: "trip-vault-card-scan-qr"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 3000

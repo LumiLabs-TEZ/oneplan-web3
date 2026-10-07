@@ -1,13 +1,21 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+
+import { Alert } from 'react-native';
 
 import { initI18n } from '@/i18n';
 
 import { useApproveVaultTransaction, useCancelVaultTransaction } from '../api/pay';
+import { WalletError } from '../wallet/walletError';
 import type { VaultTransactionDetail } from './transactionDetailMapping';
 import { VaultTransactionDetailScreen } from './VaultTransactionDetailScreen';
 
-jest.mock('../api/pay');
+// Keep the real `vaultPayErrorMessage` / `VaultPayError`; only the mutation hooks are faked.
+jest.mock('../api/pay', () => ({
+  ...jest.requireActual('../api/pay'),
+  useApproveVaultTransaction: jest.fn(),
+  useCancelVaultTransaction: jest.fn(),
+}));
 
 const mockedApprove = jest.mocked(useApproveVaultTransaction);
 const mockedCancel = jest.mocked(useCancelVaultTransaction);
@@ -183,5 +191,115 @@ describe('VaultTransactionDetailScreen', () => {
       />,
     );
     expect(single.getByText('Nam')).toBeTruthy();
+  });
+
+  describe('approve / cancel accessibility and errors', () => {
+    const renderActionable = () =>
+      render(
+        <VaultTransactionDetailScreen
+          detail={detail({ needsApproval: true, canApprove: true, canCancel: true })}
+          tripId={5}
+          vaultTransactionId={42}
+          onBack={jest.fn()}
+        />,
+      );
+
+    /** Presses Cancel payment, then confirms the destructive action in the alert. */
+    async function cancelAndConfirm(screen: Awaited<ReturnType<typeof renderActionable>>) {
+      const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+      await fireEvent.press(screen.getByTestId('vault-detail-cancel'));
+      const buttons = alertSpy.mock.calls[0]?.[2] ?? [];
+      const confirm = buttons.find((b) => b.style === 'destructive');
+      await act(async () => {
+        confirm?.onPress?.();
+      });
+      alertSpy.mockRestore();
+    }
+
+    it('labels Approve and Cancel as buttons with their visible text', async () => {
+      const screen = await renderActionable();
+      const approve = screen.getByTestId('vault-detail-approve');
+      const cancel = screen.getByTestId('vault-detail-cancel');
+      expect(approve.props.accessibilityRole).toBe('button');
+      expect(approve.props.accessibilityLabel).toBe('Approve payment');
+      expect(approve.props.accessibilityState).toEqual({ busy: false, disabled: false });
+      expect(cancel.props.accessibilityRole).toBe('button');
+      expect(cancel.props.accessibilityLabel).toBe('Cancel payment');
+      expect(cancel.props.accessibilityState).toEqual({ busy: false, disabled: false });
+    });
+
+    it('keeps the Approve label and reports busy while approving (spinner replaces the text)', async () => {
+      mockedApprove.mockReturnValue({ mutateAsync: jest.fn(), isPending: true } as never);
+      const screen = await renderActionable();
+      expect(screen.queryByText('Approve payment')).toBeNull();
+      const approve = screen.getByTestId('vault-detail-approve');
+      expect(approve.props.accessibilityLabel).toBe('Approve payment');
+      expect(approve.props.accessibilityState).toEqual({ busy: true, disabled: true });
+      // The other action is disabled but not busy.
+      expect(screen.getByTestId('vault-detail-cancel').props.accessibilityState).toEqual({
+        busy: false,
+        disabled: true,
+      });
+    });
+
+    it('keeps the Cancel label and reports busy while cancelling', async () => {
+      mockedCancel.mockReturnValue({ mutateAsync: jest.fn(), isPending: true } as never);
+      const screen = await renderActionable();
+      const cancel = screen.getByTestId('vault-detail-cancel');
+      expect(cancel.props.accessibilityLabel).toBe('Cancel payment');
+      expect(cancel.props.accessibilityState).toEqual({ busy: true, disabled: true });
+    });
+
+    it('shows the approve fallback, not the history one, when approving fails generically', async () => {
+      mockedApprove.mockReturnValue({
+        mutateAsync: jest.fn().mockRejectedValue(new Error('')),
+        isPending: false,
+      } as never);
+      const screen = await renderActionable();
+      await fireEvent.press(screen.getByTestId('vault-detail-approve'));
+      expect(await screen.findByText('Could not approve the payment.')).toBeTruthy();
+      expect(screen.queryByText('Could not load history')).toBeNull();
+    });
+
+    it('shows the cancel fallback when cancelling fails generically', async () => {
+      mockedCancel.mockReturnValue({
+        mutateAsync: jest.fn().mockRejectedValue(new Error('')),
+        isPending: false,
+      } as never);
+      const screen = await renderActionable();
+      await cancelAndConfirm(screen);
+      expect(await screen.findByText('Could not cancel the payment.')).toBeTruthy();
+      expect(screen.queryByText('Could not load history')).toBeNull();
+    });
+
+    it('still shows a wallet error other than cancelled', async () => {
+      mockedApprove.mockReturnValue({
+        mutateAsync: jest.fn().mockRejectedValue(WalletError.signingFailed('boom')),
+        isPending: false,
+      } as never);
+      const screen = await renderActionable();
+      await fireEvent.press(screen.getByTestId('vault-detail-approve'));
+      expect(await screen.findByText('Could not sign: boom')).toBeTruthy();
+    });
+
+    it('says nothing when the member cancels approval in their wallet', async () => {
+      const mutateAsync = jest.fn().mockRejectedValue(WalletError.cancelled());
+      mockedApprove.mockReturnValue({ mutateAsync, isPending: false } as never);
+      const screen = await renderActionable();
+      await fireEvent.press(screen.getByTestId('vault-detail-approve'));
+      await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText('Cancelled in your wallet.')).toBeNull();
+      expect(screen.queryByText('Could not approve the payment.')).toBeNull();
+    });
+
+    it('says nothing when the member cancels the cancel-payment signature in their wallet', async () => {
+      const mutateAsync = jest.fn().mockRejectedValue(WalletError.cancelled());
+      mockedCancel.mockReturnValue({ mutateAsync, isPending: false } as never);
+      const screen = await renderActionable();
+      await cancelAndConfirm(screen);
+      await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText('Cancelled in your wallet.')).toBeNull();
+      expect(screen.queryByText('Could not cancel the payment.')).toBeNull();
+    });
   });
 });

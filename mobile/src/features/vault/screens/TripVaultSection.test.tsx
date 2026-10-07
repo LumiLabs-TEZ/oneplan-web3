@@ -1,6 +1,10 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import { initI18n } from '@/i18n';
+import { useRealtimeStore } from '@/realtime/realtimeStore';
+import { Alert } from 'react-native';
+
+import { requestVaultContribute } from '../contributeHandoff';
 
 import { VAULT_PROGRAM_ID } from '../solana/constants';
 import { deriveVaultPda } from '../solana/pda';
@@ -28,6 +32,12 @@ jest.mock('../signing/depositFlow', () => ({
   useDepositToVault: () => ({ mutate: mockDepositMutate }),
 }));
 
+const mockApproveMutate = jest.fn();
+jest.mock('../api/pay', () => ({
+  useApproveVaultTransaction: () => ({ mutate: mockApproveMutate }),
+}));
+jest.mock('@/features/me/useMe', () => ({ useMe: () => ({ data: { id: 2 } }) }));
+
 // eslint-disable-next-line import/first -- must follow the jest.mock hoists
 import { TripVaultSection } from './TripVaultSection';
 
@@ -39,6 +49,8 @@ describe('TripVaultSection', () => {
   beforeEach(() => {
     mockRouterPush.mockClear();
     mockDepositMutate.mockClear();
+    mockApproveMutate.mockClear();
+    useRealtimeStore.getState().reset();
     useVaultAnnounceStore.getState().clear();
     mockBalanceData = { vaultPda: 'VAULT_PDA', balanceMicro: '5000000' };
     mockWalletData = { publicKey: 'OWNER_ADDR', balanceMicro: '10000000' };
@@ -77,7 +89,13 @@ describe('TripVaultSection', () => {
     await fireEvent.press(screen.getByTestId('contribute-submit'));
 
     expect(screen.getByTestId('vault-depositing-sheet')).toBeTruthy();
+    expect(screen.getByTestId('vault-depositing-loading')).toBeTruthy();
     expect(mockDepositMutate).toHaveBeenCalledWith(5_000_000n, expect.anything());
+
+    const { onSuccess } = mockDepositMutate.mock.calls[0][1];
+    await act(async () => onSuccess({ signature: 'sig' }));
+    expect(screen.getByTestId('vault-depositing-success')).toBeTruthy();
+    expect(screen.getByText('Deposit complete')).toBeTruthy();
   });
 
   it('Details navigates to the trip-scoped deposit-result route', async () => {
@@ -185,5 +203,87 @@ describe('TripVaultSection', () => {
     const recipient = useVaultDepositFlowStore.getState().flow?.recipient;
     expect(recipient).toBe(deriveVaultPda(5, VAULT_PROGRAM_ID));
     expect(recipient).not.toBe('VAULT_PDA');
+  });
+
+  const section = (props: { onLeaveDepositCompleted?: () => void } = {}) => (
+    <TripVaultSection
+      tripId={5}
+      tripName="Dubai 2025"
+      balanceInHomeCurrency={100}
+      homeCurrency="USD"
+      {...props}
+    />
+  );
+
+  it('a leave-sheet deposit request opens Contribute locked to the owed amount', async () => {
+    const screen = await render(section());
+    await act(async () => requestVaultContribute(5, 1_250_000));
+    expect(screen.getByTestId('contribute-to-vault-sheet')).toBeTruthy();
+    expect(screen.getByText('Amount is fixed to clear your leave balance.')).toBeTruthy();
+    expect(screen.queryByTestId('key-5')).toBeNull();
+  });
+
+  it('ignores a deposit request for another trip or a zero amount', async () => {
+    const screen = await render(section());
+    await act(async () => requestVaultContribute(6, 1_250_000));
+    await act(async () => requestVaultContribute(5, 0));
+    expect(screen.queryByTestId('contribute-to-vault-sheet')).toBeNull();
+  });
+
+  it('a locked deposit skips the receipt and reports the leave deposit', async () => {
+    const onLeaveDepositCompleted = jest.fn();
+    const screen = await render(section({ onLeaveDepositCompleted }));
+    await act(async () => requestVaultContribute(5, 1_000_000));
+    await fireEvent.press(screen.getByTestId('contribute-submit'));
+    expect(mockDepositMutate).toHaveBeenCalledWith(1_000_000n, expect.anything());
+    const opts = mockDepositMutate.mock.calls[0]?.[1] as {
+      onSuccess: (r: { signature: string }) => void;
+    };
+    await act(async () => opts.onSuccess({ signature: 'SIG' }));
+    expect(onLeaveDepositCompleted).toHaveBeenCalled();
+    expect(useVaultDepositFlowStore.getState().flow).toBeNull();
+  });
+
+  it("asks another member to approve an over-limit payment, and approves on 'Approve'", async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    await render(section());
+    await act(async () =>
+      useRealtimeStore.getState().pushEffect({
+        type: 'vaultApprovalRequested',
+        tripId: 5,
+        vaultTransactionId: 42,
+        amountVnd: '200000',
+        recipientName: 'NGUYEN VAN A',
+        proposedByUserId: 1,
+        approverUserIds: null,
+      }),
+    );
+    expect(alertSpy).toHaveBeenCalledWith(
+      'Approval needed',
+      expect.stringContaining('đ200,000 to NGUYEN VAN A'),
+      expect.any(Array),
+    );
+    const buttons = alertSpy.mock.calls[0]?.[2] as { text: string; onPress?: () => void }[];
+    buttons.find((b) => b.text === 'Approve')?.onPress?.();
+    expect(mockApproveMutate).toHaveBeenCalledWith({ vaultTransactionId: 42 }, expect.anything());
+    alertSpy.mockRestore();
+  });
+
+  it('never asks the member who raised the payment', async () => {
+    const alertSpy = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    await render(section());
+    await act(async () =>
+      useRealtimeStore.getState().pushEffect({
+        type: 'vaultApprovalRequested',
+        tripId: 5,
+        vaultTransactionId: 42,
+        amountVnd: '200000',
+        recipientName: 'NGUYEN VAN A',
+        proposedByUserId: 2,
+        approverUserIds: null,
+      }),
+    );
+    expect(alertSpy).not.toHaveBeenCalled();
+    alertSpy.mockRestore();
   });
 });

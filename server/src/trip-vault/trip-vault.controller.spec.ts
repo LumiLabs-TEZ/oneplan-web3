@@ -18,6 +18,8 @@ function deps() {
       }),
       buildDepositTx: jest.fn().mockResolvedValue('base64tx'),
       syncMembers: jest.fn().mockResolvedValue(2),
+      createVault: jest.fn(),
+      ensureDefaultVault: jest.fn(),
     },
     payService: {
       quote: jest.fn().mockResolvedValue({
@@ -177,7 +179,7 @@ describe('TripVaultController', () => {
       expect(d.settlementService.confirmCashDebt).not.toHaveBeenCalled();
     });
 
-    it('rejects an explicit createVault for a member who is not the host', async () => {
+    it('gives a non-host member the default vault instead of their requested limits', async () => {
       const d = deps();
       d.vaultService.assertHost = jest
         .fn()
@@ -185,10 +187,33 @@ describe('TripVaultController', () => {
           new ForbiddenException('Only the trip host can do this'),
         );
       d.vaultService.createVault = jest.fn();
-      await expect(build(d).createVault(42, {}, USER_ID)).rejects.toThrow(
-        ForbiddenException,
+      d.vaultService.ensureDefaultVault = jest
+        .fn()
+        .mockResolvedValue({ vaultPda: 'VaultPda', usdcAta: 'VaultAta' });
+      await expect(
+        build(d).createVault(42, { thresholdMicro: '999' }, USER_ID),
+      ).resolves.toEqual({
+        vaultPda: 'VaultPda',
+        usdcAta: 'VaultAta',
+        membersSynced: 0,
+      });
+      expect(d.vaultService.ensureDefaultVault).toHaveBeenCalledWith(
+        42,
+        USER_ID,
       );
       expect(d.vaultService.createVault).not.toHaveBeenCalled();
+    });
+
+    it('propagates a non-Forbidden error from the host check on createVault', async () => {
+      const d = deps();
+      d.vaultService.assertHost = jest
+        .fn()
+        .mockRejectedValue(new Error('db down'));
+      d.vaultService.ensureDefaultVault = jest.fn();
+      await expect(build(d).createVault(42, {}, USER_ID)).rejects.toThrow(
+        'db down',
+      );
+      expect(d.vaultService.ensureDefaultVault).not.toHaveBeenCalled();
     });
 
     it('rejects a manual member re-sync for a non-host', async () => {

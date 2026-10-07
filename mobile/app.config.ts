@@ -94,11 +94,12 @@ const GOOGLE_IOS_URL_SCHEME =
   process.env.GOOGLE_IOS_URL_SCHEME ??
   'com.googleusercontent.apps.559176877871-535pl0kskgdabrdg41h6nr03ira3vvmk';
 
-// Firebase config (Android FCM) is not part of the public repo: set GOOGLE_SERVICES_JSON to a
-// local google-services.json path to enable push; without it the file is simply omitted.
+// Firebase config files are CI-injected (see google-services/README.md).
 // Android only: FCM needs google-services.json. iOS push goes straight to APNs and
 // Google Sign-In uses iosClientId, so no GoogleService-Info.plist is required.
-const googleServicesJson = process.env.GOOGLE_SERVICES_JSON;
+const googleServicesJson =
+  process.env.GOOGLE_SERVICES_JSON ??
+  `./google-services/google-services-${VARIANT === 'prod' ? 'prod' : 'dev'}.json`;
 
 export default ({ config }: ConfigContext): ExpoConfig =>
   withInstagramPackageVisibility({
@@ -360,6 +361,9 @@ export default ({ config }: ConfigContext): ExpoConfig =>
       // provider renders a "not configured" state rather than mounting the Privy SDK.
       privyAppId: process.env.PRIVY_APP_ID ?? 'unset',
       privyClientId: process.env.PRIVY_CLIENT_ID ?? 'unset',
+      // Hackathon APK only (eas.json `build.hackathon.env`): hide the shared dev email sign-in.
+      // Spread only when set so every other variant's expo config (and fingerprint) is unchanged.
+      ...(process.env.HIDE_DEV_SIGN_IN === '1' ? { hideDevSignIn: true } : {}),
       eas: {
         projectId: '76fe3987-e628-4a77-97e8-78c4f93a343c',
       },

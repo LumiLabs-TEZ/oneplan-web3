@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -17,6 +18,7 @@ import {
   Keypair,
   PublicKey,
   Transaction,
+  TransactionExpiredBlockheightExceededError,
   TransactionInstruction,
 } from '@solana/web3.js';
 import bs58 from 'bs58';
@@ -40,6 +42,39 @@ function u64le(value: number | bigint): Buffer {
 /// A blockhash is valid for 150 blocks. Used to bound the confirmation wait
 /// when the transaction's own blockhash is what we are confirming against.
 const BLOCKHASH_VALIDITY_BLOCKS = 150;
+
+/** Error code for a signed transaction whose blockhash expired before broadcast. */
+export const TX_EXPIRED_CODE = 'tx_expired';
+
+/**
+ * The RPC's ways of saying the transaction's blockhash is gone: preflight
+ * simulation ("Blockhash not found"), the send error name (BlockhashNotFound),
+ * and the block-height expiry.
+ */
+const EXPIRED_BLOCKHASH_PATTERN =
+  /blockhash not found|blockhashnotfound|block ?height exceeded/i;
+
+function isExpiredBlockhashError(error: unknown): boolean {
+  if (error instanceof TransactionExpiredBlockheightExceededError) {
+    return true;
+  }
+  return (
+    error instanceof Error && EXPIRED_BLOCKHASH_PATTERN.test(error.message)
+  );
+}
+
+/** Whether `error` is the 409 `tx_expired` thrown by `broadcastSigned`. */
+export function isTxExpired(error: unknown): boolean {
+  if (!(error instanceof ConflictException)) {
+    return false;
+  }
+  const body = error.getResponse();
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    (body as { code?: unknown }).code === TX_EXPIRED_CODE
+  );
+}
 
 @Injectable()
 export class SolanaService {
@@ -260,6 +295,10 @@ export class SolanaService {
    * with it — leaving no way to ask afterwards whether the transaction had
    * landed. The caller records the signature first and confirms second, so a
    * lost answer stays a question that can still be asked.
+   *
+   * A blockhash that expired while the transaction sat in the member's wallet
+   * (slow approval) is a 409 `tx_expired`: the transaction can never land, and
+   * the fix is to build and sign a fresh one.
    */
   async broadcastSigned(base64Tx: string): Promise<string> {
     const tx = Transaction.from(Buffer.from(base64Tx, 'base64'));
@@ -275,6 +314,13 @@ export class SolanaService {
       this.logger.error(
         `broadcast rejected: ${String(error)}; feePayer=${tx.feePayer?.toBase58()} signers=${JSON.stringify(signers)}`,
       );
+      if (isExpiredBlockhashError(error)) {
+        throw new ConflictException({
+          code: TX_EXPIRED_CODE,
+          message:
+            'This transaction expired before it was sent. Please try again.',
+        });
+      }
       throw error;
     }
   }

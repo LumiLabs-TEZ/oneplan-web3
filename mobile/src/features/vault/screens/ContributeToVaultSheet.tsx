@@ -4,17 +4,19 @@
  * deposit chain that `TripVaultSection` swaps for the depositing/result state in place.
  */
 import { router } from 'expo-router';
-import { useEffect } from 'react';
+import { useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import DepositOptionWallet from '@/assets/images/vault/depositOptionWallet.svg';
+import { initialKeypadState, keypadReducer } from '@/features/expense/keypad/keypadReducer';
 import { useAppLanguage } from '@/i18n';
+import { CURRENCIES } from '@/lib/currency';
+import { AmountKeypad } from '@/ui/components/AmountKeypad';
 import { colors } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
 import { useMyVaultWallet } from '../api/queries';
-import { AmountKeypad, useAmountDigits } from '../components';
 import { depositNetMicro, formatMicroUsdc, microUSDC } from '../depositMath';
 
 export interface ContributeToVaultSheetProps {
@@ -44,22 +46,16 @@ export function ContributeToVaultSheet({
   const { t } = useTranslation();
   const initialDigits =
     prefilledAmountMicro && prefilledAmountMicro > 0n ? prefilledDigits(prefilledAmountMicro) : '';
-  const keypad = useAmountDigits(true, initialDigits);
+  // Same keypad (and input rules) as add-expense / add-budget; USD caps the fraction at 2 digits.
+  const [keypad, dispatch] = useReducer(keypadReducer, initialDigits, (raw) =>
+    initialKeypadState(CURRENCIES.USD, raw),
+  );
   const wallet = useMyVaultWallet(tripId);
-
-  useEffect(() => {
-    if (locksAmount && keypad.digits === '' && prefilledAmountMicro && prefilledAmountMicro > 0n) {
-      keypad.setDigits(prefilledDigits(prefilledAmountMicro));
-    }
-    // Re-applies the lock prefill if the sheet remounted without init digits, matching iOS's
-    // `.onAppear` guard — deliberately not depending on `keypad` (a fresh object every render).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locksAmount, prefilledAmountMicro]);
 
   const amountMicro =
     locksAmount && prefilledAmountMicro && prefilledAmountMicro > 0n
       ? prefilledAmountMicro
-      : microUSDC(keypad.digits);
+      : microUSDC(keypad.raw);
 
   const availableMicro = BigInt(wallet.data?.balanceMicro ?? '0');
   const isValid = amountMicro > 0n && amountMicro <= availableMicro;
@@ -68,9 +64,9 @@ export function ContributeToVaultSheet({
   const displayAmount =
     locksAmount && prefilledAmountMicro && prefilledAmountMicro > 0n
       ? `$${prefilledDigits(prefilledAmountMicro)}`
-      : keypad.digits === ''
+      : keypad.raw === ''
         ? '$0'
-        : `$${keypad.digits}`;
+        : `$${keypad.raw}`;
 
   const feeDisclosure =
     amountMicro > 0n
@@ -94,11 +90,10 @@ export function ContributeToVaultSheet({
       </View>
 
       <View style={styles.amountBlock}>
-        <Text style={styles.amountLabel}>{t('Contribute amount')}</Text>
         <Text
           style={[
             styles.amountValue,
-            !locksAmount && keypad.digits === '' && styles.amountValueEmpty,
+            !locksAmount && keypad.raw === '' && styles.amountValueEmpty,
             overCapacity && styles.amountValueError,
           ]}
           numberOfLines={1}
@@ -123,6 +118,7 @@ export function ContributeToVaultSheet({
             style={styles.fundButton}
             accessibilityRole="button"
             accessibilityLabel={t('Add funds to your wallet')}
+            testID="contribute-fund-wallet"
           >
             <Text style={styles.fundButtonIcon}>+</Text>
           </Pressable>
@@ -131,7 +127,7 @@ export function ContributeToVaultSheet({
         {locksAmount ? (
           <Text style={styles.lockedNote}>{t('Amount is fixed to clear your leave balance.')}</Text>
         ) : (
-          <AmountKeypad onAppend={keypad.append} onDelete={keypad.delete} allowsDecimal />
+          <AmountKeypad state={keypad} dispatch={dispatch} />
         )}
 
         {overCapacity ? (
@@ -155,17 +151,27 @@ export function ContributeToVaultSheet({
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.surface, paddingHorizontal: 16 },
+  root: { flex: 1, paddingHorizontal: 16 },
   header: { alignItems: 'center', gap: 3, marginTop: 12 },
-  headerTitle: { ...beVietnamPro(20), letterSpacing: -0.8, color: colors.neutral950, textAlign: 'center' },
+  headerTitle: {
+    ...beVietnamPro(20),
+    letterSpacing: -0.8,
+    color: colors.neutral950,
+    textAlign: 'center',
+  },
   headerTitleAccent: { ...beVietnamPro(20), color: colors.blueBase, fontStyle: 'italic' },
-  headerSubtitle: { ...beVietnamPro(14), letterSpacing: -0.42, color: colors.contentM, textAlign: 'center' },
-  amountBlock: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-  amountLabel: { ...beVietnamPro(14), letterSpacing: -0.7, color: colors.neutral950 },
+  headerSubtitle: {
+    ...beVietnamPro(14),
+    letterSpacing: -0.42,
+    color: colors.contentM,
+    textAlign: 'center',
+  },
+  // The sheet sizes to its content, so `flex: 1` alone gives this block no room — pad it.
+  amountBlock: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 24 },
   amountValue: { ...beVietnamPro(48), letterSpacing: -2.4, color: colors.neutral950 },
   amountValueEmpty: { opacity: 0.2 },
   amountValueError: { color: '#E02624' },
-  footer: { gap: 10, paddingTop: 8, paddingBottom: 32 },
+  footer: { gap: 16, paddingTop: 8, paddingBottom: 32 },
   balancePill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -177,7 +183,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#F0F0F0',
   },
-  balanceLabel: { ...beVietnamPro(16), letterSpacing: -0.32, color: 'rgba(61, 61, 61, 0.6)', flex: 1 },
+  balanceLabel: {
+    ...beVietnamPro(16),
+    letterSpacing: -0.32,
+    color: 'rgba(61, 61, 61, 0.6)',
+    flex: 1,
+  },
   balanceValue: { ...beVietnamPro(18), letterSpacing: -0.36, color: '#3D3D3D' },
   fundButton: {
     width: 28,

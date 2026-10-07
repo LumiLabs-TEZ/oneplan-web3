@@ -4,7 +4,20 @@ import type { PendingInvite } from '@/features/invite/types';
 
 import type { ConnectionState } from './RealtimeClient';
 
-export type RealtimeEffectKind = 'tripEnded' | 'tripDeleted' | 'tripMemberRemoved';
+export type RealtimeEffectKind =
+  'tripEnded' | 'tripDeleted' | 'tripMemberRemoved' | 'vaultApprovalRequested';
+
+/** A vault spend over the trip threshold that needs another member's signature. */
+export interface VaultApprovalRequest {
+  tripId: number;
+  vaultTransactionId: number;
+  amountVnd: string;
+  recipientName: string;
+  /** The member who raised it — the chain refuses a second signature from the same key. */
+  proposedByUserId: number | null;
+  /** Who may sign, or null when any member may. */
+  approverUserIds: number[] | null;
+}
 /**
  * `tripMemberRemoved.userId` is optional: the server payload always has it (`envelope.ts`), but
  * it's threaded through as an extra so a caller who only cares "did *a* member get removed"
@@ -14,12 +27,14 @@ export type RealtimeEffectKind = 'tripEnded' | 'tripDeleted' | 'tripMemberRemove
 export type RealtimeEffect =
   | { type: 'tripEnded'; tripId: number }
   | { type: 'tripDeleted'; tripId: number }
-  | { type: 'tripMemberRemoved'; tripId: number; userId?: number };
+  | { type: 'tripMemberRemoved'; tripId: number; userId?: number }
+  | ({ type: 'vaultApprovalRequested' } & VaultApprovalRequest);
 
 const EFFECT_FIELD = {
   tripEnded: 'lastTripEnded',
   tripDeleted: 'lastTripDeleted',
   tripMemberRemoved: 'lastTripMemberRemoved',
+  vaultApprovalRequested: 'lastVaultApprovalRequested',
 } as const satisfies Record<RealtimeEffectKind, string>;
 
 interface RealtimeStoreState {
@@ -30,6 +45,8 @@ interface RealtimeStoreState {
   /** Latest `tripMemberRemoved` — carries `userId` when known, so a screen can tell if it was
    * removed too. */
   lastTripMemberRemoved: { tripId: number; userId?: number } | null;
+  /** Latest `vaultApprovalRequested` the trip's vault card has not prompted for yet. */
+  lastVaultApprovalRequested: VaultApprovalRequest | null;
   setState: (state: ConnectionState) => void;
   pushEffect: (effect: RealtimeEffect) => void;
   /** True when a pending effect for `tripId` existed; clears it. */
@@ -42,19 +59,17 @@ const INITIAL = {
   lastTripEnded: null,
   lastTripDeleted: null,
   lastTripMemberRemoved: null,
+  lastVaultApprovalRequested: null,
 };
 
 /** Not persisted: realtime effects are only meaningful for the live session. */
 export const useRealtimeStore = create<RealtimeStoreState>()((set, get) => ({
   ...INITIAL,
   setState: (state) => set({ state }),
-  pushEffect: (effect) =>
-    set({
-      [EFFECT_FIELD[effect.type]]:
-        effect.type === 'tripMemberRemoved'
-          ? { tripId: effect.tripId, userId: effect.userId }
-          : { tripId: effect.tripId },
-    }),
+  pushEffect: (effect) => {
+    const { type, ...payload } = effect;
+    set({ [EFFECT_FIELD[type]]: payload });
+  },
   consumeEffect: (kind, tripId) => {
     const field = EFFECT_FIELD[kind];
     const pending = get()[field];

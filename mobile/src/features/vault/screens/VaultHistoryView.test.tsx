@@ -1,15 +1,16 @@
 import { fireEvent, render } from '@testing-library/react-native';
+import { router } from 'expo-router';
 
 import { initI18n } from '@/i18n';
 
-import { useVaultHistory, useVaultTransaction, type VaultHistoryEntryDto } from '../api/queries';
+import { useVaultHistory, type VaultHistoryEntryDto } from '../api/queries';
 import { VaultHistoryView } from './VaultHistoryView';
 
 jest.mock('../api/queries');
-jest.mock('../api/pay');
+jest.mock('expo-router', () => ({ router: { push: jest.fn() } }));
 
 const mockedUseVaultHistory = jest.mocked(useVaultHistory);
-const mockedUseVaultTransaction = jest.mocked(useVaultTransaction);
+const mockedPush = jest.mocked(router.push);
 
 function entry(overrides: Partial<VaultHistoryEntryDto> = {}): VaultHistoryEntryDto {
   return {
@@ -32,10 +33,7 @@ describe('VaultHistoryView', () => {
   });
 
   beforeEach(() => {
-    mockedUseVaultTransaction.mockReturnValue({
-      data: undefined,
-      isLoading: false,
-    } as never);
+    mockedPush.mockClear();
   });
 
   it('shows a spinner only on the first load (no entries yet)', async () => {
@@ -75,7 +73,7 @@ describe('VaultHistoryView', () => {
     expect(screen.getByText('Today')).toBeTruthy();
     expect(screen.getByText('Coffee')).toBeTruthy();
     expect(screen.getByText('Lunch')).toBeTruthy();
-    expect(screen.getByText('-300,000đ')).toBeTruthy();
+    expect(screen.getByText('-$15.32')).toBeTruthy();
   });
 
   it('shows a load error message', async () => {
@@ -89,47 +87,45 @@ describe('VaultHistoryView', () => {
     expect(screen.getByText('Could not load history')).toBeTruthy();
   });
 
-  it('tapping a SPEND row opens the transaction-detail sheet', async () => {
+  it('tapping a SPEND row pushes the full-screen transaction detail', async () => {
     mockedUseVaultHistory.mockReturnValue({
       data: [entry({ id: 7, title: 'Coffee' })],
       isLoading: false,
       isError: false,
     } as never);
-    mockedUseVaultTransaction.mockReturnValue({
-      data: {
-        id: 7,
-        status: 'CONFIRMED',
-        needsApproval: false,
-        canApprove: false,
-        canCancel: false,
-        canEdit: false,
-        amountVnd: '200000',
-        amountUsdcMicro: '7660000',
-        recipientName: 'Nguyen Van A',
-        bankName: 'Techcombank',
-        bankAccountNumber: '123',
-        feeMicro: '0',
-        rate: '26500',
-        shareWith: [],
-        createdAt: new Date().toISOString(),
-      },
-      isLoading: false,
-    } as never);
 
     const screen = await render(<VaultHistoryView tripId={5} />);
     await fireEvent.press(screen.getByText('Coffee'));
-    expect(screen.getByText('Transaction details')).toBeTruthy();
+    expect(mockedPush).toHaveBeenCalledWith({
+      pathname: '/trip/[tripId]/vault/transaction/[transactionId]',
+      params: { tripId: '5', transactionId: '7' },
+    });
   });
 
-  it('does not open a sheet for a DEPOSIT row (no receipt to show)', async () => {
+  it('tapping a DEPOSIT row pushes the detail too, read-only after the trip ends', async () => {
     mockedUseVaultHistory.mockReturnValue({
       data: [entry({ id: 3, kind: 'DEPOSIT', title: 'Deposit USDC', amountVnd: undefined })],
       isLoading: false,
       isError: false,
     } as never);
 
-    const screen = await render(<VaultHistoryView tripId={5} />);
+    const screen = await render(<VaultHistoryView tripId={5} allowsEditing={false} />);
     await fireEvent.press(screen.getByText('Deposit USDC'));
-    expect(screen.queryByText('Transaction details')).toBeNull();
+    expect(mockedPush).toHaveBeenCalledWith({
+      pathname: '/trip/[tripId]/vault/transaction/[transactionId]',
+      params: { tripId: '5', transactionId: '3', readOnly: '1' },
+    });
+  });
+
+  it('a SETTLEMENT row does not open anything', async () => {
+    mockedUseVaultHistory.mockReturnValue({
+      data: [entry({ id: 4, kind: 'SETTLEMENT', title: 'Settled', amountVnd: undefined })],
+      isLoading: false,
+      isError: false,
+    } as never);
+
+    const screen = await render(<VaultHistoryView tripId={5} />);
+    await fireEvent.press(screen.getByText('Settled'));
+    expect(mockedPush).not.toHaveBeenCalled();
   });
 });

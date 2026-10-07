@@ -1,0 +1,82 @@
+# A (user 2): Profile → wallet card → wallet detail → Withdraw 2.5 USDC to spike's wallet → result.
+appId: local.lumilabs.oneplan
+env:
+  TO_ADDRESS: FKHdWDTjywDQZXGv9iy3GNuym9WVh7uSfep4YvvoYX56
+---
+- runFlow: common/launch.yaml
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 30000
+- tapOn:
+    id: "header-avatar"
+- extendedWaitUntil:
+    visible:
+      id: "profile-wallet-card"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "profile-wallet-card-open"
+- extendedWaitUntil:
+    visible:
+      id: "wallet-screen-withdraw"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "wallet-screen-withdraw"
+- extendedWaitUntil:
+    visible:
+      id: "withdraw-address-pill"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "withdraw-address-pill"
+- extendedWaitUntil:
+    visible:
+      id: "withdraw-address-input"
+    timeout: 10000
+- tapOn:
+    id: "withdraw-address-input"
+- inputText: ${TO_ADDRESS}
+- waitForAnimationToEnd:
+    timeout: 1000
+- tapOn:
+    id: "withdraw-address-done"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "key-2"
+- tapOn:
+    id: "key-dot"
+- tapOn:
+    id: "key-5"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "withdraw-confirm"
+- extendedWaitUntil:
+    visible:
+      id: "withdraw-result-go-back"
+    timeout: 90000
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: a02-withdraw-result
+- tapOn:
+    id: "withdraw-result-copy-recipient"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "withdraw-result-copy-signature"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "withdraw-result-go-back"
+- extendedWaitUntil:
+    visible:
+      id: "wallet-screen-withdraw"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 3000

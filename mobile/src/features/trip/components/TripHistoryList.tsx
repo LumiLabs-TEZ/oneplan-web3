@@ -186,7 +186,7 @@ function HistoryRowItem({
           <MoneyText
             amount={entry.amount}
             currency={entry.amountCurrency}
-            showDecimals={false}
+            showDecimals={entry.amountCurrency.decimalPlaces > 0}
             symbolPosition="suffix"
             sign={entry.amountSign}
             style={[

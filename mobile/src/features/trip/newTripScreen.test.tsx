@@ -8,6 +8,7 @@ import type { ReactNode } from 'react';
 import { Alert } from 'react-native';
 import { SafeAreaProvider, type Metrics } from 'react-native-safe-area-context';
 
+import { ApiMutationError } from '@/api/mutationError';
 import type { components } from '@/api/schema';
 import type { FriendDto } from '@/features/friends/types';
 import { initI18n } from '@/i18n';
@@ -19,6 +20,7 @@ const mockPush = jest.fn();
 const mockCreate = jest.fn();
 const mockInvite = jest.fn();
 let mockFriends: FriendDto[] = [];
+let mockWeb3Enabled = false;
 
 jest.mock('expo-router', () => ({
   router: {
@@ -34,6 +36,8 @@ jest.mock('@/features/friends/api/queries', () => ({
 }));
 
 jest.mock('@/features/me/useMe', () => ({ useIsPro: () => true }));
+
+jest.mock('@/features/vault/web3Flag', () => ({ useWeb3Enabled: () => mockWeb3Enabled }));
 
 jest.mock('@/features/trip/api/queries', () => ({
   useTrips: () => ({ refetch: jest.fn() }),
@@ -110,6 +114,7 @@ beforeAll(() => {
 beforeEach(() => {
   createTripStore.reset();
   mockFriends = [];
+  mockWeb3Enabled = false;
   mockReplace.mockClear();
   mockPush.mockClear();
   mockCreate.mockReset().mockResolvedValue({ id: 42 });
@@ -198,5 +203,63 @@ describe('NewTripScreen submit', () => {
       params: { tripId: '42' },
     });
     alertSpy.mockRestore();
+  });
+});
+
+describe('NewTripScreen group wallet switch', () => {
+  it('is hidden for a user who is not web3-eligible, and the body has no web3', async () => {
+    fillDraft();
+    await renderScreen();
+
+    expect(screen.queryByTestId('group-wallet-row')).toBeNull();
+    await fireEvent.press(screen.getByTestId('create-trip-submit'));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0]![0]).not.toHaveProperty('web3');
+  });
+
+  it('is off by default for an eligible user', async () => {
+    mockWeb3Enabled = true;
+    fillDraft();
+    await renderScreen();
+
+    expect(screen.getByText('Group wallet')).toBeTruthy();
+    expect(screen.getByTestId('group-wallet-toggle').props.value).toBe(false);
+    await fireEvent.press(screen.getByTestId('create-trip-submit'));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0]![0]).not.toHaveProperty('web3');
+  });
+
+  it('creates a web3 trip when switched on', async () => {
+    mockWeb3Enabled = true;
+    fillDraft();
+    await renderScreen();
+
+    await fireEvent(screen.getByTestId('group-wallet-toggle'), 'valueChange', true);
+    await fireEvent.press(screen.getByTestId('create-trip-submit'));
+
+    await waitFor(() => expect(mockCreate).toHaveBeenCalled());
+    expect(mockCreate.mock.calls[0]![0]).toMatchObject({ web3: true });
+  });
+
+  it('turns the switch off and explains when the server says web3_unavailable', async () => {
+    mockWeb3Enabled = true;
+    mockCreate.mockRejectedValue(
+      new ApiMutationError(403, { code: 'web3_unavailable', message: 'nope' }),
+    );
+    fillDraft();
+    await renderScreen();
+
+    await fireEvent(screen.getByTestId('group-wallet-toggle'), 'valueChange', true);
+    await fireEvent.press(screen.getByTestId('create-trip-submit'));
+
+    expect(
+      await screen.findByText(
+        'Group wallet is not available in your region. Create the trip without it.',
+      ),
+    ).toBeTruthy();
+    expect(createTripStore.getState().web3).toBe(false);
+    expect(mockReplace).not.toHaveBeenCalled();
   });
 });

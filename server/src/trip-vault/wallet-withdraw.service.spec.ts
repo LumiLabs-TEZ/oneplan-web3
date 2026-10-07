@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Keypair, PublicKey } from '@solana/web3.js';
 
 import { WalletWithdrawService } from './wallet-withdraw.service';
@@ -48,6 +48,8 @@ function build(
       .fn()
       .mockResolvedValue(overrides.balanceMicro ?? 100_000_000n),
     buildUnsignedTx: jest.fn().mockResolvedValue('base64tx'),
+    broadcastSigned: jest.fn().mockResolvedValue('sig'),
+    confirmSigned: jest.fn().mockResolvedValue(undefined),
   };
   return {
     service: new WalletWithdrawService(
@@ -192,5 +194,18 @@ describe('WalletWithdrawService', () => {
         /not configured/,
       );
     });
+  });
+  // I2: an expired blockhash never reached the chain, so it is the retryable
+  // 409 — not swallowed into a PENDING "on its way" result.
+  it('surfaces a tx_expired broadcast instead of reporting PENDING', async () => {
+    const { service, solana } = build();
+    const expired = new ConflictException({
+      code: 'tx_expired',
+      message: 'expired',
+    });
+    solana.broadcastSigned.mockRejectedValue(expired);
+
+    await expect(service.submitWithdrawal('tx')).rejects.toBe(expired);
+    expect(solana.confirmSigned).not.toHaveBeenCalled();
   });
 });

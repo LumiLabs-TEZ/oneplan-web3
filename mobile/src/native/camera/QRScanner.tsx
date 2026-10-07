@@ -37,11 +37,22 @@ export interface QRScannerProps {
   /** Minimum gap between two deliveries of the same scanned value. */
   cooldownMs?: number;
   style?: StyleProp<ViewStyle>;
+  /** Reports whether camera permission is granted, for callers that draw their own hint. */
+  onAuthorizedChange?: (granted: boolean) => void;
+  /** Leave the denied-permission fallback blank — the caller shows its own message. */
+  hideUnavailableMessage?: boolean;
 }
 
 const DEFAULT_COOLDOWN_MS = 1000;
 
-export function QRScanner({ active, onCode, cooldownMs = DEFAULT_COOLDOWN_MS, style }: QRScannerProps) {
+export function QRScanner({
+  active,
+  onCode,
+  cooldownMs = DEFAULT_COOLDOWN_MS,
+  style,
+  onAuthorizedChange,
+  hideUnavailableMessage = false,
+}: QRScannerProps) {
   useAppLanguage();
   const { t } = useTranslation();
   const [permission, requestPermission] = useCameraPermissions();
@@ -65,6 +76,11 @@ export function QRScanner({ active, onCode, cooldownMs = DEFAULT_COOLDOWN_MS, st
       cancelled = true;
     };
   }, [active, permission, hasRequested, requestPermission]);
+
+  const granted = permission?.granted === true;
+  useEffect(() => {
+    onAuthorizedChange?.(granted);
+  }, [granted, onAuthorizedChange]);
 
   const handleBarcodeScanned = useCallback(
     (result: BarcodeScanningResult) => {
@@ -93,7 +109,7 @@ export function QRScanner({ active, onCode, cooldownMs = DEFAULT_COOLDOWN_MS, st
 
   // Only shown once a request was actually made and denied — inactive, or active-but-not-yet-
   // requested, renders a plain empty frame instead of implying the user was asked and said no.
-  if (active && hasRequested && !permission?.granted) {
+  if (active && hasRequested && !permission?.granted && !hideUnavailableMessage) {
     return (
       <View style={[styles.fallback, style]} testID="qr-scanner-unavailable">
         <Text style={styles.fallbackText}>{t('Camera preview is unavailable.')}</Text>

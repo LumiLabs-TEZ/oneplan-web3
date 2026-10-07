@@ -36,7 +36,7 @@ import {
   useFreeTrialEligibility,
 } from '@/features/subscription/useFreeTrialEligibility';
 import { useMe } from '@/features/me/useMe';
-import { useWeb3Enabled } from '@/features/vault/web3Flag';
+import { useUsesMwa, useWeb3Enabled } from '@/features/vault/web3Flag';
 import { hasPrivyIds } from '@/features/vault/wallet/walletConfig';
 import { hasSeenTripWalletWelcome } from '@/features/vault/tripWalletWelcomeStore';
 import { useVersionGateBlocked } from '@/native/versionGate';
@@ -48,12 +48,15 @@ export function useRootModalPresenter(): void {
   const blocked = useVersionGateBlocked();
   const storeActive = useRootModalStore((s) => s.active);
   const web3Enabled = useWeb3Enabled();
+  const usesMwa = useUsesMwa();
   const me = useMe();
-  // Also requires Privy ids: a build without them (dev/local) can never set a wallet up, so the
-  // welcome sheet would greet the user with a dead screen.
-  const web3WelcomeEligible = web3Enabled && hasPrivyIds() && !hasSeenTripWalletWelcome(
-    me.data ? String(me.data.id) : null,
-  );
+  // On Privy it also requires Privy ids: a build without them (dev/local) can never set a wallet
+  // up, so the welcome sheet would greet the user with a dead screen. Mobile Wallet Adapter
+  // (Android, while the server's `mwaEnabled` is on) needs no Privy ids.
+  const web3WelcomeEligible =
+    web3Enabled &&
+    (usesMwa || hasPrivyIds()) &&
+    !hasSeenTripWalletWelcome(me.data ? String(me.data.id) : null);
   const freeTrialEligible = useFreeTrialEligibility();
   const presentedIds = usePresentedRequestsStore((s) => s.ids);
   const liveIds = useLiveRequestsStore((s) => s.ids);

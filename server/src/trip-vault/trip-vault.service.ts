@@ -16,6 +16,7 @@ import {
   VaultTxKind,
   VaultTxStatus,
   WalletAccount,
+  WalletProvider,
 } from '@prisma/client';
 import {
   getAssociatedTokenAddressSync,
@@ -26,13 +27,22 @@ import BN from 'bn.js';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { TripsHandler } from '../realtime/handlers/trips.handler';
-import { SolanaService } from '../solana/solana.service';
+import {
+  isTxExpired,
+  SolanaService,
+  TX_EXPIRED_CODE,
+} from '../solana/solana.service';
 import {
   assertInstructionAccounts,
   decodeVaultInstruction,
   transactionSignature,
 } from '../solana/tx-verify';
 import { VaultSafetyService } from '../solana/vault-safety.service';
+import {
+  SeekerIdentityService,
+  exposedIdentity,
+} from '../web3/seeker-identity.service';
+import { MemberIdentityDto } from './dto/member-identity.dto';
 
 function toPublicKey(value: string, field: string): PublicKey {
   try {
@@ -40,6 +50,12 @@ function toPublicKey(value: string, field: string): PublicKey {
   } catch {
     throw new BadRequestException(`${field} is not a valid Solana public key`);
   }
+}
+
+function alreadyLinked(): ConflictException {
+  return new ConflictException(
+    'This wallet is already linked to another account',
+  );
 }
 
 /// How long a vault balance is served without asking the chain again.
@@ -82,6 +98,7 @@ export class TripVaultService {
     private readonly solana: SolanaService,
     private readonly trips: TripsHandler,
     private readonly safety: VaultSafetyService,
+    private readonly identity: SeekerIdentityService,
   ) {}
 
   private assertConfigured(): void {
@@ -130,26 +147,142 @@ export class TripVaultService {
     return vault;
   }
 
-  async linkWallet(userId: number, publicKey: string): Promise<WalletAccount> {
-    const key = toPublicKey(publicKey, 'publicKey');
+  /**
+   * A non-CLOSED vault in a trip where `userId` is an accepted member: their wallet key may be
+   * seated on-chain there, so it must not change hands (or keys) until that vault closes.
+   */
+  private findOpenVaultFor(
+    userId: number,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<{ tripId: number } | null> {
+    return db.tripVault.findFirst({
+      where: {
+        status: { not: VaultStatus.CLOSED },
+        trip: {
+          members: { some: { userId, inviteStatus: InviteStatus.ACCEPTED } },
+        },
+      },
+      select: { tripId: true },
+    });
+  }
+
+  async linkWallet(
+    userId: number,
+    publicKey: string,
+    provider: WalletProvider = WalletProvider.PRIVY,
+  ): Promise<WalletAccount> {
+    const key = toPublicKey(publicKey, 'publicKey').toBase58();
+    const existing = await this.prisma.walletAccount.findUnique({
+      where: { userId },
+    });
+    const sameKey = existing?.publicKey === key;
+    if (existing && !sameKey) {
+      // The vault's on-chain member is the OLD key: its deposits, approvals and settlement
+      // share are recorded against it. Swapping the account's key mid-trip would make every
+      // later transaction from the new key fail as "not a member" and strand the old share.
+      const locked = await this.findOpenVaultFor(userId);
+      if (locked) {
+        throw new ConflictException({
+          code: 'wallet_locked_by_vault',
+          message:
+            'Finish or leave your active group wallet before switching wallets',
+          tripId: locked.tripId,
+        });
+      }
+    }
+    const upsertArgs = {
+      where: { userId },
+      create: { userId, publicKey: key, provider },
+      // Same key: keep the stored provider. Android re-links an MWA key through the
+      // PRIVY-default routes (deposit flow, /wallet/link); that must not relabel the row.
+      // An MWA link is SIWS-proven, though, so it upgrades a same-key PRIVY row.
+      // A new key drops the old key's Seeker identity: it was proven for that key only.
+      update: sameKey
+        ? provider === WalletProvider.MWA
+          ? { publicKey: key, provider }
+          : { publicKey: key }
+        : {
+            publicKey: key,
+            provider,
+            seekerGenesisMint: null,
+            seekerCheckedAt: null,
+            skrDomain: null,
+            skrCheckedAt: null,
+          },
+    } satisfies Prisma.WalletAccountUpsertArgs;
     try {
-      return await this.prisma.walletAccount.upsert({
-        where: { userId },
-        create: { userId, publicKey: key.toBase58() },
-        update: { publicKey: key.toBase58() },
-      });
+      // Only a SIWS proof (MWA) can take a key back from another account, and only from a
+      // PRIVY row, which /wallet/link and /trips/:id/vault/wallet store without any proof:
+      // whoever linked it first may not own it. An MWA holder proved it, so the 409 stands.
+      const holder =
+        provider === WalletProvider.MWA && !sameKey
+          ? await this.prisma.walletAccount.findUnique({
+              where: { publicKey: key },
+            })
+          : null;
+      if (holder && holder.userId !== userId) {
+        if (holder.provider !== WalletProvider.PRIVY) throw alreadyLinked();
+        return await this.reclaimUnprovenKey(
+          userId,
+          holder.userId,
+          key,
+          upsertArgs,
+        );
+      }
+      return await this.prisma.walletAccount.upsert(upsertArgs);
     } catch (error) {
       // public_key is unique (S12): another account already holds this key.
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        throw new ConflictException(
-          'This wallet is already linked to another account',
-        );
+        throw alreadyLinked();
       }
       throw error;
     }
+  }
+
+  /**
+   * Moves `key` from `holderId`'s unproven PRIVY row to the SIWS-proven caller, atomically.
+   * Refused while the holder is in an open vault: the key may be seated on-chain there as
+   * theirs, and settlement resolves userId -> key, so reassigning it would desync the vault.
+   * The vault check runs inside the transaction to keep the window with a join small; the
+   * delete only matches a row that is still that user's PRIVY row for this key, so if they
+   * switched keys or proved it in the meantime the caller's upsert hits P2002 -> 409.
+   */
+  private async reclaimUnprovenKey(
+    userId: number,
+    holderId: number,
+    key: string,
+    upsertArgs: Prisma.WalletAccountUpsertArgs,
+  ): Promise<WalletAccount> {
+    const { linked, reclaimed } = await this.prisma.$transaction(async (tx) => {
+      if (await this.findOpenVaultFor(holderId, tx)) {
+        throw new ConflictException({
+          code: 'wallet_claimed_in_open_vault',
+          message:
+            "This wallet is linked to another OnePlan account that's in an active trip",
+        });
+      }
+      const { count } = await tx.walletAccount.deleteMany({
+        where: {
+          userId: holderId,
+          publicKey: key,
+          provider: WalletProvider.PRIVY,
+        },
+      });
+      return {
+        linked: await tx.walletAccount.upsert(upsertArgs),
+        reclaimed: count > 0,
+      };
+    });
+    // Audit trail: an account lost its (unproven) wallet link to someone who proved the key.
+    if (reclaimed) {
+      this.logger.warn(
+        `linkWallet: userId ${userId} reclaimed key ${key} from userId ${holderId} via SIWS`,
+      );
+    }
+    return linked;
   }
 
   /**
@@ -164,13 +297,24 @@ export class TripVaultService {
     publicKey: string | null;
     usdcAta: string | null;
     balanceMicro: bigint;
+    skrDomain: string | null;
+    isSeeker: boolean;
   }> {
     const wallet = await this.prisma.walletAccount.findUnique({
       where: { userId },
     });
     if (!wallet) {
-      return { publicKey: null, usdcAta: null, balanceMicro: 0n };
+      return {
+        publicKey: null,
+        usdcAta: null,
+        balanceMicro: 0n,
+        skrDomain: null,
+        isSeeker: false,
+      };
     }
+    // Display-only identity (MWA rows only); refreshed in the background when older than 24h.
+    this.identity.refreshStaleInBackground([wallet]);
+    const identity = exposedIdentity(wallet);
     const owner = new PublicKey(wallet.publicKey);
     const ata = getAssociatedTokenAddressSync(this.solana.usdcMint, owner);
     try {
@@ -178,6 +322,7 @@ export class TripVaultService {
         publicKey: wallet.publicKey,
         usdcAta: ata.toBase58(),
         balanceMicro: await this.solana.getTokenBalance(ata),
+        ...identity,
       };
     } catch {
       // No token account yet, which is what a wallet that has never held USDC
@@ -186,8 +331,30 @@ export class TripVaultService {
         publicKey: wallet.publicKey,
         usdcAta: ata.toBase58(),
         balanceMicro: 0n,
+        ...identity,
       };
     }
+  }
+
+  /** Seeker badge / .skr name per accepted member with a linked wallet. Display only. */
+  async identitiesForTrip(tripId: number): Promise<MemberIdentityDto[]> {
+    const members = await this.prisma.tripMember.findMany({
+      where: { tripId, inviteStatus: InviteStatus.ACCEPTED },
+      select: { userId: true },
+    });
+    const wallets = await this.prisma.walletAccount.findMany({
+      where: { userId: { in: members.map((m) => m.userId) } },
+      select: {
+        userId: true,
+        provider: true,
+        skrDomain: true,
+        seekerGenesisMint: true,
+        seekerCheckedAt: true,
+        skrCheckedAt: true,
+      },
+    });
+    this.identity.refreshStaleInBackground(wallets);
+    return wallets.map((w) => ({ userId: w.userId, ...exposedIdentity(w) }));
   }
 
   /**
@@ -655,57 +822,143 @@ export class TripVaultService {
     const netMicro = amountMicro - feeMicro;
 
     const signature = transactionSignature(signedTx);
-    const rowId = await this.claimDeposit(
+    const claim = await this.claimDeposit(
       vault.id,
       userId,
       signature,
       netMicro,
     );
-    if (rowId === null) {
+    if (claim.status === VaultTxStatus.CONFIRMED) {
       // Already booked by an earlier submit of this exact transaction.
       return signature;
     }
+    if (claim.status === VaultTxStatus.FAILED) {
+      return this.resubmitFailedDeposit(
+        tripId,
+        userId,
+        claim.id,
+        signature,
+        amountMicro,
+      );
+    }
 
-    await this.solana.broadcastSigned(signedTx);
+    try {
+      await this.solana.broadcastSigned(signedTx);
+    } catch (error) {
+      if (isTxExpired(error) && claim.created) {
+        // The blockhash expired while the member was approving, so this
+        // transaction can never land. Settle the row now, as the reconcile job
+        // would once it found the signature missing from the chain, instead of
+        // leaving it to read as money on its way in.
+        //
+        // Only the row this submit created: a replay's broadcast can report an
+        // expired blockhash even though the first submit's broadcast landed,
+        // so a reused row stays PENDING and the reconcile job asks the chain.
+        await this.prisma.vaultTransaction.updateMany({
+          where: { id: claim.id, status: VaultTxStatus.PENDING },
+          data: { status: VaultTxStatus.FAILED },
+        });
+      }
+      throw error;
+    }
     await this.solana.confirmSigned(signedTx, signature);
-    // Only the submit that moves PENDING -> CONFIRMED announces the deposit.
+    // A confirmed transaction is proof it landed, so this write also corrects
+    // a FAILED row: a concurrent submit of the same bytes can have failed it
+    // on an expired-blockhash answer (e.g. a lagging RPC node) while this
+    // broadcast went through. Left FAILED, the money would sit in the vault
+    // missing from settlement, since reconcile only revisits PENDING rows.
+    // Only the submit whose write moves the row announces the deposit.
     const confirmed = await this.prisma.vaultTransaction.updateMany({
-      where: { id: rowId, status: VaultTxStatus.PENDING },
+      where: {
+        id: claim.id,
+        status: { in: [VaultTxStatus.PENDING, VaultTxStatus.FAILED] },
+      },
       data: { status: VaultTxStatus.CONFIRMED },
     });
 
     this.invalidateBalance(tripId);
     if (confirmed.count > 0) {
-      // Nothing announced a deposit before, so every other member's screen sat
-      // on a stale balance and an incomplete history until they left and came
-      // back.
-      const actor = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { displayName: true },
-      });
-      this.trips.sendVaultBalanceChanged(tripId, {
-        kind: VaultTxKind.DEPOSIT,
-        actorUserId: userId,
-        actorName: actor?.displayName ?? '',
-        amountMicro: amountMicro.toString(),
-      });
-      this.logger.log(`deposit ${signature} confirmed for trip ${tripId}`);
+      await this.announceDeposit(tripId, userId, amountMicro, signature);
     }
     return signature;
   }
 
   /**
+   * The same signed bytes again, for a deposit already marked FAILED.
+   *
+   * FAILED was a conclusion about the chain (expired blockhash, or the
+   * reconcile job not finding the signature), so the chain is asked again
+   * rather than trusted or ignored. If the transaction did land, the money is
+   * in the vault and the row is corrected to CONFIRMED. If it did not, the
+   * bytes can never land now (their blockhash is long gone), so the member is
+   * told to sign a fresh one, the same 409 an expired broadcast gives.
+   *
+   * Everything that counts deposits (balance mirror, settlement, drift, the
+   * deletion guard) reads CONFIRMED rows only, so the flip is all it takes.
+   */
+  private async resubmitFailedDeposit(
+    tripId: number,
+    userId: number,
+    rowId: number,
+    signature: string,
+    amountMicro: bigint,
+  ): Promise<string> {
+    if (!(await this.solana.signatureLanded(signature))) {
+      throw new ConflictException({
+        code: TX_EXPIRED_CODE,
+        message:
+          'This transaction expired before it was sent. Please try again.',
+      });
+    }
+    const confirmed = await this.prisma.vaultTransaction.updateMany({
+      where: { id: rowId, status: VaultTxStatus.FAILED },
+      data: { status: VaultTxStatus.CONFIRMED },
+    });
+    this.invalidateBalance(tripId);
+    if (confirmed.count > 0) {
+      this.logger.warn(
+        `deposit ${signature} was FAILED but landed on chain; confirmed on resubmit`,
+      );
+      await this.announceDeposit(tripId, userId, amountMicro, signature);
+    }
+    return signature;
+  }
+
+  /** Tells the trip a deposit was booked. Called once per row, by whoever confirmed it. */
+  private async announceDeposit(
+    tripId: number,
+    userId: number,
+    amountMicro: bigint,
+    signature: string,
+  ): Promise<void> {
+    // Nothing announced a deposit before, so every other member's screen sat
+    // on a stale balance and an incomplete history until they left and came
+    // back.
+    const actor = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { displayName: true },
+    });
+    this.trips.sendVaultBalanceChanged(tripId, {
+      kind: VaultTxKind.DEPOSIT,
+      actorUserId: userId,
+      actorName: actor?.displayName ?? '',
+      amountMicro: amountMicro.toString(),
+    });
+    this.logger.log(`deposit ${signature} confirmed for trip ${tripId}`);
+  }
+
+  /**
    * Creates the PENDING deposit row under `signature`, or finds the one an
-   * earlier submit created. Returns the row id still to be broadcast and
-   * confirmed, or null when the deposit is already settled / owned by someone
-   * else's row (nothing left to do).
+   * earlier submit created. `created` says which: only the submit that created
+   * the row may conclude on its own that the transaction never landed.
+   * `status` is the row's current state (always PENDING when created).
    */
   private async claimDeposit(
     vaultId: number,
     userId: number,
     signature: string,
     netMicro: bigint,
-  ): Promise<number | null> {
+  ): Promise<{ id: number; created: boolean; status: VaultTxStatus }> {
     try {
       const row = await this.prisma.vaultTransaction.create({
         data: {
@@ -717,7 +970,7 @@ export class TripVaultService {
           signature,
         },
       });
-      return row.id;
+      return { id: row.id, created: true, status: VaultTxStatus.PENDING };
     } catch (error) {
       if (
         !(error instanceof Prisma.PrismaClientKnownRequestError) ||
@@ -737,9 +990,9 @@ export class TripVaultService {
     ) {
       throw new ConflictException('This transaction was already submitted');
     }
-    // A PENDING row means the earlier submit died before confirming; carry on
-    // and finish it. A settled row means there is nothing to do.
-    return existing.status === VaultTxStatus.PENDING ? existing.id : null;
+    // PENDING: the earlier submit died before confirming; carry on and finish
+    // it. CONFIRMED: nothing to do. FAILED: the caller asks the chain again.
+    return { id: existing.id, created: false, status: existing.status };
   }
 
   /**

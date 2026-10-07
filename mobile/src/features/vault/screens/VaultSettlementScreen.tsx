@@ -3,13 +3,11 @@
  * `ios/OnePlan/OnePlan/View/Vault/VaultSettlementView.swift`. Figma `4013:13084` / `4013:12968`.
  *
  * Cash debts that involve the caller, after the vault has wound itself up on chain: expandable
- * receive/pay rows, Mark as done, Show QR.
- *
- * TODO(web3): "Show QR" should open `DepositToOnePlanWalletView(mode: .receive)` and a paying row
- * with a linked creditor wallet should open `WalletWithdrawView` prefilled with the address +
- * amount — both are reused sheets owned by Wave A/C (deposit / withdraw), not built yet. Until
- * they land, both actions show a "Coming soon" alert instead of a broken/no-op tap target.
+ * receive/pay rows, Mark as done, Show QR (the wallet's Receive QR), and Pay — the withdraw sheet
+ * prefilled with the creditor's linked wallet and the debt amount.
  */
+import { router } from 'expo-router';
+import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, StyleSheet, Text, View } from 'react-native';
 
@@ -17,6 +15,7 @@ import { TripEndHeroHeader } from '@/features/settlement/components/TripEndHeroH
 import { useExchangeRate } from '@/features/exchange/useExchangeRate';
 import type { TripMemberDto } from '@/features/trip/types';
 import { useConfirmVaultCashDebt, type CashDebtDto } from '@/features/vault/api/endTrip';
+import { useMemberIdentities } from '@/features/vault/api/mwa';
 import { useVaultSettlement } from '@/features/vault/api/queries';
 import { VaultSettlementRow } from '@/features/vault/components/VaultSettlementRow';
 import {
@@ -24,6 +23,10 @@ import {
   avatarUrlFor,
   mapCashDebtToEntry,
 } from '@/features/vault/helpers/tripEndSettlement';
+import {
+  WalletWithdrawSheetHost,
+  type WalletWithdrawSheetHostRef,
+} from '@/features/vault/screens/WalletWithdrawSheetHost';
 import { useAppLanguage } from '@/i18n';
 import type { Currency } from '@/lib/currency';
 import { EmptyState, Spinner } from '@/ui/components';
@@ -55,6 +58,8 @@ export function VaultSettlementScreen({
   const { t } = useTranslation();
   const settlement = useVaultSettlement(tripId);
   const confirm = useConfirmVaultCashDebt(tripId);
+  // Non-blocking overlay: rows render unchanged while it loads or errors.
+  const identities = useMemberIdentities(tripId);
   const rate = useExchangeRate('USD', 'VND');
   const usdcToVnd = rate.data?.rate && rate.data.rate > 0 ? rate.data.rate : FALLBACK_USDC_TO_VND;
 
@@ -70,8 +75,17 @@ export function VaultSettlementScreen({
     });
   };
 
-  const handleShowQR = () => Alert.alert(t('Coming soon'));
-  const handleSendToWallet = () => Alert.alert(t('Coming soon'));
+  const withdrawRef = useRef<WalletWithdrawSheetHostRef>(null);
+  const handleShowQR = () =>
+    router.push({ pathname: '/wallet/deposit', params: { mode: 'receive' } });
+  // Send only exists when the caller owes and the creditor has linked a wallet.
+  const handleSendToWallet = (debt: CashDebtDto) => {
+    if (!debt.toWalletAddress) return;
+    withdrawRef.current?.present({
+      address: debt.toWalletAddress,
+      amountMicro: BigInt(debt.amountMicro),
+    });
+  };
 
   return (
     <View style={styles.root} testID="vault-settlement-screen">
@@ -99,23 +113,29 @@ export function VaultSettlementScreen({
         <Text style={styles.emptyText}>{t('Nothing left to settle in cash')}</Text>
       ) : (
         <View style={styles.rows}>
-          {myDebts.map((debt) => (
-            <VaultSettlementRow
-              key={pairKey(debt)}
-              entry={mapCashDebtToEntry(
-                debt,
-                myUserId ?? 0,
-                usdcToVnd,
-                avatarUrlFor(members, debt.toUserId === myUserId ? debt.fromUserId : debt.toUserId),
-              )}
-              isWorking={confirm.isPending && confirm.variables === debt.fromUserId}
-              onMarkAsDone={() => handleConfirm(debt.fromUserId)}
-              onShowQR={handleShowQR}
-              onSendToWallet={handleSendToWallet}
-            />
-          ))}
+          {myDebts.map((debt) => {
+            const entry = mapCashDebtToEntry(
+              debt,
+              myUserId ?? 0,
+              usdcToVnd,
+              avatarUrlFor(members, debt.toUserId === myUserId ? debt.fromUserId : debt.toUserId),
+            );
+            return (
+              <VaultSettlementRow
+                key={pairKey(debt)}
+                entry={entry}
+                identity={identities.data?.get(entry.id)}
+                isWorking={confirm.isPending && confirm.variables === debt.fromUserId}
+                onMarkAsDone={() => handleConfirm(debt.fromUserId)}
+                onShowQR={handleShowQR}
+                onSendToWallet={() => handleSendToWallet(debt)}
+              />
+            );
+          })}
         </View>
       )}
+
+      <WalletWithdrawSheetHost ref={withdrawRef} />
     </View>
   );
 }

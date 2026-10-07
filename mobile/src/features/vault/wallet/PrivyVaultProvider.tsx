@@ -15,7 +15,7 @@
  * every render so non-component call sites (the signing pipeline, the auth bootstrap) can reach
  * it without needing to be inside this tree themselves.
  */
-import { useEffect, type PropsWithChildren } from 'react';
+import { useCallback, useEffect, useState, type PropsWithChildren } from 'react';
 import { PrivyProvider } from '@privy-io/expo';
 
 import { useAuthStore } from '@/auth/authStore';
@@ -25,28 +25,42 @@ import { useWeb3Enabled } from '../web3Flag';
 import { useVaultWallet } from './useVaultWallet';
 import { hasPrivyIds } from './walletConfig';
 import { setWalletHandle, type WalletHandle } from './walletHandle';
-import { fetchWalletToken } from './walletToken';
+import { fetchWalletTokenWithRetry } from './walletToken';
+
+/** How long `isLoading` is held true when re-triggering Privy's custom-auth login. */
+const RESYNC_PULSE_MS = 250;
 
 async function getWalletToken(): Promise<string | undefined> {
   try {
-    return await fetchWalletToken();
+    return await fetchWalletTokenWithRetry();
   } catch {
     // Best-effort, same as `WalletService.swift`'s bootstrap: a Privy/token-exchange outage must
-    // never block sign-in or crash the SDK's token getter. The caller sees `sessionFailed`
-    // instead, from `useVaultWallet`'s own error paths.
+    // never block sign-in or crash the SDK's token getter. Returning nothing makes Privy log its
+    // session out, so `useVaultWallet` notices the `disconnected` wallet and asks for a resync
+    // (`requestResync` below), reporting `sessionFailed` with `lastWalletTokenFailure()` if that
+    // fails too.
     return undefined;
   }
 }
 
 /** Publishes the live wallet handle from inside the Privy tree; renders nothing itself. */
-function WalletHandleBridge({ isConfigured }: { isConfigured: boolean }) {
-  const wallet = useVaultWallet();
+function WalletHandleBridge({
+  isConfigured,
+  requestResync,
+}: {
+  isConfigured: boolean;
+  requestResync: () => void;
+}) {
+  const wallet = useVaultWallet(requestResync);
 
   useEffect(() => {
     const handle: WalletHandle = {
+      kind: 'privy',
       isConfigured,
       isReady: wallet.isReady,
+      connectedAddress: wallet.publicKey,
       ensureWallet: wallet.ensureWallet,
+      connect: wallet.ensureWallet,
       sign: wallet.sign,
       reset: wallet.reset,
     };
@@ -60,15 +74,29 @@ export function PrivyVaultProvider({ children }: PropsWithChildren) {
   const status = useAuthStore((s) => s.status);
   const web3Enabled = useWeb3Enabled();
   const isConfigured = web3Enabled && hasPrivyIds();
+  // Pulsed true briefly to make Privy re-run its custom-auth login (see `isLoading`). Held for a
+  // timer rather than a single render: Privy copies `config` into its own store from an effect,
+  // and a same-commit true→false could be batched away before its login effect ever sees `true`.
+  const [resyncing, setResyncing] = useState(false);
+  const requestResync = useCallback(() => setResyncing(true), []);
+
+  useEffect(() => {
+    if (!resyncing) return;
+    const timer = setTimeout(() => setResyncing(false), RESYNC_PULSE_MS);
+    return () => clearTimeout(timer);
+  }, [resyncing]);
 
   useEffect(() => {
     if (isConfigured) return;
     // No Privy SDK mounted at all in this state, so `WalletHandleBridge` never runs — publish
     // the "not configured" handle directly (every call throws `WalletError.notConfigured()`).
     setWalletHandle({
+      kind: 'privy',
       isConfigured: false,
       isReady: false,
+      connectedAddress: null,
       ensureWallet: () => Promise.reject(new Error('wallet not configured')),
+      connect: () => Promise.reject(new Error('wallet not configured')),
       sign: () => Promise.reject(new Error('wallet not configured')),
       reset: () => Promise.resolve(),
     });
@@ -92,13 +120,14 @@ export function PrivyVaultProvider({ children }: PropsWithChildren) {
               // needs refreshing — there is no imperative login call to make (unlike the iOS
               // SDK's `loginWithCustomAccessToken()`). Keep it loading until the app itself is
               // signed in, so Privy never calls the token endpoint while there is nothing to
-              // exchange.
-              isLoading: status !== 'authed',
+              // exchange. `resyncing` pulses it true→false so Privy logs back in after its session
+              // was dropped (it only retries when one of these inputs changes).
+              isLoading: status !== 'authed' || resyncing,
               getCustomAccessToken: getWalletToken,
             },
           }}
         >
-          <WalletHandleBridge isConfigured />
+          <WalletHandleBridge isConfigured requestResync={requestResync} />
         </PrivyProvider>
       ) : null}
       {children}

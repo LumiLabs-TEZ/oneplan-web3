@@ -25,6 +25,10 @@ interface VaultDepositFlowState {
   start: (flow: Omit<VaultDepositFlow, 'status' | 'signature'>) => void;
   complete: (signature: string) => void;
   clear: () => void;
+  /** Set by the receipt's "Deposit again"; the trip vault section reopens the sheet and resets it. */
+  depositAgainRequested: boolean;
+  requestDepositAgain: () => void;
+  consumeDepositAgain: () => void;
 }
 
 export const useVaultDepositFlowStore = create<VaultDepositFlowState>()((set) => ({
@@ -33,6 +37,9 @@ export const useVaultDepositFlowStore = create<VaultDepositFlowState>()((set) =>
   complete: (signature) =>
     set((s) => (s.flow ? { flow: { ...s.flow, status: 'completed', signature } } : s)),
   clear: () => set({ flow: null }),
+  depositAgainRequested: false,
+  requestDepositAgain: () => set({ depositAgainRequested: true }),
+  consumeDepositAgain: () => set({ depositAgainRequested: false }),
 }));
 
 /** Non-hook access for imperative call sites (mutation `onSuccess`, screens outside a component). */
@@ -41,4 +48,5 @@ export const vaultDepositFlowStore = {
     useVaultDepositFlowStore.getState().start(flow),
   complete: (signature: string) => useVaultDepositFlowStore.getState().complete(signature),
   clear: () => useVaultDepositFlowStore.getState().clear(),
+  requestDepositAgain: () => useVaultDepositFlowStore.getState().requestDepositAgain(),
 };

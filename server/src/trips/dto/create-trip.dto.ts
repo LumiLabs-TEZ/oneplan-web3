@@ -4,6 +4,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -71,4 +72,12 @@ export class CreateTripDto {
   @ArrayMaxSize(5)
   @IsEnum(Currency, { each: true })
   localCurrencies?: Currency[];
+
+  @ApiPropertyOptional({
+    description:
+      'Create the trip with a group wallet (web3). Fixed at creation. Requires web3 eligibility (403 web3_unavailable otherwise).',
+  })
+  @IsOptional()
+  @IsBoolean()
+  web3?: boolean;
 }

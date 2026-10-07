@@ -14,11 +14,12 @@ import * as Haptics from 'expo-haptics';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { pickQrFromPhoto, QRScanner } from '@/native/camera/QRScanner';
-import { VaultHeaderChip } from '@/features/vault/components';
+import { VaultPalette } from '@/features/vault/components';
 import { useAppLanguage } from '@/i18n';
-import { SFSymbol } from '@/ui/components';
+import { BackPillButton, GlassSurface, SFSymbol } from '@/ui/components';
 import { colors } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
@@ -36,9 +37,15 @@ export interface VaultScanQRScreenProps {
 export function VaultScanQRScreen({ onScanned, onCancel }: VaultScanQRScreenProps) {
   useAppLanguage();
   const { t } = useTranslation();
+  // Full-screen modal over the camera: the header must clear the status bar itself, or its
+  // buttons sit under it and stop receiving taps.
+  const insets = useSafeAreaInsets();
   const [rejectedMessage, setRejectedMessage] = useState<string | null>(null);
   const rejectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [active, setActive] = useState(true);
+  // Swift's `scanner.isAuthorized`: false until permission is granted, so the hint also shows
+  // while the prompt is still up.
+  const [authorized, setAuthorized] = useState(false);
 
   useEffect(
     () => () => {
@@ -80,54 +87,56 @@ export function VaultScanQRScreen({ onScanned, onCancel }: VaultScanQRScreenProp
 
   return (
     <View style={styles.root} testID="vault-scan-qr-screen">
-      {active ? <QRScanner active onCode={handleRaw} style={StyleSheet.absoluteFill} /> : null}
+      {active ? (
+        <QRScanner
+          active
+          onCode={handleRaw}
+          onAuthorizedChange={setAuthorized}
+          hideUnavailableMessage
+          style={StyleSheet.absoluteFill}
+        />
+      ) : null}
 
       <View pointerEvents="none" style={styles.frameWrap}>
-        <View style={styles.frame} />
+        <View style={styles.frame}>
+          {authorized ? null : (
+            <View style={styles.permissionHint} testID="vault-scan-qr-permission-hint">
+              <SFSymbol
+                name="camera.fill"
+                fallback="camera"
+                size={26}
+                color="rgba(255, 255, 255, 0.7)"
+              />
+              <Text style={styles.permissionText}>
+                {t('Allow camera access, or pick a code from your photos')}
+              </Text>
+            </View>
+          )}
+        </View>
       </View>
 
       <View style={styles.overlay}>
-        <View style={styles.header}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('Back')}
-            onPress={onCancel}
-            testID="vault-scan-qr-back-icon"
-          >
-            <VaultHeaderChip overCamera>
-              <View style={styles.backIcon}>
-                <SFSymbol name="arrow.left" fallback="arrow-back" size={14} color={colors.white} />
-              </View>
-            </VaultHeaderChip>
-          </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            onPress={onCancel}
-            testID="vault-scan-qr-back-label"
-          >
-            <VaultHeaderChip overCamera>
-              <Text style={styles.backLabel}>{t('Back')}</Text>
-            </VaultHeaderChip>
-          </Pressable>
-
-          <View style={styles.spacer} />
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
+          {/* Same header controls as the web2 keypad screens (add expense / add budget). */}
+          <BackPillButton onPress={onCancel} testID="vault-scan-qr-back" />
 
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t('Choose a code from your photos')}
             onPress={() => void handlePickPhoto()}
+            hitSlop={6}
+            style={styles.photoShadow}
             testID="vault-scan-qr-photo-picker"
           >
-            <VaultHeaderChip overCamera cornerRadius={18}>
-              <View style={styles.photoIcon}>
-                <SFSymbol
-                  name="photo.on.rectangle"
-                  fallback="images-outline"
-                  size={15}
-                  color={colors.white}
-                />
-              </View>
-            </VaultHeaderChip>
+            <GlassSurface preset="control" radius={16} style={styles.photoIcon}>
+              <SFSymbol
+                name="photo.on.rectangle"
+                fallback="images-outline"
+                size={16}
+                frame={20}
+                color={colors.neutral900}
+              />
+            </GlassSurface>
           </Pressable>
         </View>
 
@@ -158,23 +167,30 @@ const styles = StyleSheet.create({
     width: FRAME_SIZE,
     height: FRAME_SIZE,
     borderRadius: 24,
+    borderCurve: 'continuous',
     borderWidth: 3,
-    borderColor: colors.blueBase,
+    borderColor: VaultPalette.scanFrame,
+    // Swift: `.shadow(color: VaultPalette.scanFrame.opacity(0.5), radius: 12)`.
+    boxShadow: '0px 0px 12px rgba(255, 183, 0, 0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  permissionHint: { alignItems: 'center', gap: 8, paddingHorizontal: 12 },
+  permissionText: {
+    ...beVietnamPro(13),
+    color: 'rgba(255, 255, 255, 0.7)',
+    textAlign: 'center',
   },
   overlay: { flex: 1, justifyContent: 'space-between' },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 16, paddingTop: 8 },
-  backIcon: { width: 32, height: 32, textAlign: 'center', textAlignVertical: 'center' },
-  backLabel: {
-    ...beVietnamPro(15),
-    letterSpacing: -0.3,
-    color: colors.white,
-    width: 61,
-    height: 34,
-    textAlign: 'center',
-    textAlignVertical: 'center',
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
   },
-  spacer: { flex: 1 },
-  photoIcon: { width: 36, height: 36, textAlign: 'center', textAlignVertical: 'center' },
+  // Matches `BackPillButton`'s circle: 32pt glass with the same soft drop shadow.
+  photoShadow: { borderRadius: 16, boxShadow: '0px 2px 8px rgba(0, 0, 0, 0.12)' },
+  photoIcon: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   bottom: { alignItems: 'center', paddingBottom: 48 },
   rejectedPill: {
     backgroundColor: 'rgba(0,0,0,0.6)',

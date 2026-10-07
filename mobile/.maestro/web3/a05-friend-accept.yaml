@@ -1,0 +1,13 @@
+# A (user 2): spike's request pops up live (realtime) → Accept.
+appId: local.lumilabs.oneplan
+---
+- extendedWaitUntil:
+    visible:
+      id: "friend-receive-modal"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "friend-accept"
+- waitForAnimationToEnd:
+    timeout: 3000

@@ -23,7 +23,7 @@ import { signInWithApple } from '@/auth/apple';
 import { useAuthStore } from '@/auth/authStore';
 import { signInWithGoogle } from '@/auth/google';
 import { useAppLanguage } from '@/i18n';
-import { isProd } from '@/lib/env';
+import { showDevSignIn } from '@/lib/env';
 import { signInDevUser } from '@/auth/devSignIn';
 import { svg, video } from '@/ui/assets';
 import { Button, LoopingVideo } from '@/ui/components';
@@ -115,7 +115,7 @@ export default function LoginScreen() {
           style={[styles.provider, { backgroundColor: '#FFFFFF', borderWidth: 0 }]}
         />
 
-        {!isProd ? (
+        {showDevSignIn ? (
           <Text
             style={styles.devLink}
             onPress={() => run('dev')}

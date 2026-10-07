@@ -8,9 +8,10 @@
  * `VaultHistoryRow` (Wave C, `docs/web3/rn-ui-parity-inventory.md` id `vault-history-row`) — swap
  * to that component once it lands; this sheet is a second of its three documented consumers.
  */
+import { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, StyleSheet, Text, View } from 'react-native';
 
 import { mutationErrorMessage } from '@/api/mutationError';
 import type { ExpenseCategory } from '@/features/expense/categories';
@@ -19,13 +20,12 @@ import { useLeavePreview } from '@/features/trip/api/leave';
 import { useAppLanguage } from '@/i18n';
 import { formatUsdc } from '@/lib/currency';
 import { AppSheet, type AppSheetRef, Button, Spinner } from '@/ui/components';
-import { svg } from '@/ui/assets';
 import { colors, spacing } from '@/ui/theme';
 import { beVietnamPro } from '@/ui/typography';
 
 import { useAnnounceVaultLeave } from '../api/leave';
 import { CategoryIcon } from '../components';
-import { memberLeaveSheetHeight, memberLeaveState, microToUsdc, signedUsdcPrefix } from '../leaveModel';
+import { memberLeaveState, microToUsdc, signedUsdcPrefix } from '../leaveModel';
 
 const KNOWN_CATEGORIES = new Set<string>(EXPENSE_CATEGORIES.map((c) => c.value));
 
@@ -112,24 +112,18 @@ export const VaultLeaveSheet = forwardRef<VaultLeaveSheetRef, VaultLeaveSheetPro
     };
 
     return (
-      <AppSheet
-        ref={sheetRef}
-        snapPoints={[memberLeaveSheetHeight(dto?.lines.length ?? 0)]}
-        onDismiss={handleDismissed}
-      >
-        <View style={styles.container} testID="vault-leave-sheet">
-          <Pressable
-            onPress={() => sheetRef.current?.dismiss()}
-            accessibilityRole="button"
-            accessibilityLabel={t('Back')}
-            hitSlop={12}
-            style={styles.backButton}
-          >
-            <svg.vault.leaveBackArrow width={28} height={28} style={styles.backIcon} />
-          </Pressable>
-
+      // Content-sized (dismiss by swiping down — no back button); the scroll view caps at the
+      // screen height so a long ledger still scrolls.
+      <AppSheet ref={sheetRef} enableDynamicSizing onDismiss={handleDismissed}>
+        <BottomSheetScrollView
+          contentContainerStyle={styles.container}
+          showsVerticalScrollIndicator={false}
+          testID="vault-leave-sheet"
+        >
           {preview.isPending ? (
-            <Spinner fill />
+            <View style={styles.loading}>
+              <Spinner />
+            </View>
           ) : dto && state ? (
             <>
               <View style={styles.hero}>
@@ -137,7 +131,7 @@ export const VaultLeaveSheet = forwardRef<VaultLeaveSheetRef, VaultLeaveSheetPro
                 <Text style={styles.heroAmount}>{usd(state.heroAmountMicro)}</Text>
               </View>
 
-              <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+              <View style={styles.content}>
                 <View style={styles.ledgerCard}>
                   {dto.lines.map((line, index) => (
                     <LedgerRow key={`${line.title}-${index}`} line={line} />
@@ -152,7 +146,7 @@ export const VaultLeaveSheet = forwardRef<VaultLeaveSheetRef, VaultLeaveSheetPro
                   />
                   <TotalRow label={t('Settlement')} value={settlementValue} />
                 </View>
-              </ScrollView>
+              </View>
 
               {dto.leaveRequestPending ? (
                 <Text style={styles.pendingCta} testID="vault-leave-cta-pending">
@@ -179,7 +173,7 @@ export const VaultLeaveSheet = forwardRef<VaultLeaveSheetRef, VaultLeaveSheetPro
               )}
             </>
           ) : null}
-        </View>
+        </BottomSheetScrollView>
       </AppSheet>
     );
   },
@@ -231,16 +225,8 @@ function LedgerRow({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingTop: spacing.md, paddingBottom: spacing.xl, gap: spacing.md },
-  backButton: {
-    alignSelf: 'flex-start',
-    marginLeft: spacing.lg,
-    width: 28,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  backIcon: { width: 28, height: 28, transform: [{ rotate: '90deg' }] },
+  container: { paddingTop: spacing.md, paddingBottom: spacing.xl, gap: spacing.md },
+  loading: { height: 200, alignItems: 'center', justifyContent: 'center' },
   hero: { alignItems: 'center', gap: 4, paddingHorizontal: spacing.lg },
   heroLabel: { ...beVietnamPro(14), color: colors.contentM },
   heroAmount: { ...beVietnamPro(32), color: colors.contentB },

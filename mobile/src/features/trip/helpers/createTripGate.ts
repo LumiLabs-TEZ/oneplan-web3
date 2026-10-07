@@ -20,13 +20,15 @@ export function canCreatePlanningTrip(isPro: boolean, planningTripCount: number)
 /**
  * `null` when the trimmed name is empty or no location was picked (country is required, city
  * optional — `CreateTripView.swift:258`). Dates are only included once a duration was confirmed
- * at least once (`hasSelectedDuration`), as `yyyy-MM-dd` strings.
+ * at least once (`hasSelectedDuration`), as `yyyy-MM-dd` strings. `web3` is sent only when on, so
+ * an ordinary trip's payload is unchanged.
  */
 export function buildCreateTripBody(s: {
   name: string;
   location: LocationSearchResultDto | null;
   range: DateRange;
   hasSelectedDuration: boolean;
+  web3?: boolean;
 }): CreateTripDto | null {
   const name = s.name.trim();
   if (!name || !s.location) return null;
@@ -40,6 +42,8 @@ export function buildCreateTripBody(s: {
       body.endDate = toDateOnly(normalized.end);
     }
   }
+
+  if (s.web3) body.web3 = true;
 
   return body;
 }

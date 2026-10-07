@@ -1,20 +1,21 @@
 import { keys } from '@/api/keys';
 import type { PendingInvite } from '@/features/invite/types';
 import type { RealtimeEvent } from './envelope';
+import type { VaultApprovalRequest } from './realtimeStore';
 
 /**
  * A key to invalidate. A bare key matches every query under it (TanStack prefix match);
  * `exact` limits it to that one query, `refetchType: 'none'` only marks matches stale.
  */
 export type InvalidationTarget =
-  | readonly unknown[]
-  | { queryKey: readonly unknown[]; exact?: boolean; refetchType?: 'none' };
+  readonly unknown[] | { queryKey: readonly unknown[]; exact?: boolean; refetchType?: 'none' };
 
 export type Invalidation = {
   queryKeys: readonly InvalidationTarget[];
   effect?:
     | { type: 'tripEnded' | 'tripDeleted'; tripId: number }
     | { type: 'tripMemberRemoved'; tripId: number; userId?: number }
+    | ({ type: 'vaultApprovalRequested' } & VaultApprovalRequest)
     | { type: 'inviteReceived'; invite: PendingInvite }
     | { type: 'friendRequestReceived'; requestId: number };
 };
@@ -84,9 +85,20 @@ export function invalidationFor(e: RealtimeEvent, opts: InvalidationOptions): In
     // Query invalidation only here — the propose-spend alert itself is Wave B's concern
     // (`vault-pay-and-approve-orchestration`, `docs/web3/rn-ui-parity-inventory.md`), which reads
     // this already-typed event straight off `RealtimeEvent` to add its own effect.
+    // The effect drives the "Approval needed" alert on the trip's vault card
+    // (`TripVaultSection.handleApprovalRequested` on iOS); the card decides whether it applies to me.
     case 'vaultApprovalRequested':
       return {
         queryKeys: [keys.vault.balance(e.data.tripId), keys.vault.history(e.data.tripId)],
+        effect: {
+          type: 'vaultApprovalRequested',
+          tripId: e.data.tripId,
+          vaultTransactionId: e.data.vaultTransactionId,
+          amountVnd: e.data.amountVnd,
+          recipientName: e.data.recipientName,
+          proposedByUserId: e.data.proposedByUserId,
+          approverUserIds: e.data.approverUserIds,
+        },
       };
     // iOS comment (`sendVaultBalanceChanged`): this must be posted by whoever moved the money,
     // never by a mere read, or clients would loop refetch-and-repost until the RPC provider
@@ -98,6 +110,9 @@ export function invalidationFor(e: RealtimeEvent, opts: InvalidationOptions): In
           keys.vault.history(e.data.tripId),
           keys.vault.myWallet(e.data.tripId),
           keys.vault.settlement(e.data.tripId),
+          // The first deposit is what creates the vault: the leave sheet / members tab read
+          // "has a vault" from the leave preview (iOS rechecks `hasVault` on this event).
+          keys.trips.leavePreview(e.data.tripId),
         ],
       };
     case 'vaultSettlementUpdated':
@@ -110,8 +125,15 @@ export function invalidationFor(e: RealtimeEvent, opts: InvalidationOptions): In
       };
     // No dedicated end-request query key yet (Wave D owns that read); refreshing the trip detail
     // is enough for the vault card's `isWaitingForEndApproval` state to stay current.
+    // `keys.vault.endRequest` prefixes the review too: the waiting screen auto-advances and the
+    // trip screen routes members to Review / Denied off the refetched request.
     case 'tripEndRequestUpdated':
-      return { queryKeys: [{ queryKey: keys.trips.detail(e.data.tripId), exact: true }] };
+      return {
+        queryKeys: [
+          { queryKey: keys.trips.detail(e.data.tripId), exact: true },
+          keys.vault.endRequest(e.data.tripId),
+        ],
+      };
     // Broadcast to the announcer too, so their own leave-preview flips to `leaveRequestPending`;
     // `keys.vault.leaveRequests` is the host-side pending-requests list (Wave E).
     case 'vaultLeaveRequested':

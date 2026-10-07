@@ -1,0 +1,58 @@
+# A: Scan a merchant VietQR for 80,000 VND (~$3.02, over the trip's $3 limit) → Dinner → Done →
+# the spend is proposed and waits for a second member: the pay flow closes with the toast.
+appId: local.lumilabs.oneplan
+---
+- runFlow: common/open-trip.yaml
+- tapOn:
+    id: "trip-vault-card-scan-qr"
+- extendedWaitUntil:
+    visible:
+      id: "vault-scan-qr-photo-picker"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "vault-scan-qr-photo-picker"
+- waitForAnimationToEnd:
+    timeout: 3000
+- tapOn:
+    point: "16%,25%"
+- extendedWaitUntil:
+    visible:
+      id: "vault-pay-amount-next"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 2000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "vault-pay-amount-next"
+- extendedWaitUntil:
+    visible:
+      id: "vault-expense-sheet"
+    timeout: 15000
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "vault-expense-category-button"
+- extendedWaitUntil:
+    visible:
+      id: "vault-category-option-FOOD"
+    timeout: 10000
+- tapOn:
+    id: "vault-category-option-FOOD"
+- waitForAnimationToEnd:
+    timeout: 1500
+- tapOn:
+    id: "vault-expense-name"
+- inputText: "Dinner"
+- waitForAnimationToEnd:
+    timeout: 1000
+- tapOn:
+    id: "vault-expense-done"
+- extendedWaitUntil:
+    visible:
+      id: "trip-vault-announcement"
+    timeout: 120000
+- waitForAnimationToEnd:
+    timeout: 2500

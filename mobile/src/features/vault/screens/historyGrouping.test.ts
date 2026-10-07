@@ -1,5 +1,11 @@
 import type { VaultHistoryEntryDto } from '../api/queries';
-import { dayTotalLabel, groupHistoryByDay, mapHistoryEntry } from './historyGrouping';
+import {
+  dayTotalLabel,
+  depositFlowFromHistory,
+  groupHistoryByDay,
+  hasHistoryDetail,
+  mapHistoryEntry,
+} from './historyGrouping';
 
 const t = (key: string) => key;
 
@@ -78,37 +84,38 @@ describe('groupHistoryByDay', () => {
 });
 
 describe('dayTotalLabel', () => {
-  it('shows the negative VND spend total when the day has expenses', () => {
+  it('shows the negative USDC spent on a spend-only day', () => {
     const entries = [
-      entry({ kind: 'SPEND', amountMicro: '289', amountVnd: '500000' }),
-      entry({ kind: 'SPEND', amountMicro: '145', amountVnd: '250000' }),
+      entry({ kind: 'SPEND', amountMicro: '19000000', amountVnd: '500000' }),
+      entry({ kind: 'SPEND', amountMicro: '9500000', amountVnd: '250000' }),
     ];
-    expect(dayTotalLabel(entries)).toBe('-750,000đ');
+    expect(dayTotalLabel(entries)).toBe('-$28.50');
   });
 
-  it('shows the net signed USDC total when there are no VND spends', () => {
+  it('shows the net signed USDC total for incoming entries', () => {
     const entries = [
       entry({ kind: 'DEPOSIT', amountMicro: '100000000' }),
       entry({ kind: 'SETTLEMENT', amountMicro: '20000000' }),
     ];
-    expect(dayTotalLabel(entries)).toBe('+120.00');
+    expect(dayTotalLabel(entries)).toBe('+$120.00');
   });
 
-  it('never sums VND and USDC together — VND wins when both are present', () => {
+  it('nets spends against deposits in USDC instead of dropping the deposits', () => {
     const entries = [
-      entry({ kind: 'SPEND', amountMicro: '289', amountVnd: '500000' }),
-      entry({ kind: 'DEPOSIT', amountMicro: '10000000' }),
+      entry({ kind: 'SPEND', amountMicro: '380000', amountVnd: '10000' }),
+      entry({ kind: 'DEPOSIT', amountMicro: '100000' }),
+      entry({ kind: 'DEPOSIT', amountMicro: '500000' }),
     ];
-    expect(dayTotalLabel(entries)).toBe('-500,000đ');
+    expect(dayTotalLabel(entries)).toBe('+$0.22');
   });
 
-  it('returns null when the day nets to zero and has no VND spends', () => {
+  it('returns null when the day nets to zero', () => {
     expect(dayTotalLabel([])).toBeNull();
   });
 });
 
 describe('mapHistoryEntry', () => {
-  it('maps a group-paid expense (paidBy null) with a negative VND amount', () => {
+  it('maps a group-paid expense (paidBy null) to negative USDC with the VND underneath', () => {
     const row = mapHistoryEntry(
       entry({
         kind: 'SPEND',
@@ -120,8 +127,9 @@ describe('mapHistoryEntry', () => {
       t,
     );
     expect(row.kind).toEqual({ type: 'expense', paidBy: null, shareWith: [] });
-    expect(row.amount).toBe(-200000);
-    expect(row.currency).toBe('VND');
+    expect(row.amount).toBe(-7.66);
+    expect(row.currency).toBe('USD');
+    expect(row.secondaryVnd).toBe(200000);
     expect(row.title).toBe('Coffee');
   });
 
@@ -150,6 +158,7 @@ describe('mapHistoryEntry', () => {
     expect(row.kind).toEqual({ type: 'deposit', fromAddress: 'ABC123' });
     expect(row.amount).toBe(100);
     expect(row.currency).toBe('USD');
+    expect(row.secondaryVnd).toBeNull();
   });
 
   it('maps a settlement with a positive USD amount and the recipient name', () => {
@@ -175,5 +184,42 @@ describe('mapHistoryEntry', () => {
 
   it('carries isAwaitingApproval from needsApproval', () => {
     expect(mapHistoryEntry(entry({ needsApproval: true }), t).isAwaitingApproval).toBe(true);
+  });
+});
+
+describe('hasHistoryDetail', () => {
+  it('opens payments and deposits only', () => {
+    expect(hasHistoryDetail(entry({ kind: 'SPEND' }))).toBe(true);
+    expect(hasHistoryDetail(entry({ kind: 'DEPOSIT' }))).toBe(true);
+    expect(hasHistoryDetail(entry({ kind: 'SETTLEMENT' }))).toBe(false);
+    expect(hasHistoryDetail(entry({ kind: 'REVERT' }))).toBe(false);
+  });
+});
+
+describe('depositFlowFromHistory', () => {
+  it('maps a confirmed deposit to a completed receipt from the sender wallet', () => {
+    expect(
+      depositFlowFromHistory(
+        entry({
+          kind: 'DEPOSIT',
+          amountMicro: '100000',
+          fromAddress: 'FKHdAAAAYX56',
+          signature: 'sig',
+        }),
+      ),
+    ).toEqual({
+      amountMicro: 100000n,
+      recipient: 'FKHdAAAAYX56',
+      status: 'completed',
+      signature: 'sig',
+      date: Date.parse('2026-01-15T08:18:00.000Z'),
+    });
+  });
+
+  it('shows a pending deposit as processing, with no signature yet', () => {
+    const flow = depositFlowFromHistory(entry({ kind: 'DEPOSIT', status: 'PENDING' }));
+    expect(flow.status).toBe('processing');
+    expect(flow.signature).toBe('');
+    expect(flow.recipient).toBe('');
   });
 });

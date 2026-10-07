@@ -38,7 +38,6 @@ import TabPlanet from '@/assets/images/tab/planet.svg';
 import TabPlanetBlue from '@/assets/images/tab/planetBlue.svg';
 import TabSuitcase from '@/assets/images/tab/suitcase.svg';
 import TabSuitcaseBlue from '@/assets/images/tab/suitcaseBlue.svg';
-import VaultLeaveBackArrow from '@/assets/images/vault/vaultLeaveBackArrow.svg';
 import VaultDepositOptionWallet from '@/assets/images/vault/depositOptionWallet.svg';
 import VaultWalletIcon from '@/assets/images/vault/walletIcon.svg';
 import { rasterIllustration } from '@/ui/components/RasterIllustration';
@@ -161,8 +160,6 @@ export const svg = {
   /** `Assets.xcassets/settingIcon` — colored Settings row icons. */
   settings: {
     displayName: SettingDisplayName,
-    /** `Assets.xcassets/vault/walletIcon` — reused from the vault asset set for the "My wallet" row. */
-    wallet: VaultWalletIcon,
     currency: SettingCurrency,
     privacy: SettingPrivacyPolicy,
     terms: SettingTerms,
@@ -173,15 +170,13 @@ export const svg = {
   },
   avatarPlaceholder: AvatarPlaceholder,
   /**
-   * `Assets.xcassets/vault` — personal-wallet chrome (`OnePlanWalletCard`, Settings "My wallet")
-   * plus `Assets.xcassets/vaultLeave*`: `leaveBackArrow` is the leave sheets' rotated "Back"
-   * chevron; `leaveReceivedCheck`/`leaveWaitingCheck` are the host sheet's status pill icons
+   * `Assets.xcassets/vault` — personal-wallet chrome (`OnePlanWalletCard`)
+   * plus `Assets.xcassets/vaultLeave*`: `leaveReceivedCheck`/`leaveWaitingCheck` are the host sheet's status pill icons
    * (rasterized like `avatarPlaceholder` above, not true SVGs, but consumed the same way).
    */
   vault: {
     depositOptionWallet: VaultDepositOptionWallet,
     walletIcon: VaultWalletIcon,
-    leaveBackArrow: VaultLeaveBackArrow,
     leaveReceivedCheck: VaultLeaveReceivedCheck,
     leaveWaitingCheck: VaultLeaveWaitingCheck,
   },

@@ -33,6 +33,11 @@ jest.mock('@/features/vault/web3Flag', () => ({ useWeb3Enabled: () => mockWeb3St
 jest.mock('@/features/vault/api/tripHasVault', () => ({
   useTripHasVault: () => mockHasVault,
 }));
+const mockVaultBlocksDelete = jest.fn(async () => false);
+jest.mock('@/features/vault/deleteGuard', () => ({
+  ...jest.requireActual('@/features/vault/deleteGuard'),
+  vaultBlocksDelete: () => mockVaultBlocksDelete(),
+}));
 jest.mock('@/features/vault/api/endTrip', () => ({
   useRequestTripEnd: () => ({ mutate: (...a: unknown[]) => mockRequestTripEndMutate(...a) }),
 }));
@@ -395,10 +400,19 @@ describe('TripMenuController', () => {
       // Same confirm alert as the classic flow — only the destructive action's target differs.
       expect(mockUpdateMutate).not.toHaveBeenCalled();
 
-      const opts = mockRequestTripEndMutate.mock.calls[0]?.[1] as { onSuccess: () => void };
-      opts.onSuccess();
+      const opts = mockRequestTripEndMutate.mock.calls[0]?.[1] as {
+        onSuccess: (request: unknown) => void;
+      };
+      opts.onSuccess({ id: 1, tripId: 7, status: 'PENDING', myDecision: null });
       expect(mockPush).toHaveBeenCalledWith({
         pathname: '/trip/[tripId]/end-review',
+        params: { tripId: '7' },
+      });
+      // A request I already voted on (409 recovery) lands on Waiting instead.
+      mockPush.mockClear();
+      opts.onSuccess({ id: 1, tripId: 7, status: 'PENDING', myDecision: 'APPROVED' });
+      expect(mockPush).toHaveBeenCalledWith({
+        pathname: '/trip/[tripId]/end-waiting',
         params: { tripId: '7' },
       });
     } finally {
@@ -418,11 +432,7 @@ describe('TripMenuController', () => {
       await selectMenuItem('endTrip');
 
       // No confirm alert with a decision baked in yet — the vault check hasn't settled.
-      expect(alertSpy).not.toHaveBeenCalledWith(
-        'End trip?',
-        expect.anything(),
-        expect.anything(),
-      );
+      expect(alertSpy).not.toHaveBeenCalledWith('End trip?', expect.anything(), expect.anything());
       expect(mockUpdateMutate).not.toHaveBeenCalled();
       expect(mockRequestTripEndMutate).not.toHaveBeenCalled();
     } finally {
@@ -438,6 +448,58 @@ describe('TripMenuController', () => {
     alertButton(alertSpy, 'Delete')?.onPress?.();
 
     expect(mockDeleteTripMutate).toHaveBeenCalledWith(7, expect.anything());
+  });
+
+  it('blocks Delete trip while the group wallet still holds money', async () => {
+    mockWeb3State.enabled = true;
+    mockVaultBlocksDelete.mockResolvedValueOnce(true);
+    try {
+      await renderMenu();
+
+      await selectMenuItem('deleteTrip');
+
+      await waitFor(() =>
+        expect(alertSpy).toHaveBeenLastCalledWith(
+          'Settle the group wallet first',
+          "This trip's group wallet still holds money. Settle all payments before deleting the trip.",
+        ),
+      );
+      expect(alertButton(alertSpy, 'Delete')).toBeUndefined();
+      expect(mockDeleteTripMutate).not.toHaveBeenCalled();
+    } finally {
+      mockWeb3State.enabled = false;
+    }
+  });
+
+  it('confirms Delete trip normally once the group wallet is empty', async () => {
+    mockWeb3State.enabled = true;
+    try {
+      await renderMenu();
+
+      await selectMenuItem('deleteTrip');
+      await waitFor(() => expect(alertButton(alertSpy, 'Delete')).toBeDefined());
+      alertButton(alertSpy, 'Delete')?.onPress?.();
+
+      expect(mockDeleteTripMutate).toHaveBeenCalledWith(7, expect.anything());
+    } finally {
+      mockWeb3State.enabled = false;
+    }
+  });
+
+  it('shows the settle-first alert when the server refuses with vault_not_empty', async () => {
+    await renderMenu();
+
+    await selectMenuItem('deleteTrip');
+    alertButton(alertSpy, 'Delete')?.onPress?.();
+    const opts = mockDeleteTripMutate.mock.calls.at(-1)?.[1] as {
+      onError: (err: unknown) => void;
+    };
+    opts.onError(new ApiMutationError(400, { code: 'vault_not_empty', message: 'x' }));
+
+    expect(alertSpy).toHaveBeenLastCalledWith(
+      'Settle the group wallet first',
+      "This trip's group wallet still holds money. Settle all payments before deleting the trip.",
+    );
   });
 
   it('routes Leave group to the onLeave prop for a non-creator', async () => {

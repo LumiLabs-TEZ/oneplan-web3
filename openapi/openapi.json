@@ -751,6 +751,142 @@
         ]
       }
     },
+    "/web3/faucet": {
+      "post": {
+        "operationId": "claimWeb3Faucet",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FaucetClaimDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Send devnet test USDC to the caller wallet",
+        "tags": [
+          "web3"
+        ]
+      }
+    },
+    "/web3/admin/allowlist": {
+      "get": {
+        "operationId": "adminListWeb3Allowlist",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Web3AllowlistEntryDto"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin access required"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Web3 allowlist, newest first.",
+        "tags": [
+          "Web3 Admin"
+        ]
+      },
+      "post": {
+        "operationId": "adminAddWeb3Allowlist",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddWeb3AllowlistDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Web3AllowlistEntryDto"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin access required"
+          },
+          "404": {
+            "description": "No user with that email"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Allowlist an existing user by email: web3 is available to them from any IP.",
+        "tags": [
+          "Web3 Admin"
+        ]
+      }
+    },
+    "/web3/admin/allowlist/{userId}": {
+      "delete": {
+        "operationId": "adminRemoveWeb3Allowlist",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "403": {
+            "description": "Admin access required"
+          },
+          "404": {
+            "description": "User is not on the allowlist"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Remove a user from the web3 allowlist.",
+        "tags": [
+          "Web3 Admin"
+        ]
+      }
+    },
     "/scan-credit/app-launch": {
       "post": {
         "operationId": "reportAppLaunch",
@@ -3338,6 +3474,45 @@
         ]
       }
     },
+    "/trips/{tripId}/vault/identities": {
+      "get": {
+        "operationId": "getVaultMemberIdentities",
+        "parameters": [
+          {
+            "name": "tripId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MemberIdentityDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Seeker badge and .skr name per member",
+        "tags": [
+          "trip-vault"
+        ]
+      }
+    },
     "/trips/{tripId}/vault/balance": {
       "get": {
         "operationId": "getVaultBalance",
@@ -4142,6 +4317,70 @@
           }
         ],
         "summary": "Link the caller embedded wallet public key",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
+    "/wallet/siws/challenge": {
+      "post": {
+        "operationId": "createSiwsChallenge",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiwsChallengeDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Sign-In-With-Solana input for linking a wallet the user brings (MWA)",
+        "tags": [
+          "wallet"
+        ]
+      }
+    },
+    "/wallet/link/siws": {
+      "post": {
+        "operationId": "linkWalletSiws",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkWalletSiwsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkWalletResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Link a wallet after verifying its Sign-In-With-Solana signature",
         "tags": [
           "wallet"
         ]
@@ -10685,16 +10924,94 @@
         "properties": {
           "eligible": {
             "type": "boolean",
-            "description": "Caller may create/enable web3 trips: server web3 is on and configured, and the request IP is not in a blocked country."
+            "description": "Caller may create/enable web3 trips: server web3 is on and configured, and the request IP is not in a blocked country or the caller is on the admin allowlist."
           },
           "hasWeb3Trip": {
             "type": "boolean",
             "description": "Informational only (UI copy): caller belongs to a web3 trip. Never grants web3 access; only `eligible` does."
+          },
+          "faucetEnabled": {
+            "type": "boolean",
+            "description": "A devnet test-USDC faucet is available to this caller (POST /web3/faucet)."
+          },
+          "mwaEnabled": {
+            "type": "boolean",
+            "description": "Wallet choice, not an access grant: Android signs with the member's own wallet app over Mobile Wallet Adapter when true, with the Privy embedded wallet when false. iOS ignores it (always Privy)."
           }
         },
         "required": [
           "eligible",
-          "hasWeb3Trip"
+          "hasWeb3Trip",
+          "faucetEnabled",
+          "mwaEnabled"
+        ]
+      },
+      "FaucetClaimDto": {
+        "type": "object",
+        "properties": {
+          "signature": {
+            "type": "string",
+            "description": "Devnet transaction signature"
+          },
+          "amountMicro": {
+            "type": "string",
+            "description": "Micro-USDC sent, decimal string"
+          }
+        },
+        "required": [
+          "signature",
+          "amountMicro"
+        ]
+      },
+      "Web3AllowlistEntryDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "integer"
+          },
+          "email": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "addedByEmail": {
+            "type": "string",
+            "description": "Admin who added the user"
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "ISO timestamp"
+          }
+        },
+        "required": [
+          "userId",
+          "email",
+          "displayName",
+          "addedByEmail",
+          "createdAt"
+        ]
+      },
+      "AddWeb3AllowlistDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "user@example.com",
+            "description": "Email of an existing account"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Why this user is allowlisted (e.g. \"Demo Day phone\")"
+          }
+        },
+        "required": [
+          "email"
         ]
       },
       "AppLaunchDto": {
@@ -11111,6 +11428,10 @@
             "items": {
               "$ref": "#/components/schemas/Currency"
             }
+          },
+          "web3": {
+            "type": "boolean",
+            "description": "Create the trip with a group wallet (web3). Fixed at creation. Requires web3 eligibility (403 web3_unavailable otherwise)."
           }
         },
         "required": [
@@ -13554,10 +13875,41 @@
           "balanceMicro": {
             "type": "string",
             "description": "USDC held by the caller, in micro-USDC"
+          },
+          "skrDomain": {
+            "type": "string",
+            "nullable": true,
+            "description": "Primary .skr name without the suffix (mainnet); null unless the wallet was linked with a SIWS proof"
+          },
+          "isSeeker": {
+            "type": "boolean",
+            "description": "The linked key holds a Seeker Genesis Token (mainnet); false unless linked with a SIWS proof"
           }
         },
         "required": [
-          "balanceMicro"
+          "balanceMicro",
+          "isSeeker"
+        ]
+      },
+      "MemberIdentityDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "integer"
+          },
+          "skrDomain": {
+            "type": "string",
+            "nullable": true,
+            "description": "Primary .skr name without the suffix (mainnet)"
+          },
+          "isSeeker": {
+            "type": "boolean",
+            "description": "The linked key holds a Seeker Genesis Token (mainnet)"
+          }
+        },
+        "required": [
+          "userId",
+          "isSeeker"
         ]
       },
       "VaultBalanceDto": {
@@ -14147,6 +14499,94 @@
         },
         "required": [
           "fromUserId"
+        ]
+      },
+      "SiwsInputDto": {
+        "type": "object",
+        "properties": {
+          "domain": {
+            "type": "string"
+          },
+          "statement": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "chainId": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "issuedAt": {
+            "type": "string",
+            "description": "ISO-8601"
+          },
+          "expirationTime": {
+            "type": "string",
+            "description": "ISO-8601"
+          }
+        },
+        "required": [
+          "domain",
+          "statement",
+          "uri",
+          "version",
+          "chainId",
+          "nonce",
+          "issuedAt",
+          "expirationTime"
+        ]
+      },
+      "SiwsChallengeDto": {
+        "type": "object",
+        "properties": {
+          "input": {
+            "description": "Pass verbatim as MWA sign_in_payload",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SiwsInputDto"
+              }
+            ]
+          },
+          "challengeToken": {
+            "type": "string",
+            "description": "Opaque; send back unchanged to POST /wallet/link/siws"
+          }
+        },
+        "required": [
+          "input",
+          "challengeToken"
+        ]
+      },
+      "LinkWalletSiwsDto": {
+        "type": "object",
+        "properties": {
+          "challengeToken": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string",
+            "description": "MWA sign_in_result.address (base64 public key)"
+          },
+          "signedMessage": {
+            "type": "string",
+            "description": "MWA sign_in_result.signed_message (base64)"
+          },
+          "signature": {
+            "type": "string",
+            "description": "MWA sign_in_result.signature (base64)"
+          }
+        },
+        "required": [
+          "challengeToken",
+          "address",
+          "signedMessage",
+          "signature"
         ]
       },
       "WalletHistoryEntryDto": {

@@ -1,0 +1,77 @@
+# Cold-launch the Local build attached to Metro and clear the first-run gates (open-link prompt,
+# dev menu, onboarding, dev login, ATT, free trial) in whatever order they show. Stops once Home
+# (`fab`) or the web3 welcome sheet is up. Include with `runFlow: common/launch.yaml`.
+appId: local.lumilabs.oneplan
+---
+- launchApp:
+    stopApp: true
+# A dev client that remembers Metro mounts the bundle by itself; deep-linking Metro again while it
+# mounts crashes ExpoFabricView ("app context lost"). Only link from the dev-client launcher.
+- extendedWaitUntil:
+    visible: "Development Build|Welcome to One Plan|Continue with Google"
+    timeout: 8000
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "fab"
+    timeout: 12000
+    optional: true
+- runFlow:
+    when:
+      visible: "DEVELOPMENT SERVERS"
+    commands:
+      - openLink: "local.lumilabs.oneplan://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081"
+- repeat:
+    times: 12
+    while:
+      notVisible:
+        id: "fab"
+    commands:
+      - runFlow:
+          when:
+            visible: "Open in .*OnePlan Local.*"
+          commands:
+            - tapOn: "^Open$"
+      - runFlow:
+          when:
+            visible: "This is the developer menu.*"
+          commands:
+            - tapOn: "^Continue$"
+      - runFlow:
+          when:
+            visible: "^Go home$"
+          commands:
+            - tapOn:
+                point: "90%,48%"
+      - runFlow:
+          when:
+            visible: "Welcome to One Plan"
+          commands:
+            - repeat:
+                while:
+                  visible: "^Continue$"
+                commands:
+                  - tapOn: "^Continue$"
+                  - waitForAnimationToEnd:
+                      timeout: 1500
+            - tapOn: "^Get Started$"
+      - runFlow:
+          when:
+            visible: "Continue with Google"
+          commands:
+            - tapOn:
+                id: "login-dev"
+      - runFlow:
+          when:
+            visible: "Ask App Not to Track"
+          commands:
+            - tapOn: "Ask App Not to Track"
+      - runFlow:
+          when:
+            visible:
+              id: "free-trial-screen"
+          commands:
+            - tapOn:
+                id: "trial-close"
+      - waitForAnimationToEnd:
+          timeout: 2500

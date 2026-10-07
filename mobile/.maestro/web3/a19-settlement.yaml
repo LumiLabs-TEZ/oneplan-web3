@@ -1,0 +1,44 @@
+# A (host, is owed): Settlement tab → Receive row → Show QR (wallet Receive QR) → Go back →
+# Mark as done (cash received) → the row flips to done on both devices.
+appId: local.lumilabs.oneplan
+---
+- tapOn: "Settlement"
+- extendedWaitUntil:
+    visible:
+      id: "vault-settlement-row-toggle"
+    timeout: 60000
+- waitForAnimationToEnd:
+    timeout: 2500
+- tapOn:
+    id: "vault-settlement-row-toggle"
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "vault-settlement-show-qr"
+- extendedWaitUntil:
+    visible:
+      id: "wallet-deposit-sheet"
+    timeout: 10000
+- waitForAnimationToEnd:
+    timeout: 3500
+- tapOn:
+    id: "wallet-deposit-go-back"
+- waitForAnimationToEnd:
+    timeout: 2500
+- runFlow:
+    when:
+      notVisible:
+        id: "vault-settlement-mark-done"
+    commands:
+      - tapOn:
+          id: "vault-settlement-row-toggle"
+      - waitForAnimationToEnd:
+          timeout: 1500
+- tapOn:
+    id: "vault-settlement-mark-done"
+- extendedWaitUntil:
+    notVisible:
+      id: "vault-settlement-mark-done"
+    timeout: 20000
+- waitForAnimationToEnd:
+    timeout: 4000

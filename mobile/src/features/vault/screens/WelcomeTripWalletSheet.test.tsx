@@ -10,6 +10,11 @@ jest.mock('expo-router', () => ({
   router: { push: (...args: unknown[]) => mockRouterPush(...args), back: () => mockRouterBack() },
 }));
 
+// Rendered without a SafeAreaProvider; the sheet reads the bottom inset.
+jest.mock('react-native-safe-area-context', () => ({
+  ...jest.requireActual('react-native-safe-area-context'),
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 jest.mock('@/features/me/useMe', () => ({ useMe: () => ({ data: { id: 42 } }) }));
 
 const mockLinkWalletMutateAsync = jest.fn(async () => ({ publicKey: 'ADDR' }));
@@ -18,8 +23,15 @@ jest.mock('../api/mutations', () => ({
 }));
 
 const mockEnsureVaultWallet = jest.fn(async () => 'ADDR');
+const mockVaultWalletKind = jest.fn<'privy' | 'mwa' | null, []>(() => 'privy');
+const mockConnectedAddress = jest.fn<string | null, []>(() => null);
 jest.mock('../wallet/walletHandle', () => ({
   ensureVaultWallet: () => mockEnsureVaultWallet(),
+  vaultWalletKind: () => mockVaultWalletKind(),
+  connectedVaultWalletAddress: () => mockConnectedAddress(),
+  connectVaultWallet: jest.fn(),
+  resetVaultWallet: jest.fn(),
+  subscribeWalletHandle: () => () => undefined,
 }));
 
 // eslint-disable-next-line import/first -- must follow the jest.mock hoists
@@ -40,6 +52,46 @@ describe('WelcomeTripWalletSheet', () => {
     mockLinkWalletMutateAsync.mockClear();
     mockEnsureVaultWallet.mockReset();
     mockEnsureVaultWallet.mockImplementation(async () => 'ADDR');
+    mockVaultWalletKind.mockReturnValue('privy');
+    mockConnectedAddress.mockReturnValue(null);
+  });
+
+  it('on Android (MWA) does not auto-run setup; shows the Connect card and allows Continue', async () => {
+    mockVaultWalletKind.mockReturnValue('mwa');
+    const screen = await render(<WelcomeTripWalletSheet />);
+    expect(screen.getByTestId('connect-wallet-button')).toBeTruthy();
+    expect(mockEnsureVaultWallet).not.toHaveBeenCalled();
+    expect(mockLinkWalletMutateAsync).not.toHaveBeenCalled();
+    expect(screen.getByText('Continue').parent?.props.accessibilityState?.disabled).toBe(false);
+  });
+
+  it('on Android the disclosure says the member’s own wallet app holds the keys', async () => {
+    mockVaultWalletKind.mockReturnValue('mwa');
+    const screen = await render(<WelcomeTripWalletSheet />);
+    expect(
+      screen.getByText(/Your own Solana wallet app holds your keys and signs every payment\./),
+    ).toBeTruthy();
+    expect(screen.queryByText(/wallet provider/)).toBeNull();
+    expect(screen.queryByText(/Privy/)).toBeNull();
+  });
+
+  it('on iOS (Privy) the disclosure copy is unchanged', async () => {
+    const screen = await render(<WelcomeTripWalletSheet />);
+    await waitFor(() => expect(screen.getByText('ADDR')).toBeTruthy());
+    expect(
+      screen.getByText(
+        /Setting up a wallet creates a Solana account tied to your OnePlan sign-in, through our wallet provider\./,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Your own Solana wallet app/)).toBeNull();
+  });
+
+  it('on Android shows an already-connected MWA wallet without opening it', async () => {
+    mockVaultWalletKind.mockReturnValue('mwa');
+    mockConnectedAddress.mockReturnValue('ADDR');
+    const screen = await render(<WelcomeTripWalletSheet />);
+    expect(screen.getByText('ADDR')).toBeTruthy();
+    expect(mockEnsureVaultWallet).not.toHaveBeenCalled();
   });
 
   it('links the wallet on mount and shows the shortened address', async () => {
@@ -73,12 +125,12 @@ describe('WelcomeTripWalletSheet', () => {
     expect(useTripWalletWelcomeStore.getState().seenUserIds).toEqual(['42']);
   });
 
-  it('marks seen and dismisses from the close button too', async () => {
-    const onClose = jest.fn();
-    const screen = await render(<WelcomeTripWalletSheet onClose={onClose} />);
-    await fireEvent.press(screen.getByTestId('welcome-trip-wallet-close'));
+  it('has no close button, and marks seen when swiped away (unmounted)', async () => {
+    const screen = await render(<WelcomeTripWalletSheet />);
+    expect(screen.queryByTestId('welcome-trip-wallet-close')).toBeNull();
+    expect(useTripWalletWelcomeStore.getState().seenUserIds).toEqual([]);
+    await screen.unmount();
     expect(useTripWalletWelcomeStore.getState().seenUserIds).toEqual(['42']);
-    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('navigates to the how-money-is-held route from the disclosure link', async () => {
@@ -98,11 +150,9 @@ describe('WelcomeTripWalletSheet', () => {
     expect(screen.getByText('Could not set up wallet')).toBeTruthy();
     expect(screen.queryByText('Setting up your wallet')).toBeNull();
     expect(screen.getByTestId('welcome-trip-wallet-retry')).toBeTruthy();
-    // The X still closes it.
-    const onClose = jest.fn();
-    await screen.rerender(<WelcomeTripWalletSheet onClose={onClose} />);
-    await fireEvent.press(screen.getByTestId('welcome-trip-wallet-close'));
-    expect(onClose).toHaveBeenCalledTimes(1);
+    // Continue stays disabled; swiping the sheet away still marks it seen.
+    await screen.unmount();
+    expect(useTripWalletWelcomeStore.getState().seenUserIds).toEqual(['42']);
   });
 
   it('shows an error when the server link call fails (wallet endpoint 404)', async () => {
